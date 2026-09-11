@@ -1,0 +1,28 @@
+[package]
+name = "chatvault-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ChatVault 命令行验证工具与测试入口"
+
+[[bin]]
+name = "chatvault-cli"
+path = "src/main.rs"
+
+[dependencies]
+chatvault-core.workspace = true
+chatvault-metadata.workspace = true
+chatvault-scanner.workspace = true
+chatvault-index.workspace = true
+chatvault-webdav.workspace = true
+adapter-wechat-windows.workspace = true
+adapter-generic-folder.workspace = true
+rusqlite.workspace = true
+
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+chrono.workspace = true

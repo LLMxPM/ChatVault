@@ -1,0 +1,72 @@
+# ==========================================
+# ChatVault Git 忽略规则
+# ==========================================
+
+# 1. Rust 与 Cargo 构建输出
+target/
+**/*.rs.bk
+*.pdb
+
+# 2. 本地数据库与临时状态文件
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+chatvault.db*
+staging/
+test_webdav_storage/
+test_custom_folder/
+
+# 3. 前端与 Node / pnpm (桌面前端模块)
+node_modules/
+dist/
+dist-ssr/
+*.local
+.npm/
+.pnpm-store/
+.pnpm-debug.log*
+
+# 4. 桌面打包产物 (Tauri / Electron)
+src-tauri/target/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 5. Python 辅助工具与虚拟环境
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# 6. IDE 与编辑器配置文件
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.sublime-project
+*.sublime-workspace
+*.suo
+*.user
+*.userosv
+*.sln.docstates
+
+# 7. 操作系统缓存与元数据
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# 8. 本地环境与密钥
+.env
+.env.local
+.env.*.local
+*.log

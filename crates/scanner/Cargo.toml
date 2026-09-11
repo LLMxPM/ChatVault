@@ -1,0 +1,15 @@
+[package]
+name = "chatvault-scanner"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ChatVault 目录扫描引擎与文件写入稳定性检测器"
+
+[dependencies]
+chatvault-core.workspace = true
+walkdir.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true

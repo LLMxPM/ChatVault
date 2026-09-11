@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/metadata",
+    "crates/scanner",
+    "crates/index",
+    "crates/webdav",
+    "crates/cli",
+    "adapters/wechat-windows",
+    "adapters/generic-folder",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["ChatVault Team"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+chatvault-core = { path = "crates/core" }
+chatvault-metadata = { path = "crates/metadata" }
+chatvault-scanner = { path = "crates/scanner" }
+chatvault-index = { path = "crates/index" }
+chatvault-webdav = { path = "crates/webdav" }
+adapter-wechat-windows = { path = "adapters/wechat-windows" }
+adapter-generic-folder = { path = "adapters/generic-folder" }
+
+# 序列化与数据处理
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.8", features = ["v4", "serde"] }
+
+# 哈希算法
+blake3 = "1.5"
+
+# 错误处理与日志
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 异步与网络
+tokio = { version = "1.38", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+reqwest = { version = "0.12", features = ["stream"] }
+futures-util = "0.3"
+
+# 本地数据库 (SQLite + FTS5 预编译加速)
+rusqlite = { version = "0.31" }
+
+# CLI 解析
+clap = { version = "4.5", features = ["derive"] }
+walkdir = "2.5"
+dirs = "5.0"

@@ -1,0 +1,15 @@
+[package]
+name = "chatvault-metadata"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ChatVault 元数据处理与 BLAKE3 哈希算法库"
+
+[dependencies]
+chatvault-core.workspace = true
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true

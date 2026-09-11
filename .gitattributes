@@ -1,0 +1,43 @@
+# ==========================================
+# ChatVault Git 属性与换行符规则
+# ==========================================
+
+# 默认所有文本文件检出时转换，提交时强制 LF，确保 Windows 与 macOS 协作无差异
+* text=auto eol=lf
+
+# 源码文件显式按 LF 管理
+*.rs text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.ts text eol=lf
+*.js text eol=lf
+*.vue text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.py text eol=lf
+
+# Windows 批处理与 PowerShell 脚本保留 CRLF 兼容
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制文件定义，防止误转行符损坏
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.zip binary
+*.tar.gz binary
+*.exe binary
+*.dll binary
+*.lib binary
+*.a binary
+*.o binary
+*.db binary
+*.sqlite binary

@@ -1,0 +1,122 @@
+//! # Windows 微信 4.x 目录自动探测模块
+//!
+//! 自动探测 Windows 系统中微信 4.x (`xwechat_files`) 的数据根目录，
+//! 并识别所有已登录过的独立用户账号及其存储路径。
+
+use chatvault_core::error::{ChatVaultError, Result};
+use std::path::{Path, PathBuf};
+
+/// 探测到的微信 4.x 账号信息
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeChatAccount {
+    /// 微信账号标识 (例如 wxid_xxx 或微信号)
+    pub account_id: String,
+    /// 该账号数据根目录绝对路径
+    pub root_dir: PathBuf,
+    /// 聊天附件文件所在目录 (通常为 `root_dir/msg/file`)
+    pub files_dir: PathBuf,
+}
+
+/// 微信 4.x 探测器
+pub struct WeChat4Detector;
+
+impl WeChat4Detector {
+    /// 获取默认的微信 4.x 数据根目录候选列表
+    ///
+    /// 职责: 返回标准 `Documents\xwechat_files` 以及跨盘符常见位置
+    /// 输出: 潜在的根目录路径列表
+    pub fn candidate_roots() -> Vec<PathBuf> {
+        let mut candidates = Vec::new();
+
+        // 默认文档目录: C:\Users\<Username>\Documents\xwechat_files
+        if let Some(doc_dir) = dirs::document_dir() {
+            candidates.push(doc_dir.join("xwechat_files"));
+        }
+
+        // 备用盘符探测 (D, E, F 等自定义盘符根目录)
+        for drive in ["D:\\", "E:\\", "F:\\"] {
+            candidates.push(PathBuf::from(drive).join("xwechat_files"));
+            candidates.push(PathBuf::from(drive).join("Documents").join("xwechat_files"));
+        }
+
+        candidates
+    }
+
+    /// 自动发现系统中的微信 4.x 根目录
+    ///
+    /// 职责: 遍历候选路径，查找首个实际存在的有效微信 4.x 数据目录
+    /// 输出: `Result<PathBuf>`
+    pub fn detect_root() -> Result<PathBuf> {
+        for candidate in Self::candidate_roots() {
+            if candidate.exists() && candidate.is_dir() {
+                return Ok(candidate);
+            }
+        }
+
+        Err(ChatVaultError::WeChatParse(
+            "未检测到微信 4.x 数据目录 (xwechat_files)，请确认微信 4.x 是否已安装登录，或手动指定目录".to_string(),
+        ))
+    }
+
+    /// 列出微信 4.x 根目录下所有有效的微信账号
+    ///
+    /// 职责: 枚举根目录子文件夹，过滤非用户账号目录（如 all_users, Backup），
+    ///       并验证账号目录下是否存在 `msg` 或 `msg/file`。
+    /// 输入:
+    ///   - `root`: 微信 4.x 数据根目录 (例如 `Documents/xwechat_files`)
+    /// 输出: `Result<Vec<WeChatAccount>>`
+    pub fn find_accounts<P: AsRef<Path>>(root: P) -> Result<Vec<WeChatAccount>> {
+        let r = root.as_ref();
+        if !r.exists() {
+            return Err(ChatVaultError::FileNotFound {
+                path: r.display().to_string(),
+            });
+        }
+
+        let mut accounts = Vec::new();
+        let entries = std::fs::read_dir(r)?;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            let dir_name = match path.file_name().and_then(|s| s.to_str()) {
+                Some(name) => name,
+                None => continue,
+            };
+
+            // 过滤系统或备份目录
+            let lower = dir_name.to_lowercase();
+            if lower == "all_users" || lower == "backup" || lower == "temp" {
+                continue;
+            }
+
+            let msg_dir = path.join("msg");
+            let files_dir = msg_dir.join("file");
+
+            // 只要存在 msg 目录，即使当前还没有收到 file，也属于合法账号
+            if msg_dir.exists() {
+                accounts.push(WeChatAccount {
+                    account_id: dir_name.to_string(),
+                    root_dir: path,
+                    files_dir,
+                });
+            }
+        }
+
+        Ok(accounts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_candidate_roots_not_empty() {
+        let roots = WeChat4Detector::candidate_roots();
+        assert!(!roots.is_empty());
+    }
+}
