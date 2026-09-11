@@ -16,7 +16,6 @@ mod events;
 mod identity;
 mod ingest;
 mod journal;
-mod migrations;
 mod settings;
 mod task_status;
 mod tasks;

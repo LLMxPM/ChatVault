@@ -3,7 +3,7 @@ use crate::Database;
 use chatvault_core::error::{ChatVaultError, Result};
 
 impl Database {
-    /// 首次生成唯一设备身份；旧固定身份的事件换用新事件 ID 重新发布，来源记录 ID 保持不变。
+    /// 首次生成并持久化唯一设备身份；已有身份经校验后直接复用。
     pub fn ensure_device_identity(&mut self) -> Result<String> {
         self.atomic(|db| {
             db.conn
@@ -12,26 +12,11 @@ impl Database {
                     [],
                 )
                 .map_err(|e| ChatVaultError::Database(e.to_string()))?;
-            let old = db.get_setting("device_id")?;
-            if let Some(ref id) = old {
-                if !["win-pc-01", "windows-pc", "cli-device"].contains(&id.as_str())
-                    && !id.is_empty()
-                {
-                    chatvault_metadata::validate_id(id)?;
-                    return Ok(id.clone());
-                }
+            if let Some(id) = db.get_setting("device_id")? {
+                chatvault_metadata::validate_id(&id)?;
+                return Ok(id);
             }
             let id = uuid::Uuid::new_v4().to_string();
-            // 旧 CLI 没有 app_settings，扫描默认使用 windows-pc。
-            let legacy = old.as_deref().unwrap_or("windows-pc");
-            let events = db.list_unpublished_journal_events(legacy, 0, i64::MAX as u64)?;
-            for (index, mut event) in events.into_iter().enumerate() {
-                event.event_id = uuid::Uuid::new_v4().to_string();
-                event.device_id = id.clone();
-                event.epoch = 1;
-                event.seq = index as u64 + 1;
-                db.insert_journal_event_if_absent(&event)?;
-            }
             db.set_setting("device_id", &id)?;
             Ok(id)
         })

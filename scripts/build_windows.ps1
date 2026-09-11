@@ -35,19 +35,19 @@ if (Test-Path $vcvars) {
     }
 }
 
-# 2. 配置 Windows API 库与 SQLite 预编译库路径（优先使用仓库内置 libs/win_x64，并兼容 C:\codetools\rust\win_libs）
+# 2. 配置 Windows API 库；SQLite 统一使用仓库内置 libs/win_x64
 $winLibs = "C:\codetools\rust\win_libs"
 if (Test-Path $winLibs) {
     $env:LIB = "$env:LIB;$winLibs"
-    $env:SQLITE3_LIB_DIR = $winLibs
 }
 
 $repoLibs = Join-Path $PSScriptRoot "..\libs\win_x64"
-if (Test-Path $repoLibs) {
-    $resolvedLibs = (Resolve-Path $repoLibs).Path
-    $env:LIB = "$resolvedLibs;$env:LIB"
-    $env:SQLITE3_LIB_DIR = $resolvedLibs
+if (-not (Test-Path -LiteralPath (Join-Path $repoLibs "sqlite3.lib"))) {
+    throw "缺少仓库内置 SQLite 库: $repoLibs\sqlite3.lib"
 }
+$resolvedLibs = (Resolve-Path $repoLibs).Path
+$env:LIB = "$resolvedLibs;$env:LIB"
+$env:SQLITE3_LIB_DIR = $resolvedLibs
 
 # 3. 确保 codetools/rust 工具链路径优先生效
 $env:CARGO_HOME = "C:\codetools\rust\cargo"

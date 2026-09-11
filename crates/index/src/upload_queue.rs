@@ -1,7 +1,6 @@
-// ChatVault 上传来源与队列查询：旧任务补建稳定副本，失败任务指数退避。
+// ChatVault 上传来源与队列查询：校验受控副本，失败任务指数退避。
 use crate::Database;
 use chatvault_core::error::{ChatVaultError, Result};
-use rusqlite::params;
 use std::path::PathBuf;
 
 /// 上传任务的最小执行信息。
@@ -34,36 +33,20 @@ impl Database {
         self.conn.query_row("SELECT EXISTS(SELECT 1 FROM upload_tasks WHERE task_id=?1 AND status IN ('queued','retryable_failed'))", [id], |r|r.get(0)).map_err(db_error)
     }
 
-    /// 优先使用历史版本副本；旧数据库没有副本时，仅在源内容匹配时安全补建。
-    pub fn upload_source(&mut self, id: &str) -> Result<PathBuf> {
-        let (record, hash, original, cache): (String,String,Option<String>,Option<String>) = self.conn.query_row(
-            "SELECT t.record_id,o.hash,l.original_path,l.cache_path FROM upload_tasks t JOIN file_objects o ON t.object_id=o.object_id
+    /// 仅使用入库时生成的受控副本；缺失或哈希不匹配时报告错误。
+    pub fn upload_source(&self, id: &str) -> Result<PathBuf> {
+        let (hash, cache): (String, Option<String>) = self.conn.query_row(
+            "SELECT o.hash,l.cache_path FROM upload_tasks t JOIN file_objects o ON t.object_id=o.object_id
              LEFT JOIN local_files l ON t.record_id=l.record_id WHERE t.task_id=?1", [id],
-            |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(db_error)?;
-        if let Some(path) = cache.map(PathBuf::from).filter(|p| p.exists()) {
-            chatvault_metadata::verify_file_hash(&path, &hash)?;
-            return Ok(path);
-        }
-        let source = original
+            |r| Ok((r.get(0)?,r.get(1)?))).map_err(db_error)?;
+        let path = cache
             .map(PathBuf::from)
+            .filter(|p| p.is_file())
             .ok_or_else(|| ChatVaultError::FileNotFound {
-                path: format!("任务 {id} 的历史版本来源已丢失"),
+                path: format!("任务 {id} 的受控副本已丢失"),
             })?;
-        let (cache, actual, _) =
-            chatvault_metadata::staging::stage_file(&source, &self.staging_dir)?;
-        if actual.hex_hash != hash {
-            return Err(ChatVaultError::HashMismatch {
-                expected: hash,
-                actual: actual.hex_hash,
-            });
-        }
-        self.conn
-            .execute(
-                "UPDATE local_files SET cache_path=?1 WHERE record_id=?2",
-                params![cache.to_string_lossy(), record],
-            )
-            .map_err(db_error)?;
-        Ok(cache)
+        chatvault_metadata::verify_file_hash(&path, &hash)?;
+        Ok(path)
     }
 }
 

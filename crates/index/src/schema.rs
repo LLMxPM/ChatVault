@@ -6,7 +6,7 @@
 use chatvault_core::error::{ChatVaultError, Result};
 use rusqlite::Connection;
 
-/// 初始化或迁移本地数据库架构
+/// 直接初始化当前本地数据库架构
 ///
 /// 职责: 创建核心表与 FTS5 trigram 全文索引，启用 WAL 日志模式
 /// 输入: `conn`: SQLite 数据库连接实例
@@ -55,7 +55,7 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
         -- 3. 本机文件路径与缓存映射表
         CREATE TABLE IF NOT EXISTS local_files (
             record_id TEXT PRIMARY KEY REFERENCES file_records(record_id) ON DELETE CASCADE,
-            original_path TEXT NOT NULL UNIQUE,
+            original_path TEXT NOT NULL,
             cache_path TEXT,
             size INTEGER NOT NULL,
             mtime_ms INTEGER NOT NULL,
@@ -111,9 +111,16 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
 
         -- 9. 各设备同步游标
         CREATE TABLE IF NOT EXISTS sync_cursors (
-            device_id TEXT PRIMARY KEY,
+            device_id TEXT NOT NULL,
             epoch INTEGER NOT NULL,
-            last_contiguous_seq INTEGER NOT NULL
+            last_contiguous_seq INTEGER NOT NULL,
+            PRIMARY KEY(device_id, epoch)
+        );
+
+        -- 删除标记支持删除事件先于新增事件到达
+        CREATE TABLE IF NOT EXISTS record_tombstones (
+            record_id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL
         );
 
         -- 10. 远端已知设备注册表
@@ -128,7 +135,7 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
     )
     .map_err(|e| ChatVaultError::Database(format!("执行表结构初始化失败: {}", e)))?;
 
-    crate::migrations::migrate(conn)
+    Ok(())
 }
 
 #[cfg(test)]

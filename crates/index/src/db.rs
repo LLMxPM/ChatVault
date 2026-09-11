@@ -51,7 +51,7 @@ pub struct Database {
 impl Database {
     /// 打开或创建指定文件路径的 SQLite 数据库
     ///
-    /// 职责: 初始化数据库连接并自动迁移表结构
+    /// 职责: 初始化数据库连接并创建当前表结构
     /// 输入: `path`: 数据库文件绝对或相对路径
     /// 输出: `Result<Self>`
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {

@@ -62,7 +62,7 @@ impl<'a> JournalPublisher<'a> {
             },
         )
         .await?;
-        crate::binding::bind_checked(self.client, db, &self.vault_id).await?;
+        db.bind_remote(self.client.storage_identity(), &self.vault_id)?;
         let last_pushed = db.cursor_seq(&self.device_id, self.epoch)?;
         // 即使没有新事件也修复设备注册；游标已持久化后注册失败可以安全重试。
         self.register_device(db, last_pushed).await?;

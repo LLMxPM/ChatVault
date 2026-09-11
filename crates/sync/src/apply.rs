@@ -42,7 +42,7 @@ pub async fn pull_and_apply(
     chatvault_metadata::validate_id(local_device_id)?;
     db.check_remote_binding(client.storage_identity(), vault_id)?;
     chatvault_webdav::load_vault_config(client, vault_id).await?;
-    crate::binding::bind_checked(client, db, vault_id).await?;
+    db.bind_remote(client.storage_identity(), vault_id)?;
     let devices = list_remote_devices(client, db, vault_id).await?;
     let mut applied_total = 0usize;
 

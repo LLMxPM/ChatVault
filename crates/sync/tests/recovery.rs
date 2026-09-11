@@ -363,20 +363,3 @@ async fn publish_drains_multiple_segments() {
         501
     );
 }
-
-/// 升级前已有 backed_up 状态但缺少绑定，不能直接把旧库绑定到新建空远端。
-#[tokio::test]
-async fn legacy_backup_cannot_bind_to_empty_vault() {
-    let server = Server::new("D").await;
-    let mut db = Database::open_in_memory().unwrap();
-    add_source(&mut db, &event(1), true);
-    assert!(publish_pending_events(&server.client, &mut db, "v", "a")
-        .await
-        .is_err());
-    assert!(db.get_setting("remote_binding").unwrap().is_none());
-    server.seed_object();
-    publish_pending_events(&server.client, &mut db, "v", "a")
-        .await
-        .unwrap();
-    assert!(db.get_setting("remote_binding").unwrap().is_some());
-}

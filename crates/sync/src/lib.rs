@@ -5,7 +5,6 @@
 
 pub mod apply;
 pub mod archive;
-mod binding;
 pub mod publish;
 mod validation;
 

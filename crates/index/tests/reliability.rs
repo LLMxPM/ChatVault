@@ -1,4 +1,4 @@
-// ChatVault 索引回归测试：历史副本、旧库升级、身份、分页过滤与删除状态。
+// ChatVault 索引回归测试：历史副本、身份、分页过滤与删除状态。
 use chatvault_core::models::{DiscoveredFile, JournalEvent, JournalEventType};
 use chatvault_index::{Database, IngestResult, SearchFilter, SearchService};
 use chrono::Utc;
@@ -40,11 +40,39 @@ fn historical_versions_survive_source_changes() {
     contents.sort();
     assert_eq!(contents, vec![b"new version".to_vec(), b"old".to_vec()]);
     drop(db);
-    let mut reopened = Database::open(dir.path().join("index.db")).unwrap();
+    let reopened = Database::open(dir.path().join("index.db")).unwrap();
     assert!(reopened
         .upload_source(&tasks[0].task_id)
         .unwrap()
         .is_absolute());
+}
+
+/// 原文件仍存在时，缺失或损坏的受控副本也必须报错，不能重新读取原路径。
+#[test]
+fn upload_requires_intact_staged_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("file.txt");
+    std::fs::write(&path, b"original").unwrap();
+    let mut db = Database::open_in_memory().unwrap();
+    db.ingest_file(&discovered(&path), "a").unwrap();
+    let id = db.pending_uploads().unwrap()[0].task_id.clone();
+    let cached = db.upload_source(&id).unwrap();
+    std::fs::write(&cached, b"corrupted").unwrap();
+    assert!(matches!(
+        db.upload_source(&id),
+        Err(chatvault_core::error::ChatVaultError::HashMismatch { .. })
+    ));
+    std::fs::remove_file(&cached).unwrap();
+    assert!(matches!(
+        db.upload_source(&id),
+        Err(chatvault_core::error::ChatVaultError::FileNotFound { .. })
+    ));
+    assert!(!cached.exists());
+    db.connection()
+        .execute("UPDATE local_files SET cache_path=NULL", [])
+        .unwrap();
+    assert!(db.upload_source(&id).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"original");
 }
 
 /// 用户选择包含索引和暂存的父目录时，不会递归归档应用自身文件。
@@ -120,24 +148,6 @@ fn identity_is_unique_and_persisted() {
             .unwrap(),
         id
     );
-}
-
-/// 旧固定身份只迁移一次；来源 ID 不变，新事件使用唯一设备身份重新发布。
-#[test]
-fn legacy_identity_reissues_events_once() {
-    let mut db = Database::open_in_memory().unwrap();
-    db.set_setting("device_id", "win-pc-01").unwrap();
-    let mut old = event(1, "旧文件.pdf");
-    old.device_id = "win-pc-01".into();
-    old.seq = 1;
-    db.insert_journal_event_if_absent(&old).unwrap();
-    let id = db.ensure_device_identity().unwrap();
-    assert_ne!(id, "win-pc-01");
-    assert_eq!(db.ensure_device_identity().unwrap(), id);
-    let reissued = db.list_unpublished_journal_events(&id, 0, 10).unwrap();
-    assert_eq!(reissued.len(), 1);
-    assert_ne!(reissued[0].event_id, old.event_id);
-    assert_eq!(reissued[0].payload["record_id"], old.payload["record_id"]);
 }
 
 /// 已绑定远端只接受同一地址和 Vault，防止复用旧同步游标。
@@ -230,39 +240,6 @@ fn tombstone_survives_out_of_order_addition() {
             .unwrap()
             .is_empty());
     }
-}
-
-/// 将等价旧版结构迁移两次，原记录和待上传任务保留，旧来源可补建副本。
-#[test]
-fn legacy_schema_migration_preserves_tasks() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("file.txt");
-    std::fs::write(&file, b"legacy").unwrap();
-    let path = dir.path().join("index.db");
-    let mut db = Database::open(&path).unwrap();
-    db.ingest_file(&discovered(&file), "a").unwrap();
-    db.connection().execute_batch("UPDATE local_files SET cache_path=NULL; CREATE UNIQUE INDEX old_unique_path ON local_files(original_path); DROP TABLE record_tombstones; PRAGMA user_version=0;").unwrap();
-    drop(db);
-    let mut upgraded = Database::open(&path).unwrap();
-    assert!(matches!(
-        upgraded.ingest_file(&discovered(&file), "a").unwrap(),
-        IngestResult::Skipped { .. }
-    ));
-    assert_eq!(upgraded.get_stats().unwrap().total_records, 1);
-    let id = upgraded.pending_uploads().unwrap()[0].task_id.clone();
-    assert_eq!(
-        std::fs::read(upgraded.upload_source(&id).unwrap()).unwrap(),
-        b"legacy"
-    );
-    drop(upgraded);
-    assert_eq!(
-        Database::open(&path)
-            .unwrap()
-            .get_stats()
-            .unwrap()
-            .total_records,
-        1
-    );
 }
 
 /// 构造数据库层来源事件，数据全部来自测试常量。

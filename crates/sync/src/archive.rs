@@ -30,7 +30,7 @@ pub async fn archive_pending(
         },
     )
     .await?;
-    crate::binding::bind_checked(client, db, vault).await?;
+    db.bind_remote(client.storage_identity(), vault)?;
     let mut report = ArchiveReport::default();
     let mut processed = 0usize;
     // 本轮失败任务不再执行，避免慢速网络使重试时间在同一轮内到期。
