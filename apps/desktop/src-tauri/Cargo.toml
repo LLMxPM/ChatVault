@@ -1,0 +1,31 @@
+[package]
+name = "chatvault-desktop"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+chrono = { workspace = true }
+rusqlite = { workspace = true }
+uuid = { workspace = true }
+keyring = { workspace = true }
+tracing = { workspace = true }
+
+# ChatVault 核心库与适配器
+chatvault-core = { workspace = true }
+chatvault-index = { workspace = true }
+chatvault-metadata = { workspace = true }
+chatvault-scanner = { workspace = true }
+chatvault-webdav = { workspace = true }
+chatvault-sync = { workspace = true }
+adapter-wechat-windows = { workspace = true }
+adapter-generic-folder = { workspace = true }

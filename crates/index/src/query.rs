@@ -15,6 +15,8 @@ pub struct SearchFilter {
     pub keyword: Option<String>,
     /// 文件扩展名过滤 (例如 "pdf", "docx")
     pub extension: Option<String>,
+    /// 文件分类，在数据库分页前筛选。
+    pub category: Option<String>,
     /// 账号过滤 (例如微信号或 wxid)
     pub account_id: Option<String>,
     /// 时间范围起始
@@ -40,6 +42,8 @@ pub struct SearchResultItem {
     pub file_time: String,
     pub original_path: Option<String>,
     pub upload_status: Option<String>,
+    pub source: String,
+    pub discovered_at: String,
 }
 
 /// 检索服务
@@ -66,10 +70,16 @@ impl<'a> SearchService<'a> {
     ///   - 当关键词字符数 < 3（如单字、双字）时，使用 LIKE '%keyword%' 回退匹配
     pub fn search(&self, filter: &SearchFilter) -> Result<Vec<SearchResultItem>> {
         let conn = self.db.connection();
-        let limit = if filter.limit == 0 { 50 } else { filter.limit };
+        let limit = if filter.limit == 0 {
+            50
+        } else {
+            filter.limit.min(500)
+        };
         let offset = filter.offset;
 
-        let mut conditions: Vec<String> = Vec::new();
+        let mut conditions: Vec<String> = vec![
+            "NOT EXISTS(SELECT 1 FROM record_tombstones d WHERE d.record_id=r.record_id)".into(),
+        ];
         let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
         // 1. 关键词查询处理
@@ -83,12 +93,22 @@ impl<'a> SearchService<'a> {
                         "r.record_id IN (SELECT record_id FROM file_search_fts WHERE file_search_fts MATCH ?)"
                             .to_string(),
                     );
-                    params_vec.push(Box::new(format!("\"{}\"", trimmed)));
+                    params_vec.push(Box::new(format!("\"{}\"", trimmed.replace('"', "\"\""))));
                 } else {
                     // 短词或单字，回退使用 LIKE 匹配
-                    conditions.push("r.original_name LIKE ?".to_string());
-                    params_vec.push(Box::new(format!("%{}%", trimmed)));
+                    conditions.push("r.original_name LIKE ? ESCAPE '\\'".to_string());
+                    let literal = trimmed
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_");
+                    params_vec.push(Box::new(format!("%{}%", literal)));
                 }
+            }
+        }
+
+        if let Some(category) = &filter.category {
+            if let Some(condition) = crate::category::category_condition(category)? {
+                conditions.push(condition);
             }
         }
 
@@ -135,13 +155,15 @@ impl<'a> SearchService<'a> {
                 r.conversation_id,
                 r.file_time,
                 l.original_path,
-                t.status AS upload_status
+                t.status AS upload_status,
+                r.source,
+                r.discovered_at
             FROM file_records r
             JOIN file_objects o ON r.object_id = o.object_id
             LEFT JOIN local_files l ON r.record_id = l.record_id
             LEFT JOIN upload_tasks t ON r.record_id = t.record_id
             {}
-            ORDER BY r.file_time DESC
+            ORDER BY r.file_time DESC, r.record_id
             LIMIT ? OFFSET ?
             "#,
             where_clause
@@ -174,6 +196,8 @@ impl<'a> SearchService<'a> {
                     file_time: row.get(7)?,
                     original_path: row.get(8)?,
                     upload_status: row.get(9)?,
+                    source: row.get(10)?,
+                    discovered_at: row.get(11)?,
                 })
             })
             .map_err(|e| ChatVaultError::Database(format!("执行查询失败: {}", e)))?;
@@ -226,7 +250,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(res1.len(), 1);
-        assert_eq!(res1[0].original_name, "AI超级个体-打造不可替代的个人品牌.pdf");
+        assert_eq!(
+            res1[0].original_name,
+            "AI超级个体-打造不可替代的个人品牌.pdf"
+        );
 
         // 2. 双字 LIKE 回退测试
         let res2 = service

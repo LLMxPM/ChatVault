@@ -30,11 +30,14 @@ impl<'a> RemoteVerifier<'a> {
     /// 输出: `Result<()>`
     /// 关键约束:
     ///   - 必须全量回读整个流，若传输中断或哈希不匹配，返回明确错误
-    pub async fn verify_remote_hash(
-        &self,
-        remote_path: &str,
-        expected_hex: &str,
-    ) -> Result<()> {
+    pub async fn verify_remote_hash(&self, remote_path: &str, expected_hex: &str) -> Result<()> {
+        self.verify_remote_size(remote_path, expected_hex)
+            .await
+            .map(|_| ())
+    }
+
+    /// 完整验证哈希并返回实际读取大小，供同步层验证元数据长度。
+    pub async fn verify_remote_size(&self, remote_path: &str, expected_hex: &str) -> Result<u64> {
         let clean_expected = expected_hex.trim_start_matches("blake3:");
         let resp = self.client.get_stream(remote_path).await?;
         let mut stream = resp.bytes_stream();
@@ -58,7 +61,7 @@ impl<'a> RemoteVerifier<'a> {
                 total_bytes,
                 actual_hex
             );
-            Ok(())
+            Ok(total_bytes)
         } else {
             tracing::error!(
                 "远端哈希校验不匹配! 路径={}, 预期={}, 实际={}",

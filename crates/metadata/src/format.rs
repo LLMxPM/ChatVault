@@ -52,6 +52,57 @@ pub fn get_staging_path(vault_id: &str, device_id: &str, upload_id: &str) -> Str
     )
 }
 
+/// 获取设备注册文件路径
+pub fn get_device_path(vault_id: &str, device_id: &str) -> String {
+    format!("ChatVault/{}/devices/{}.json", vault_id, device_id)
+}
+
+/// 获取设备日志目录
+pub fn get_journal_dir(vault_id: &str, device_id: &str, epoch: u64) -> String {
+    format!("ChatVault/{}/journal/{}/{}", vault_id, device_id, epoch)
+}
+
+/// 获取不可变日志分片路径
+///
+/// 输出: `journal/<device>/<epoch>/<seq>-<segment_hash>.jsonl`
+pub fn get_journal_segment_path(
+    vault_id: &str,
+    device_id: &str,
+    epoch: u64,
+    seq: u64,
+    segment_hash: &str,
+) -> String {
+    format!(
+        "{}/{}-{}.jsonl",
+        get_journal_dir(vault_id, device_id, epoch),
+        seq,
+        segment_hash.trim_start_matches("blake3:")
+    )
+}
+
+/// 获取提交标记路径
+///
+/// 输出: `commits/<device>/<epoch>/<seq>.json`
+pub fn get_commit_path(vault_id: &str, device_id: &str, epoch: u64, seq: u64) -> String {
+    format!(
+        "ChatVault/{}/commits/{}/{}/{}.json",
+        vault_id, device_id, epoch, seq
+    )
+}
+
+/// 获取设备提交目录
+pub fn get_commit_dir(vault_id: &str, device_id: &str, epoch: u64) -> String {
+    format!(
+        "ChatVault/{}/commits/{}/{}",
+        vault_id, device_id, epoch
+    )
+}
+
+/// 获取设备列表目录
+pub fn get_devices_dir(vault_id: &str) -> String {
+    format!("ChatVault/{}/devices", vault_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,6 +122,18 @@ mod tests {
         assert_eq!(
             get_staging_path(vault, "dev1", "task99"),
             "ChatVault/test-vault/staging/dev1/task99"
+        );
+        assert_eq!(
+            get_device_path(vault, "dev1"),
+            "ChatVault/test-vault/devices/dev1.json"
+        );
+        assert_eq!(
+            get_journal_segment_path(vault, "dev1", 1, 3, "abc"),
+            "ChatVault/test-vault/journal/dev1/1/3-abc.jsonl"
+        );
+        assert_eq!(
+            get_commit_path(vault, "dev1", 1, 3),
+            "ChatVault/test-vault/commits/dev1/1/3.json"
         );
     }
 }

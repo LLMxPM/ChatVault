@@ -1,0 +1,26 @@
+[package]
+name = "chatvault-sync"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ChatVault 元数据日志发布、拉取、合并与恢复"
+
+[dependencies]
+chatvault-core.workspace = true
+chatvault-metadata.workspace = true
+chatvault-index.workspace = true
+chatvault-webdav.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+blake3.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+
+[dev-dependencies]
+rusqlite.workspace = true
+tempfile = "3"

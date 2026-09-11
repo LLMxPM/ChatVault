@@ -4,6 +4,9 @@
 
 pub mod format;
 pub mod hasher;
+pub mod staging;
+pub mod validation;
+pub use validation::{validate_hash, validate_id};
 
 pub use format::*;
 pub use hasher::*;

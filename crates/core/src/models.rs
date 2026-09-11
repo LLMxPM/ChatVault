@@ -151,3 +151,47 @@ pub struct DiscoveredFile {
     /// 推测或提取到的会话上下文（若无则为 None）
     pub conversation_hint: Option<String>,
 }
+
+/// 同步日志事件类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JournalEventType {
+    /// 新增文件来源记录（含对象与本机路径可选信息）
+    FileRecordAdded,
+    /// 删除文件来源记录（软删除 tombstone）
+    FileRecordDeleted,
+}
+
+/// 元数据日志事件
+///
+/// 每个设备在自己的 epoch 下维护连续 seq；事件不可变，重放幂等。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalEvent {
+    pub event_id: String,
+    pub device_id: String,
+    pub epoch: u64,
+    pub seq: u64,
+    pub logical_clock: u64,
+    pub schema_version: u32,
+    pub event_type: JournalEventType,
+    pub payload: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+/// 设备同步游标
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncCursor {
+    pub device_id: String,
+    pub epoch: u64,
+    pub last_contiguous_seq: u64,
+}
+
+/// 远端设备注册信息
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    pub device_id: String,
+    pub display_name: Option<String>,
+    pub epoch: u64,
+    pub last_seq: u64,
+    pub updated_at: DateTime<Utc>,
+}

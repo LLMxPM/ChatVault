@@ -68,18 +68,10 @@ impl WeChat4Parser {
                 None => continue,
             };
 
-            let modified_system = metadata
-                .modified()
-                .map_err(|e| ChatVaultError::Io(e))?;
+            let modified_system = metadata.modified().map_err(|e| ChatVaultError::Io(e))?;
             let modified_time: DateTime<Utc> = modified_system.into();
 
-            // 推断会话提示：从上级目录提取月份或会话特征，例如 2026-08
-            let parent_name = path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string());
-
+            // 月份目录不能证明会话身份；未验证来源保持未知。
             discovered.push(DiscoveredFile {
                 source_type: "wechat-windows-4".to_string(),
                 account_id: account_id.map(|s| s.to_string()),
@@ -87,7 +79,7 @@ impl WeChat4Parser {
                 file_name,
                 file_size: metadata.len(),
                 modified_time,
-                conversation_hint: parent_name,
+                conversation_hint: None,
             });
         }
 

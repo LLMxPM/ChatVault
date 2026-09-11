@@ -8,104 +8,15 @@ use adapter_wechat_windows::{WeChat4Detector, WeChat4Parser};
 use anyhow::{Context, Result};
 use chatvault_core::models::DiscoveredFile;
 use chatvault_index::{Database, IngestResult, SearchFilter, SearchService};
-use chatvault_metadata::format::get_object_path;
 use chatvault_scanner::check_file_stability_sync;
-use chatvault_webdav::{CapabilityDetector, RemoteVerifier, WebDavClient, WebDavConfig};
-use clap::{Parser, Subcommand};
+use chatvault_webdav::{CapabilityDetector, WebDavClient, WebDavConfig};
+use clap::Parser;
+mod args;
+mod sync_commands;
+use args::{Cli, Commands};
 use std::path::PathBuf;
 use std::time::Duration;
-
-#[derive(Parser)]
-#[command(name = "chatvault-cli", version = "0.1.0", about = "ChatVault 桌面归档检索验证工具")]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// 自动探测 Windows 微信 4.x (xwechat_files) 存储目录与账号列表
-    Detect,
-
-    /// 扫描微信 4.x 或指定文件夹并增量入库 SQLite
-    Scan {
-        /// 扫描目标: "wechat" 代表自动探测微信 4.x，或传入指定本地文件夹路径
-        #[arg(short, long, default_value = "wechat")]
-        target: String,
-
-        /// 本地 SQLite 数据库路径
-        #[arg(short, long, default_value = "chatvault.db")]
-        db: PathBuf,
-
-        /// 当前设备标识
-        #[arg(long, default_value = "windows-pc")]
-        device_id: String,
-    },
-
-    /// 在本地 SQLite 数据库中检索文件 (支持中文 FTS5 全文搜索与过滤)
-    Search {
-        /// 检索关键词 (中文、英文、数字均可)
-        keyword: Option<String>,
-
-        /// 按扩展名筛选 (如 pdf, docx, mp4)
-        #[arg(short, long)]
-        ext: Option<String>,
-
-        /// 按账号筛选
-        #[arg(short, long)]
-        account: Option<String>,
-
-        /// 返回数量限制
-        #[arg(short, long, default_value = "20")]
-        limit: usize,
-
-        /// 数据库文件路径
-        #[arg(short, long, default_value = "chatvault.db")]
-        db: PathBuf,
-    },
-
-    /// 测试 WebDAV 服务连通性与 RFC4918 核心能力
-    WebdavTest {
-        /// WebDAV 服务根地址，例如 https://dav.example.com
-        #[arg(long)]
-        url: String,
-
-        /// 认证用户名
-        #[arg(long)]
-        user: Option<String>,
-
-        /// 认证密码
-        #[arg(long)]
-        pass: Option<String>,
-    },
-
-    /// 执行端到端归档：从 SQLite 取待归档任务并上传到 WebDAV，执行远端回读哈希校验
-    Archive {
-        /// WebDAV 服务地址
-        #[arg(long)]
-        url: String,
-
-        /// 认证用户名
-        #[arg(long)]
-        user: Option<String>,
-
-        /// 认证密码
-        #[arg(long)]
-        pass: Option<String>,
-
-        /// 目标 Vault 标识
-        #[arg(long, default_value = "default-vault")]
-        vault_id: String,
-
-        /// 本地 SQLite 数据库路径
-        #[arg(short, long, default_value = "chatvault.db")]
-        db: PathBuf,
-
-        /// 最大上传任务数量 (0 表示全部处理)
-        #[arg(long, default_value = "10")]
-        limit: usize,
-    },
-}
+use sync_commands::*;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -120,10 +31,18 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Detect => handle_detect()?,
-        Commands::Scan { target, db, device_id } => handle_scan(&target, &db, &device_id)?,
-        Commands::Search { keyword, ext, account, limit, db } => {
-            handle_search(keyword, ext, account, limit, &db)?
-        }
+        Commands::Scan {
+            target,
+            db,
+            device_id,
+        } => handle_scan(&target, &db, &device_id)?,
+        Commands::Search {
+            keyword,
+            ext,
+            account,
+            limit,
+            db,
+        } => handle_search(keyword, ext, account, limit, &db)?,
         Commands::WebdavTest { url, user, pass } => handle_webdav_test(&url, user, pass).await?,
         Commands::Archive {
             url,
@@ -133,6 +52,31 @@ async fn main() -> Result<()> {
             db,
             limit,
         } => handle_archive(&url, user, pass, &vault_id, &db, limit).await?,
+        Commands::ScheduledRun { db } => handle_scheduled_run(&db).await?,
+        Commands::SyncPublish {
+            url,
+            user,
+            pass,
+            vault_id,
+            db,
+            device_id,
+        } => handle_sync_publish(&url, user, pass, &vault_id, &db, &device_id).await?,
+        Commands::SyncPull {
+            url,
+            user,
+            pass,
+            vault_id,
+            db,
+            device_id,
+        } => handle_sync_pull(&url, user, pass, &vault_id, &db, &device_id).await?,
+        Commands::Restore {
+            url,
+            user,
+            pass,
+            vault_id,
+            db,
+            device_id,
+        } => handle_restore(&url, user, pass, &vault_id, &db, &device_id).await?,
     }
 
     Ok(())
@@ -210,6 +154,8 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str) -> Result<()> {
     println!("[*] 正在打开/初始化本地数据库: {}", db_path.display());
     let mut db = Database::open(db_path)?;
 
+    let device_id = resolve_device(&mut db, device_id)?;
+
     let mut indexed_count = 0;
     let mut skipped_count = 0;
     let mut new_object_count = 0;
@@ -224,7 +170,7 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str) -> Result<()> {
             continue;
         }
 
-        match db.ingest_file(file, device_id) {
+        match db.ingest_file(file, &device_id) {
             Ok(IngestResult::Indexed { is_new_object, .. }) => {
                 indexed_count += 1;
                 if is_new_object {
@@ -274,6 +220,7 @@ fn handle_search(
     let filter = SearchFilter {
         keyword: keyword.clone(),
         extension: ext.clone(),
+        category: None,
         account_id: account.clone(),
         start_time: None,
         end_time: None,
@@ -345,10 +292,38 @@ async fn handle_webdav_test(url: &str, user: Option<String>, pass: Option<String
     let report = detector.detect().await?;
 
     println!("\n=== WebDAV 能力探测报告 ===");
-    println!("  - 网络连通性:     {}", if report.reachable { "正常" } else { "不可达" });
-    println!("  - 账号认证:       {}", if report.authenticated { "成功" } else { "失败" });
-    println!("  - MKCOL 创建目录: {}", if report.support_mkcol { "支持" } else { "不支持" });
-    println!("  - MOVE 暂存移动:  {}", if report.support_move { "支持" } else { "不支持" });
+    println!(
+        "  - 网络连通性:     {}",
+        if report.reachable {
+            "正常"
+        } else {
+            "不可达"
+        }
+    );
+    println!(
+        "  - 账号认证:       {}",
+        if report.authenticated {
+            "成功"
+        } else {
+            "失败"
+        }
+    );
+    println!(
+        "  - MKCOL 创建目录: {}",
+        if report.support_mkcol {
+            "支持"
+        } else {
+            "不支持"
+        }
+    );
+    println!(
+        "  - MOVE 暂存移动:  {}",
+        if report.support_move {
+            "支持"
+        } else {
+            "不支持"
+        }
+    );
     println!("  - 诊断说明:       {}", report.message);
 
     Ok(())
@@ -363,113 +338,37 @@ async fn handle_archive(
     db_path: &PathBuf,
     limit: usize,
 ) -> Result<()> {
-    println!("=== 开始执行 WebDAV 归档上传与回读校验 ===");
-    if !db_path.exists() {
-        println!("数据库文件不存在: {}", db_path.display());
-        return Ok(());
-    }
-
     let mut db = Database::open(db_path)?;
-    // 查询待上传的任务
-    let limit_clause = if limit > 0 {
-        format!("LIMIT {}", limit)
-    } else {
-        String::new()
-    };
-
-    let sql = format!(
-        r#"
-        SELECT 
-            t.task_id,
-            t.record_id,
-            t.object_id,
-            o.hash,
-            l.original_path
-        FROM upload_tasks t
-        JOIN file_objects o ON t.object_id = o.object_id
-        JOIN local_files l ON t.record_id = l.record_id
-        WHERE t.status = 'queued'
-        {}
-        "#,
-        limit_clause
-    );
-
-    #[allow(dead_code)]
-    struct TaskToRun {
-        task_id: String,
-        object_id: String,
-        hash: String,
-        original_path: String,
-    }
-
-    let tasks: Vec<TaskToRun> = {
-        let conn = db.connection();
-        let mut stmt = conn.prepare(&sql)?;
-        let task_rows = stmt.query_map([], |r| {
-            Ok(TaskToRun {
-                task_id: r.get(0)?,
-                object_id: r.get(2)?,
-                hash: r.get(3)?,
-                original_path: r.get(4)?,
-            })
-        })?;
-
-        let mut list = Vec::new();
-        for t in task_rows {
-            list.push(t?);
-        }
-        list
-    };
-
-    if tasks.is_empty() {
-        println!("当前没有等待上传的归档任务");
-        return Ok(());
-    }
-
-    println!("[+] 提取到 {} 个待归档任务，开始处理...", tasks.len());
-
-    let config = WebDavConfig {
-        base_url: url.to_string(),
+    let device_id = db.ensure_device_identity()?;
+    let client = WebDavClient::new(WebDavConfig {
+        base_url: url.into(),
         username: user,
         password: pass,
-    };
-
-    let client = WebDavClient::new(config)?;
-    let verifier = RemoteVerifier::new(&client);
-
-    for (idx, task) in tasks.iter().enumerate() {
-        let remote_obj_path = get_object_path(vault_id, &task.hash);
-        println!(
-            "\n[{}/{}] 正在上传: {} -> {}",
-            idx + 1,
-            tasks.len(),
-            task.original_path,
-            remote_obj_path
-        );
-
-        // 1. 检查远端是否已存在该对象（跨设备/跨文件去重）
-        let already_exists = client.exists(&remote_obj_path).await.unwrap_or(false);
-        if already_exists {
-            println!("    [*] 远端对象已存在，直接复用");
-        } else {
-            // 2. 上传文件到远端
-            client.upload_file(&task.original_path, &remote_obj_path).await?;
-            println!("    [+] 上传完成，正在执行远端流式回读与 BLAKE3 校验...");
-
-            // 3. 远端流式回读复算哈希校验
-            verifier.verify_remote_hash(&remote_obj_path, &task.hash).await?;
-            println!("    [+] 远端回读哈希完全匹配，数据确认完整！");
-        }
-
-        // 4. 更新数据库状态为 backed_up
-        let now = chrono::Utc::now().to_rfc3339();
-        let conn_mut = db.connection_mut();
-        conn_mut.execute(
-            "UPDATE upload_tasks SET status = 'backed_up', updated_at = ?1 WHERE task_id = ?2",
-            rusqlite::params![now, task.task_id],
-        )?;
+    })?;
+    let result =
+        chatvault_sync::archive::archive_pending(&client, &mut db, vault_id, &device_id, limit)
+            .await?;
+    println!(
+        "归档完成：新上传 {}，已校验 {}，失败 {}",
+        result.uploaded, result.verified, result.failed
+    );
+    if result.failed > 0 {
+        anyhow::bail!("存在归档失败任务，已保存失败原因并等待重试");
     }
-
-    println!("\n[+] 所有指定的归档任务均已顺利完成并核验！");
     Ok(())
+}
+
+/// 首次允许指定设备标识，后续使用持久化身份，避免扫描和同步命令各用不同默认值。
+fn resolve_device(db: &mut Database, requested: &str) -> Result<String> {
+    if !requested.is_empty() {
+        chatvault_metadata::validate_id(requested)?;
+        if let Some(current) = db.get_setting("device_id")? {
+            if current != requested {
+                anyhow::bail!("设备身份已经绑定，不能通过命令参数更改");
+            }
+        } else {
+            db.set_setting("device_id", requested)?;
+        }
+    }
+    Ok(db.ensure_device_identity()?)
 }

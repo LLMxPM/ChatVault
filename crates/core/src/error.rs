@@ -40,6 +40,10 @@ pub enum ChatVaultError {
     #[error("微信目录解析失败: {0}")]
     WeChatParse(String),
 
+    /// 扫描器操作错误
+    #[error("扫描错误: {0}")]
+    Scan(String),
+
     /// 通用未知错误
     #[error("未知内部错误: {0}")]
     Internal(String),

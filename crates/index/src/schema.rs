@@ -81,11 +81,54 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             updated_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON upload_tasks(status);
+
+        -- 6. 应用设置键值表（Vault/设备/WebDAV/定时/采集目录）
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        -- 7. 本机已生成的元数据日志事件
+        CREATE TABLE IF NOT EXISTS journal_events (
+            event_id TEXT PRIMARY KEY,
+            device_id TEXT NOT NULL,
+            epoch INTEGER NOT NULL,
+            seq INTEGER NOT NULL,
+            logical_clock INTEGER NOT NULL,
+            schema_version INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(device_id, epoch, seq)
+        );
+
+        -- 8. 已应用的远端事件（幂等重放）
+        CREATE TABLE IF NOT EXISTS applied_events (
+            event_id TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );
+
+        -- 9. 各设备同步游标
+        CREATE TABLE IF NOT EXISTS sync_cursors (
+            device_id TEXT PRIMARY KEY,
+            epoch INTEGER NOT NULL,
+            last_contiguous_seq INTEGER NOT NULL
+        );
+
+        -- 10. 远端已知设备注册表
+        CREATE TABLE IF NOT EXISTS known_devices (
+            device_id TEXT PRIMARY KEY,
+            display_name TEXT,
+            epoch INTEGER NOT NULL,
+            last_seq INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         "#,
     )
     .map_err(|e| ChatVaultError::Database(format!("执行表结构初始化失败: {}", e)))?;
 
-    Ok(())
+    crate::migrations::migrate(conn)
 }
 
 #[cfg(test)]
@@ -99,7 +142,9 @@ mod tests {
 
         // 验证表是否存在
         let mut stmt = conn
-            .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='file_objects'")
+            .prepare(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='file_objects'",
+            )
             .unwrap();
         let count: i64 = stmt.query_row([], |r| r.get(0)).unwrap();
         assert_eq!(count, 1);

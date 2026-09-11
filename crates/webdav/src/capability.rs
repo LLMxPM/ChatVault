@@ -41,50 +41,58 @@ impl<'a> CapabilityDetector<'a> {
     /// 职责: 依次测试 HEAD、MKCOL、PUT 测试文件、MOVE 重命名与清理
     /// 输出: `Result<CapabilityReport>`
     pub async fn detect(&self) -> Result<CapabilityReport> {
-        let test_root = "ChatVault_Capability_Probe";
-
-        // 1. 测试基础连接与 MKCOL
-        let mkcol_res = self.client.mkcol(test_root).await;
-        if let Err(e) = &mkcol_res {
+        let test_root = format!(
+            "ChatVault_Capability_Probe_{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        let src = format!("{test_root}/source");
+        let dest = format!("{test_root}/destination");
+        if let Err(e) = self.client.mkcol(&test_root).await {
             return Ok(CapabilityReport {
-                reachable: true,
+                reachable: false,
                 authenticated: false,
                 support_mkcol: false,
                 support_move: false,
-                message: format!("MKCOL 测试失败 (可能是凭据错误或目录无权创建): {}", e),
+                message: format!("连接或 MKCOL 检测失败: {e}"),
             });
         }
-
-        // 2. 测试写入临时文件
-        let test_src = format!("{}/probe_src.txt", test_root);
-        let test_dest = format!("{}/probe_dest.txt", test_root);
-        let payload = b"ChatVault Probe Payload".to_vec();
-
-        if let Err(e) = self.client.upload_bytes(payload, &test_src).await {
-            return Ok(CapabilityReport {
-                reachable: true,
-                authenticated: true,
-                support_mkcol: true,
-                support_move: false,
-                message: format!("PUT 写入测试文件失败: {}", e),
-            });
-        }
-
-        // 3. 测试 MOVE 动词
-        let move_ok = match self.client.move_resource(&test_src, &test_dest, true).await {
-            Ok(_) => true,
-            Err(e) => {
-                tracing::warn!("MOVE 测试失败: {}", e);
-                false
+        let probe = async {
+            let payload = b"ChatVault Probe Payload";
+            self.client.upload_bytes(payload.to_vec(), &src).await?;
+            if !self.client.exists(&src).await? {
+                return Err(chatvault_core::error::ChatVaultError::WebDav(
+                    "上传后 HEAD 未找到对象".into(),
+                ));
             }
-        };
-
+            let hash = blake3::hash(payload).to_hex().to_string();
+            crate::RemoteVerifier::new(self.client)
+                .verify_remote_hash(&src, &hash)
+                .await?;
+            if !self.client.list_dir(&test_root).await?.contains(&src) {
+                return Err(chatvault_core::error::ChatVaultError::WebDav(
+                    "PROPFIND 未返回测试文件".into(),
+                ));
+            }
+            self.client.move_resource(&src, &dest, false).await?;
+            crate::RemoteVerifier::new(self.client)
+                .verify_remote_hash(&dest, &hash)
+                .await
+        }
+        .await;
+        // 只清理本次随机探测目录，不触及用户 Vault。
+        let _ = self.client.delete_resource(&src).await;
+        let _ = self.client.delete_resource(&dest).await;
+        let _ = self.client.delete_resource(&test_root).await;
+        let passed = probe.is_ok();
         Ok(CapabilityReport {
             reachable: true,
-            authenticated: true,
+            authenticated: passed,
             support_mkcol: true,
-            support_move: move_ok,
-            message: "WebDAV 基础服务检测全部通过".to_string(),
+            support_move: passed,
+            message: match probe {
+                Ok(()) => "WebDAV 创建、上传、列举、移动和完整回读检测通过".into(),
+                Err(e) => format!("WebDAV 能力检测未通过: {e}"),
+            },
         })
     }
 }

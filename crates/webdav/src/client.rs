@@ -3,6 +3,7 @@
 //! 基于 reqwest 实现 RFC4918 核心动词（MKCOL, PUT, GET, HEAD, MOVE, DELETE），
 //! 支持 Basic 认证、HTTPS 证书校验与目录层级递归创建。
 
+use crate::propfind::parse_propfind_hrefs;
 use chatvault_core::error::{ChatVaultError, Result};
 use reqwest::{Client, Method, Response, StatusCode};
 use std::path::Path;
@@ -22,8 +23,8 @@ pub struct WebDavConfig {
 
 /// WebDAV 客户端
 pub struct WebDavClient {
-    config: WebDavConfig,
-    client: Client,
+    pub(crate) config: WebDavConfig,
+    pub(crate) client: Client,
 }
 
 impl WebDavClient {
@@ -32,9 +33,25 @@ impl WebDavClient {
     /// 职责: 构建 HTTP 客户端，配置超时与连接池
     /// 输入: `config`: 连接配置
     /// 输出: `Result<Self>`
-    pub fn new(config: WebDavConfig) -> Result<Self> {
+    pub fn new(mut config: WebDavConfig) -> Result<Self> {
+        let base = reqwest::Url::parse(config.base_url.trim())
+            .map_err(|e| ChatVaultError::WebDav(format!("无效服务器地址: {e}")))?;
+        let loopback = matches!(base.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+        if (base.scheme() != "https" && !(base.scheme() == "http" && loopback))
+            || !base.username().is_empty()
+            || base.password().is_some()
+            || base.query().is_some()
+            || base.fragment().is_some()
+        {
+            return Err(ChatVaultError::WebDav(
+                "远端必须使用 HTTPS，地址不能包含凭据、查询或片段；HTTP 仅限本机测试".into(),
+            ));
+        }
+        config.base_url = base.to_string().trim_end_matches('/').to_string();
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(3600))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| ChatVaultError::WebDav(format!("创建 HTTP 客户端失败: {}", e)))?;
 
@@ -46,14 +63,18 @@ impl WebDavClient {
     /// 职责: 将相对路径安全拼接到 base_url 之后
     /// 输入: `relative_path`: 例如 `ChatVault/vault-1/config/vault.json`
     /// 输出: 完整 URL 字符串
-    pub fn get_full_url(&self, relative_path: &str) -> String {
+    pub fn get_full_url(&self, relative_path: &str) -> Result<String> {
         let base = self.config.base_url.trim_end_matches('/');
         let rel = relative_path.trim_start_matches('/');
-        format!("{}/{}", base, rel)
+        if rel.contains(['\\', '?', '#', '%', ':']) || rel.split('/').any(|p| p == "." || p == "..")
+        {
+            return Err(ChatVaultError::WebDav("远端相对路径不合法".into()));
+        }
+        Ok(format!("{}/{}", base, rel))
     }
 
     /// 发起带认证的 HTTP 请求辅助方法
-    fn build_request(&self, method: Method, full_url: &str) -> reqwest::RequestBuilder {
+    pub(crate) fn build_request(&self, method: Method, full_url: &str) -> reqwest::RequestBuilder {
         let mut req = self.client.request(method, full_url);
         if let (Some(u), Some(p)) = (&self.config.username, &self.config.password) {
             req = req.basic_auth(u, Some(p));
@@ -67,7 +88,7 @@ impl WebDavClient {
     /// 输入: `relative_path`: 远端相对路径
     /// 输出: 存在返回 Ok(true)，不存在（404）返回 Ok(false)，其它返回 Err
     pub async fn exists(&self, relative_path: &str) -> Result<bool> {
-        let url = self.get_full_url(relative_path);
+        let url = self.get_full_url(relative_path)?;
         let resp = self
             .build_request(Method::HEAD, &url)
             .send()
@@ -92,7 +113,7 @@ impl WebDavClient {
     /// 输入: `relative_path`: 目录相对路径
     /// 输出: 成功或已存在返回 Ok(())，失败返回 Err
     pub async fn mkcol(&self, relative_path: &str) -> Result<()> {
-        let url = self.get_full_url(relative_path);
+        let url = self.get_full_url(relative_path)?;
         let resp = self
             .build_request(Method::from_bytes(b"MKCOL").unwrap(), &url)
             .send()
@@ -174,7 +195,7 @@ impl WebDavClient {
         let stream = ReaderStream::new(file);
         let body = reqwest::Body::wrap_stream(stream);
 
-        let url = self.get_full_url(remote_path);
+        let url = self.get_full_url(remote_path)?;
         let resp = self
             .build_request(Method::PUT, &url)
             .header("Content-Length", file_len.to_string())
@@ -184,9 +205,7 @@ impl WebDavClient {
             .map_err(|e| ChatVaultError::WebDav(format!("PUT 上传失败: {}", e)))?;
 
         let status = resp.status();
-        if status == StatusCode::CREATED
-            || status == StatusCode::NO_CONTENT
-            || status.is_success()
+        if status == StatusCode::CREATED || status == StatusCode::NO_CONTENT || status.is_success()
         {
             Ok(())
         } else {
@@ -212,7 +231,7 @@ impl WebDavClient {
             }
         }
 
-        let url = self.get_full_url(remote_path);
+        let url = self.get_full_url(remote_path)?;
         let resp = self
             .build_request(Method::PUT, &url)
             .body(bytes)
@@ -253,8 +272,8 @@ impl WebDavClient {
             }
         }
 
-        let src_url = self.get_full_url(src_rel_path);
-        let dest_url = self.get_full_url(dest_rel_path);
+        let src_url = self.get_full_url(src_rel_path)?;
+        let dest_url = self.get_full_url(dest_rel_path)?;
 
         let mut req = self
             .build_request(Method::from_bytes(b"MOVE").unwrap(), &src_url)
@@ -272,9 +291,7 @@ impl WebDavClient {
             .map_err(|e| ChatVaultError::WebDav(format!("MOVE 操作失败: {}", e)))?;
 
         let status = resp.status();
-        if status == StatusCode::CREATED
-            || status == StatusCode::NO_CONTENT
-            || status.is_success()
+        if status == StatusCode::CREATED || status == StatusCode::NO_CONTENT || status.is_success()
         {
             Ok(())
         } else {
@@ -291,7 +308,7 @@ impl WebDavClient {
     /// 输入: `relative_path`: 远端相对路径
     /// 输出: `Result<Response>`
     pub async fn get_stream(&self, relative_path: &str) -> Result<Response> {
-        let url = self.get_full_url(relative_path);
+        let url = self.get_full_url(relative_path)?;
         let resp = self
             .build_request(Method::GET, &url)
             .send()
@@ -307,5 +324,70 @@ impl WebDavClient {
         }
 
         Ok(resp)
+    }
+
+    /// DELETE 删除远端资源
+    ///
+    /// 职责: 发送 DELETE 动词清理远端资源（用于异常清理或清理暂存）
+    /// 输入: `relative_path`: 远端相对路径
+    /// 输出: `Result<()>`
+    pub async fn delete_resource(&self, relative_path: &str) -> Result<()> {
+        let url = self.get_full_url(relative_path)?;
+        let resp = self
+            .build_request(Method::DELETE, &url)
+            .send()
+            .await
+            .map_err(|e| ChatVaultError::WebDav(format!("DELETE 发起失败: {}", e)))?;
+
+        let status = resp.status();
+        if status.is_success()
+            || status == StatusCode::NO_CONTENT
+            || status == StatusCode::NOT_FOUND
+        {
+            Ok(())
+        } else {
+            Err(ChatVaultError::WebDav(format!(
+                "DELETE 删除 {} 失败: 状态码 {}",
+                relative_path, status
+            )))
+        }
+    }
+
+    /// PROPFIND Depth=1 列出集合下直接子资源的相对路径
+    ///
+    /// 职责: 发现设备注册、commit 等目录内容
+    /// 输入: `relative_path`: 集合相对路径
+    /// 输出: 子资源相对路径列表（不含目录自身）
+    pub async fn list_dir(&self, relative_path: &str) -> Result<Vec<String>> {
+        let url = self.get_full_url(relative_path)?;
+        let body = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/><D:displayname/></D:prop></D:propfind>"#;
+
+        let resp = self
+            .build_request(Method::from_bytes(b"PROPFIND").unwrap(), &url)
+            .header("Depth", "1")
+            .header("Content-Type", "application/xml")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| ChatVaultError::WebDav(format!("PROPFIND 发送失败: {}", e)))?;
+
+        let status = resp.status();
+        if status == StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        if !(status.is_success() || status.as_u16() == 207) {
+            return Err(ChatVaultError::WebDav(format!(
+                "PROPFIND {} 失败: 状态码 {}",
+                relative_path, status
+            )));
+        }
+
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ChatVaultError::WebDav(format!("读取 PROPFIND 响应失败: {}", e)))?;
+
+        parse_propfind_hrefs(&text, relative_path)
     }
 }

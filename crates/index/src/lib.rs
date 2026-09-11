@@ -6,6 +6,18 @@ pub mod db;
 pub mod query;
 pub mod schema;
 
-pub use db::{Database, DatabaseStats, IngestResult};
+pub use db::{Database, DatabaseStats, IngestResult, UploadTaskRow};
 pub use query::{SearchFilter, SearchResultItem, SearchService};
 pub use schema::initialize_schema;
+
+mod atomic;
+pub mod category;
+mod events;
+mod identity;
+mod ingest;
+mod journal;
+mod migrations;
+mod settings;
+mod task_status;
+mod tasks;
+mod upload_queue;

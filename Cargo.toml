@@ -6,9 +6,11 @@ members = [
     "crates/scanner",
     "crates/index",
     "crates/webdav",
+    "crates/sync",
     "crates/cli",
     "adapters/wechat-windows",
     "adapters/generic-folder",
+    "apps/desktop/src-tauri",
 ]
 
 [workspace.package]
@@ -23,6 +25,7 @@ chatvault-metadata = { path = "crates/metadata" }
 chatvault-scanner = { path = "crates/scanner" }
 chatvault-index = { path = "crates/index" }
 chatvault-webdav = { path = "crates/webdav" }
+chatvault-sync = { path = "crates/sync" }
 adapter-wechat-windows = { path = "adapters/wechat-windows" }
 adapter-generic-folder = { path = "adapters/generic-folder" }
 
@@ -47,10 +50,12 @@ tokio-util = { version = "0.7", features = ["io"] }
 reqwest = { version = "0.12", features = ["stream"] }
 futures-util = "0.3"
 
-# 本地数据库 (SQLite + FTS5 预编译加速)
+# 本地数据库 (SQLite + FTS5 全文索引)
 rusqlite = { version = "0.31" }
 
 # CLI 解析
 clap = { version = "4.5", features = ["derive"] }
 walkdir = "2.5"
 dirs = "5.0"
+keyring = "2.1"
+
