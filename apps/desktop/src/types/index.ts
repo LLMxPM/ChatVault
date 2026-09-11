@@ -110,6 +110,9 @@ export interface AppSettingsDto {
   deviceId: string;
   webdavUrl: string;
   webdavUsername: string;
+  copyThresholdMib: number;
+  cacheRetentionDays: number;
+  cacheMaxMib: number;
   scanIntervalMinutes: number;
   scheduleEnabled: boolean;
   collectDirs: string[];

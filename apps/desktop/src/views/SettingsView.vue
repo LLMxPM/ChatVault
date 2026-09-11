@@ -93,6 +93,8 @@
       </div>
     </div>
 
+    <CacheSettings v-model="form" />
+
     <div class="flex items-center space-x-3 max-w-2xl">
       <button
         class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-colors"
@@ -110,6 +112,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import CacheSettings from "../components/CacheSettings.vue";
 import { getAppSettings, setAppSettings, getScheduleStatus } from "../api/tauri";
 import type { AppSettingsDto } from "../types";
 
@@ -118,6 +121,9 @@ const form = ref<AppSettingsDto>({
   deviceId: "",
   webdavUrl: "",
   webdavUsername: "",
+  copyThresholdMib: 100,
+  cacheRetentionDays: 7,
+  cacheMaxMib: 1024,
   scanIntervalMinutes: 30,
   scheduleEnabled: false,
   collectDirs: [],
@@ -148,10 +154,16 @@ onMounted(async () => {
   }
 });
 
+/** 校验缓存配置并保存所有本机设置。 */
 async function save() {
   saving.value = true;
   message.value = "";
   try {
+    for (const value of [form.value.copyThresholdMib, form.value.cacheRetentionDays, form.value.cacheMaxMib]) {
+      if (!Number.isInteger(value) || value < 0 || value > 4294967295) {
+        throw new Error("缓存设置必须是 0 到 4294967295 之间的整数");
+      }
+    }
     form.value.collectDirs = dirsFromText.value;
     await setAppSettings(form.value);
     scheduleRegistered.value = await getScheduleStatus();

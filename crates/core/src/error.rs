@@ -25,16 +25,11 @@ pub enum ChatVaultError {
 
     /// 哈希校验不匹配
     #[error("文件哈希校验失败: 预期 {expected}, 实际 {actual}")]
-    HashMismatch {
-        expected: String,
-        actual: String,
-    },
+    HashMismatch { expected: String, actual: String },
 
     /// 文件不可用或已被移除
     #[error("文件未找到或不可读: {path}")]
-    FileNotFound {
-        path: String,
-    },
+    FileNotFound { path: String },
 
     /// 微信目录解析失败
     #[error("微信目录解析失败: {0}")]

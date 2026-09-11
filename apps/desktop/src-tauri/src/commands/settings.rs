@@ -1,5 +1,6 @@
 // ChatVault 桌面命令：settings 职责实现与前端错误映射。
 use super::*;
+use chatvault_index::cache_policy::{CACHE_MAX_MIB, CACHE_RETENTION_DAYS, COPY_THRESHOLD_MIB};
 
 /// 应用设置 DTO
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,6 +12,9 @@ pub struct AppSettingsDto {
     pub webdav_username: String,
     pub scan_interval_minutes: u32,
     pub schedule_enabled: bool,
+    pub copy_threshold_mib: u32,
+    pub cache_retention_days: u32,
+    pub cache_max_mib: u32,
     pub collect_dirs: Vec<String>,
 }
 
@@ -27,7 +31,11 @@ pub async fn get_app_settings(
     let collect_dirs_raw = get(setting_keys::COLLECT_DIRS).unwrap_or_else(|| "[]".to_string());
     let collect_dirs: Vec<String> = serde_json::from_str(&collect_dirs_raw).unwrap_or_default();
 
+    let policy = db.cache_policy().map_err(|e| e.to_string())?;
     Ok(AppSettingsDto {
+        copy_threshold_mib: policy.copy_threshold_mib,
+        cache_retention_days: policy.cache_retention_days,
+        cache_max_mib: policy.cache_max_mib,
         vault_id,
         device_id,
         webdav_url: get(setting_keys::WEBDAV_URL).unwrap_or_default(),
@@ -106,6 +114,12 @@ pub async fn set_app_settings(
             },
         )?;
 
+        db.set_setting(COPY_THRESHOLD_MIB, &settings.copy_threshold_mib.to_string())?;
+        db.set_setting(
+            CACHE_RETENTION_DAYS,
+            &settings.cache_retention_days.to_string(),
+        )?;
+        db.set_setting(CACHE_MAX_MIB, &settings.cache_max_mib.to_string())?;
         let dirs_json = serde_json::to_string(&settings.collect_dirs)?;
         db.set_setting(setting_keys::COLLECT_DIRS, &dirs_json)?;
 
@@ -113,6 +127,8 @@ pub async fn set_app_settings(
     })
     .map_err(|e| e.to_string())?;
 
+    db.reclaim_cache()
+        .map_err(|e| format!("设置已保存，但缓存回收失败：{e}"))?;
     Ok(())
 }
 

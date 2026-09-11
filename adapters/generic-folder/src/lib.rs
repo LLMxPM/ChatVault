@@ -50,9 +50,7 @@ impl GenericFolderParser {
                 None => continue,
             };
 
-            let modified_system = metadata
-                .modified()
-                .map_err(|e| ChatVaultError::Io(e))?;
+            let modified_system = metadata.modified().map_err(|e| ChatVaultError::Io(e))?;
             let modified_time: DateTime<Utc> = modified_system.into();
 
             let parent_name = path

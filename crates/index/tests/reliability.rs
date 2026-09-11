@@ -71,7 +71,10 @@ fn upload_requires_intact_staged_copy() {
     db.connection()
         .execute("UPDATE local_files SET cache_path=NULL", [])
         .unwrap();
-    assert!(db.upload_source(&id).is_err());
+    assert_eq!(
+        std::fs::read(db.upload_source(&id).unwrap()).unwrap(),
+        b"original"
+    );
     assert_eq!(std::fs::read(&path).unwrap(), b"original");
 }
 

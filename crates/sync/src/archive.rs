@@ -19,6 +19,7 @@ pub async fn archive_pending(
     device: &str,
     limit: usize,
 ) -> Result<ArchiveReport> {
+    db.reclaim_cache()?;
     db.check_remote_binding(client.storage_identity(), vault)?;
     chatvault_webdav::ensure_vault_config(
         client,

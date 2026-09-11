@@ -92,6 +92,7 @@ impl<'a> JournalPublisher<'a> {
             Ok(ready)
         })?;
         if events.is_empty() {
+            db.reclaim_cache()?;
             return Ok(last_pushed);
         }
         crate::validation::verify_references(self.client, &self.vault_id, &events).await?;
@@ -138,6 +139,7 @@ impl<'a> JournalPublisher<'a> {
             Ok(())
         })?;
         self.register_device(db, last_seq).await?;
+        db.reclaim_cache()?;
         Ok(last_seq)
     }
 

@@ -11,6 +11,8 @@ pub use query::{SearchFilter, SearchResultItem, SearchService};
 pub use schema::initialize_schema;
 
 mod atomic;
+mod cache_gc;
+pub mod cache_policy;
 pub mod category;
 mod events;
 mod identity;

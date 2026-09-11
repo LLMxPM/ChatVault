@@ -46,10 +46,7 @@ pub fn get_config_path(vault_id: &str) -> String {
 ///   - `upload_id`: 本次上传任务唯一标识
 /// 输出: 例如 `ChatVault/<vault_id>/staging/<device_id>/<upload_id>`
 pub fn get_staging_path(vault_id: &str, device_id: &str, upload_id: &str) -> String {
-    format!(
-        "ChatVault/{}/staging/{}/{}",
-        vault_id, device_id, upload_id
-    )
+    format!("ChatVault/{}/staging/{}/{}", vault_id, device_id, upload_id)
 }
 
 /// 获取设备注册文件路径
@@ -92,10 +89,7 @@ pub fn get_commit_path(vault_id: &str, device_id: &str, epoch: u64, seq: u64) ->
 
 /// 获取设备提交目录
 pub fn get_commit_dir(vault_id: &str, device_id: &str, epoch: u64) -> String {
-    format!(
-        "ChatVault/{}/commits/{}/{}",
-        vault_id, device_id, epoch
-    )
+    format!("ChatVault/{}/commits/{}/{}", vault_id, device_id, epoch)
 }
 
 /// 获取设备列表目录

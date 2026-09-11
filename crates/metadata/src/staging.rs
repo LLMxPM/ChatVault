@@ -7,6 +7,22 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// 不创建副本地读取源文件哈希；前后状态变化时拒绝入库，上传仍须复核内容。
+pub fn hash_stable_file(source: &Path) -> Result<(HashResult, std::time::SystemTime)> {
+    let before = fs::metadata(source)?;
+    let hash = compute_blake3_file(source)?;
+    let after = fs::metadata(source)?;
+    if before.len() != hash.bytes_read
+        || before.len() != after.len()
+        || before.modified()? != after.modified()?
+    {
+        return Err(ChatVaultError::Scan(
+            "读取期间文件发生变化，请重新扫描".into(),
+        ));
+    }
+    Ok((hash, before.modified()?))
+}
+
 /// 复制并验证稳定文件；返回不可变副本、实际内容哈希、实际修改时间。
 pub fn stage_file(
     source: &Path,

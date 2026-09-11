@@ -64,10 +64,10 @@ impl Database {
                 .ok()
         };
 
-        if let Some((prev_mtime, prev_size, Some(cache))) = existing_mtime {
+        if let Some((prev_mtime, prev_size, cache)) = existing_mtime {
             if prev_mtime == mtime_ms
                 && prev_size == file.file_size as i64
-                && Path::new(&cache).exists()
+                && cache.as_ref().is_none_or(|p| Path::new(p).exists())
             {
                 return Ok(IngestResult::Skipped {
                     path: abs_path.clone(),
@@ -75,9 +75,25 @@ impl Database {
             }
         }
 
-        // 2. 文件是新的或 mtime 发生了变化，计算 BLAKE3 哈希
+        let policy = self.cache_policy()?;
+        let epoch = self
+            .get_setting(&format!("epoch_{}", device_id))?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1u64);
+        // 复制与引用写入共用写锁，防止回收器删除刚落盘的副本。
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| ChatVaultError::Database(e.to_string()))?;
         let (cache_path, hash_res, modified) =
-            chatvault_metadata::staging::stage_file(&source, &self.staging_dir)?;
+            if file.file_size < u64::from(policy.copy_threshold_mib) * crate::cache_policy::MIB {
+                let (path, hash, modified) =
+                    chatvault_metadata::staging::stage_file(&source, &self.staging_dir)?;
+                (Some(path.to_string_lossy().to_string()), hash, modified)
+            } else {
+                let (hash, modified) = chatvault_metadata::staging::hash_stable_file(&source)?;
+                (None, hash, modified)
+            };
         file.file_size = hash_res.bytes_read;
         file.modified_time = modified.into();
         let mtime_ms = file.modified_time.timestamp_millis();
@@ -88,17 +104,7 @@ impl Database {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_lowercase();
-        let mime = format!("application/{}", extension); // 基础推断
-
-        let epoch = self
-            .get_setting(&format!("epoch_{}", device_id))?
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1u64);
-        // 取得写锁之后分配序号，避免桌面和计划任务并发扫描产生相同序号。
-        let tx = self
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        let mime = format!("application/{}", extension);
         let next_seq: i64 = tx.query_row("SELECT COALESCE(MAX(seq), 0)+1 FROM journal_events WHERE device_id=?1 AND epoch=?2", params![device_id, epoch], |r| r.get(0))
             .map_err(|e| ChatVaultError::Database(e.to_string()))?;
         let logical_clock: i64 = tx
@@ -114,7 +120,7 @@ impl Database {
             .map_err(|e| ChatVaultError::Database(e.to_string()))?;
         if indexed {
             tx.execute("UPDATE local_files SET cache_path=?1 WHERE original_path=?2 AND mtime_ms=?3 AND record_id IN (SELECT record_id FROM file_records WHERE object_id=?4)",
-                params![cache_path.to_string_lossy(),abs_path,mtime_ms,object_id]).map_err(|e|ChatVaultError::Database(e.to_string()))?;
+                params![cache_path,abs_path,mtime_ms,object_id]).map_err(|e|ChatVaultError::Database(e.to_string()))?;
             tx.commit()
                 .map_err(|e| ChatVaultError::Database(e.to_string()))?;
             return Ok(IngestResult::Skipped {
@@ -178,7 +184,7 @@ impl Database {
             params![
                 record_id,
                 abs_path,
-                Some(cache_path.to_string_lossy().to_string()),
+                cache_path,
                 file.file_size as i64,
                 mtime_ms,
                 "available"

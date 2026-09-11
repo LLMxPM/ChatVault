@@ -33,17 +33,17 @@ impl Database {
         self.conn.query_row("SELECT EXISTS(SELECT 1 FROM upload_tasks WHERE task_id=?1 AND status IN ('queued','retryable_failed'))", [id], |r|r.get(0)).map_err(db_error)
     }
 
-    /// 仅使用入库时生成的受控副本；缺失或哈希不匹配时报告错误。
+    /// 有副本则严格使用副本；未创建副本时读取原路径，两者都必须匹配入库哈希。
     pub fn upload_source(&self, id: &str) -> Result<PathBuf> {
-        let (hash, cache): (String, Option<String>) = self.conn.query_row(
-            "SELECT o.hash,l.cache_path FROM upload_tasks t JOIN file_objects o ON t.object_id=o.object_id
+        let (hash, cache, original): (String, Option<String>, String) = self.conn.query_row(
+            "SELECT o.hash,l.cache_path,l.original_path FROM upload_tasks t JOIN file_objects o ON t.object_id=o.object_id
              LEFT JOIN local_files l ON t.record_id=l.record_id WHERE t.task_id=?1", [id],
-            |r| Ok((r.get(0)?,r.get(1)?))).map_err(db_error)?;
-        let path = cache
-            .map(PathBuf::from)
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(db_error)?;
+        let selected = cache.unwrap_or(original);
+        let path = Some(PathBuf::from(&selected))
             .filter(|p| p.is_file())
             .ok_or_else(|| ChatVaultError::FileNotFound {
-                path: format!("任务 {id} 的受控副本已丢失"),
+                path: format!("任务 {id} 的上传来源已丢失：{selected}"),
             })?;
         chatvault_metadata::verify_file_hash(&path, &hash)?;
         Ok(path)

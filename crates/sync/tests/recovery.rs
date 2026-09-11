@@ -273,6 +273,7 @@ async fn archive_uses_snapshot_after_source_deletion() {
     let path = dir.path().join("file.txt");
     std::fs::write(&path, b"content").unwrap();
     let mut db = Database::open_in_memory().unwrap();
+    db.set_setting("cache_retention_days", "0").unwrap();
     db.ingest_file(
         &chatvault_core::models::DiscoveredFile {
             source_type: "test".into(),
@@ -286,6 +287,8 @@ async fn archive_uses_snapshot_after_source_deletion() {
         "a",
     )
     .unwrap();
+    let task = db.pending_uploads().unwrap().remove(0);
+    let cache = db.upload_source(&task.task_id).unwrap();
     std::fs::remove_file(path).unwrap();
     let report = chatvault_sync::archive::archive_pending(&server.client, &mut db, "v", "a", 0)
         .await
@@ -295,6 +298,18 @@ async fn archive_uses_snapshot_after_source_deletion() {
     assert_eq!(
         db.list_upload_tasks(None, 10).unwrap()[0].status,
         "backed_up"
+    );
+    assert!(cache.exists());
+    publish_pending_events(&server.client, &mut db, "v", "a")
+        .await
+        .unwrap();
+    assert!(!cache.exists());
+    let mut target = Database::open_in_memory().unwrap();
+    assert_eq!(
+        pull_and_apply(&server.client, &mut target, "v", "b")
+            .await
+            .unwrap(),
+        1
     );
 }
 
@@ -361,5 +376,55 @@ async fn publish_drains_multiple_segments() {
             .await
             .unwrap(),
         501
+    );
+}
+
+/// 无副本的文件可完成直接上传和元数据发布，且保留原附件。
+#[tokio::test]
+async fn archive_direct_source_and_publish() {
+    let server = Server::new("D").await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("file.txt");
+    std::fs::write(&path, b"content").unwrap();
+    let mut db = Database::open_in_memory().unwrap();
+    db.set_setting("copy_threshold_mib", "0").unwrap();
+    db.ingest_file(
+        &chatvault_core::models::DiscoveredFile {
+            source_type: "test".into(),
+            account_id: None,
+            absolute_path: path.to_string_lossy().into(),
+            file_name: "file.txt".into(),
+            file_size: 7,
+            modified_time: chrono::Utc::now(),
+            conversation_hint: None,
+        },
+        "a",
+    )
+    .unwrap();
+    let task = db.pending_uploads().unwrap().remove(0);
+    assert_eq!(
+        std::fs::read(db.upload_source(&task.task_id).unwrap()).unwrap(),
+        b"content"
+    );
+    let report = chatvault_sync::archive::archive_pending(&server.client, &mut db, "v", "a", 0)
+        .await
+        .unwrap();
+    assert_eq!(report.uploaded, 1);
+    assert_eq!(report.verified, 1);
+    assert_eq!(
+        db.list_upload_tasks(None, 10).unwrap()[0].status,
+        "backed_up"
+    );
+    assert!(path.exists());
+    publish_pending_events(&server.client, &mut db, "v", "a")
+        .await
+        .unwrap();
+    assert!(path.exists());
+    let mut target = Database::open_in_memory().unwrap();
+    assert_eq!(
+        pull_and_apply(&server.client, &mut target, "v", "b")
+            .await
+            .unwrap(),
+        1
     );
 }
