@@ -19,6 +19,8 @@ pub struct AppSettingsDto {
     pub copy_threshold_mib: u32,
     pub cache_retention_days: u32,
     pub cache_max_mib: u32,
+    /// 远端文件下载目录；空表示默认 Downloads/ChatVault
+    pub download_dir: String,
     pub collect_sources: Vec<CollectSource>,
 }
 
@@ -42,6 +44,7 @@ pub async fn get_app_settings(
         copy_threshold_mib: policy.copy_threshold_mib,
         cache_retention_days: policy.cache_retention_days,
         cache_max_mib: policy.cache_max_mib,
+        download_dir: get(setting_keys::DOWNLOAD_DIR).unwrap_or_default(),
         vault_id,
         device_id,
         webdav_url: get(setting_keys::WEBDAV_URL).unwrap_or_default(),
@@ -102,6 +105,7 @@ pub async fn set_app_settings(
             &settings.cache_retention_days.to_string(),
         )?;
         db.set_setting(CACHE_MAX_MIB, &settings.cache_max_mib.to_string())?;
+        db.set_setting(setting_keys::DOWNLOAD_DIR, settings.download_dir.trim())?;
 
         Ok(())
     })
@@ -222,9 +226,9 @@ pub async fn get_schedule_status() -> bool {
 
 /// 打开系统目录选择对话框；用户取消时返回 None
 #[tauri::command]
-pub async fn pick_directory() -> std::result::Result<Option<String>, String> {
+pub async fn pick_directory(title: Option<String>) -> std::result::Result<Option<String>, String> {
     let folder = rfd::AsyncFileDialog::new()
-        .set_title("选择采集目录")
+        .set_title(title.as_deref().unwrap_or("选择目录"))
         .pick_folder()
         .await;
     Ok(folder.map(|handle| handle.path().to_string_lossy().into_owned()))

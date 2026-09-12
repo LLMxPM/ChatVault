@@ -14,6 +14,7 @@ pub mod setting_keys {
     pub const SCAN_INTERVAL_MINUTES: &str = "scan_interval_minutes";
     pub const SCHEDULE_ENABLED: &str = "schedule_enabled";
     pub const COLLECT_SOURCES: &str = "collect_sources";
+    pub const DOWNLOAD_DIR: &str = "download_dir";
 }
 
 /// 桌面端全局应用上下文状态

@@ -383,6 +383,83 @@ impl WebDavClient {
         self.send_read(Method::GET, &url).await
     }
 
+    /// 下载远端对象到本地路径，并流式校验 BLAKE3 哈希
+    ///
+    /// 职责: GET 对象流写入本地临时文件，校验通过后原子替换到 `dest_path`
+    /// 输入:
+    ///   - `remote_path`: 远端相对路径
+    ///   - `dest_path`: 最终本地绝对路径（父目录需可写）
+    ///   - `expected_hex`: 预期十六进制哈希（可含 `blake3:` 前缀）
+    /// 输出: `Result<u64>` 写入字节数
+    /// 关键约束:
+    ///   - 校验失败删除临时文件，不覆盖目标
+    ///   - 目标已存在时覆盖为校验通过的新文件
+    pub async fn download_to_path<P: AsRef<Path>>(
+        &self,
+        remote_path: &str,
+        dest_path: P,
+        expected_hex: &str,
+    ) -> Result<u64> {
+        use futures_util::StreamExt;
+
+        let dest = dest_path.as_ref();
+        if let Some(parent) = dest.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        let clean_expected = expected_hex.trim_start_matches("blake3:");
+        let resp = self.get_stream(remote_path).await?;
+        if !resp.status().is_success() {
+            return Err(ChatVaultError::WebDav(format!(
+                "下载对象 {} 失败: 状态码 {}",
+                remote_path,
+                resp.status()
+            )));
+        }
+
+        let tmp_path = dest.with_file_name(format!(
+            "{}.part",
+            dest.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "download".into())
+        ));
+
+        let mut stream = resp.bytes_stream();
+        let mut file = tokio::fs::File::create(&tmp_path).await?;
+        let mut hasher = blake3::Hasher::new();
+        let mut total_bytes = 0u64;
+
+        let write_result: Result<u64> = async {
+            use tokio::io::AsyncWriteExt;
+            while let Some(chunk_res) = stream.next().await {
+                let chunk =
+                    chunk_res.map_err(|e| ChatVaultError::WebDav(format!("下载流中断: {}", e)))?;
+                hasher.update(&chunk);
+                file.write_all(&chunk).await?;
+                total_bytes += chunk.len() as u64;
+            }
+            file.flush().await?;
+            drop(file);
+
+            let actual_hex = hasher.finalize().to_hex().to_string();
+            if !actual_hex.eq_ignore_ascii_case(clean_expected) {
+                return Err(ChatVaultError::HashMismatch {
+                    expected: clean_expected.to_string(),
+                    actual: actual_hex,
+                });
+            }
+
+            tokio::fs::rename(&tmp_path, dest).await?;
+            Ok(total_bytes)
+        }
+        .await;
+
+        if write_result.is_err() {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+        }
+        write_result
+    }
+
     /// DELETE 删除远端资源
     ///
     /// 职责: 发送 DELETE 动词清理远端资源（用于异常清理或清理暂存）

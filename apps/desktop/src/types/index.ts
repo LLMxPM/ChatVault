@@ -43,16 +43,28 @@ export interface ScanResultDto {
   durationMs: number;
 }
 
-/**
- * 文件记录视图对象（用于列表呈现与检索结果）
- */
-export interface FileRecordViewDto {
-  recordId: string;
+/** 内容对象位置状态。 */
+export type FileLocation = "local" | "remote" | "both" | "missing";
+
+/** 按内容折叠后的文件库列表项。 */
+export interface FileObjectViewDto {
   objectId: string;
+  hash: string;
   originalName: string;
   fileSize: number;
   formattedSize: string;
-  hash: string;
+  category: "doc" | "image" | "video" | "audio" | "archive" | "other";
+  fileTime?: string | null;
+  location: FileLocation;
+  openPath?: string | null;
+  sourceCount: number;
+}
+
+/** 内容对象展开后的来源条目。 */
+export interface FileSourceDto {
+  recordId: string;
+  originalName: string;
+  originalPath: string;
   sourceType: string;
   sourceAccountId?: string | null;
   sourceAccountName?: string | null;
@@ -60,8 +72,15 @@ export interface FileRecordViewDto {
   sourceConversationName?: string | null;
   fileTime?: string | null;
   discoveredAt: string;
-  originalPath: string;
-  category: "doc" | "image" | "video" | "audio" | "archive" | "other";
+  deviceId: string;
+  hasLocalPath: boolean;
+}
+
+/** 远端对象下载结果。 */
+export interface DownloadResultDto {
+  savedPath: string;
+  fileName: string;
+  size: number;
 }
 
 /**
@@ -174,6 +193,7 @@ export interface AppSettingsDto {
   copyThresholdMib: number;
   cacheRetentionDays: number;
   cacheMaxMib: number;
+  downloadDir: string;
   scanIntervalMinutes: number;
   scheduleEnabled: boolean;
   collectSources: CollectSourceDto[];

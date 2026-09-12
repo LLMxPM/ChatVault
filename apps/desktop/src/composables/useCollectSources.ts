@@ -157,7 +157,7 @@ export function useCollectSources() {
   /** 选择并添加微信 4.x 根目录；目录校验成功后才写入配置。 */
   async function pickAndAddWechat() {
     try {
-      const path = await pickDirectory();
+      const path = await pickDirectory("选择采集目录");
       if (!path) return;
       if (hasPathConflict(path)) {
         pushToast({ tone: "warning", title: "目录已存在或与现有目录重叠" });
@@ -173,7 +173,7 @@ export function useCollectSources() {
   /** 选择并添加通用附件目录；路径只能来自系统目录选择器。 */
   async function pickAndAddAttachment() {
     try {
-      const path = await pickDirectory();
+      const path = await pickDirectory("选择采集目录");
       if (!path) return;
       if (hasPathConflict(path)) {
         pushToast({ tone: "warning", title: "目录已存在或与现有目录重叠" });
@@ -293,7 +293,7 @@ export function useCollectSources() {
     if (!source) return;
     source.inspecting = true;
     try {
-      const path = await pickDirectory();
+      const path = await pickDirectory("选择采集目录");
       if (!path) return;
       if (hasPathConflict(path, index)) {
         pushToast({ tone: "warning", title: "目录已存在或与现有目录重叠" });

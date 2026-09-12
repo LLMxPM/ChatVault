@@ -7,7 +7,9 @@ import type {
   CollectSourceDto,
   ScanRequestDto,
   ScanResultDto,
-  FileRecordViewDto,
+  FileObjectViewDto,
+  FileSourceDto,
+  DownloadResultDto,
   SearchQueryDto,
   VaultStatsDto,
   WebdavConfigDto,
@@ -61,12 +63,30 @@ export async function setScheduleConfig(enabled: boolean, intervalMinutes: numbe
 }
 
 /**
- * 全文搜索与多维筛选文件记录
+ * 全文搜索与多维筛选文件记录（按内容折叠）
  * @param query 查询过滤条件
- * @returns 匹配的文件视图列表
+ * @returns 匹配的内容对象列表
  */
-export async function searchRecords(query: SearchQueryDto): Promise<FileRecordViewDto[]> {
-  return await invoke<FileRecordViewDto[]>("search_records", { query });
+export async function searchObjects(query: SearchQueryDto): Promise<FileObjectViewDto[]> {
+  return await invoke<FileObjectViewDto[]>("search_objects", { query });
+}
+
+/** 列出内容对象的全部来源记录。 */
+export async function listObjectSources(objectId: string): Promise<FileSourceDto[]> {
+  return await invoke<FileSourceDto[]>("list_object_sources", { objectId });
+}
+
+/** 用系统默认程序打开本地文件。 */
+export async function openFileWithSystem(path: string): Promise<void> {
+  return await invoke<void>("open_file_with_system", { path });
+}
+
+/** 从 WebDAV 下载内容对象到下载目录。 */
+export async function downloadObject(
+  objectId: string,
+  originalName: string,
+): Promise<DownloadResultDto> {
+  return await invoke<DownloadResultDto>("download_object", { objectId, originalName });
 }
 
 /**
@@ -135,8 +155,8 @@ export async function getScheduleStatus(): Promise<boolean> {
 }
 
 /** 打开系统目录选择对话框；用户取消时返回 null。 */
-export async function pickDirectory(): Promise<string | null> {
-  return await invoke<string | null>("pick_directory");
+export async function pickDirectory(title?: string): Promise<string | null> {
+  return await invoke<string | null>("pick_directory", { title });
 }
 
 /** 检查采集目录当前是否存在且仍为目录。 */

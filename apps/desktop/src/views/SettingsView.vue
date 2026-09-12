@@ -64,6 +64,24 @@
 
       <CacheSettings v-model="form" />
 
+      <UiCard
+        title="下载目录"
+        info="仅远程文件「下载」的落点。留空则使用系统「下载\\ChatVault」。"
+      >
+        <div class="flex flex-wrap items-end gap-2">
+          <label class="min-w-[220px] flex-1">
+            <span class="text-cv-caption text-cv-text-2">目录路径</span>
+            <UiInput
+              v-model="form.downloadDir"
+              class="mt-1 font-mono"
+              placeholder="默认 %USERPROFILE%\Downloads\ChatVault"
+            />
+          </label>
+          <UiButton size="md" variant="secondary" @click="pickDownloadDir">选择目录</UiButton>
+          <UiButton size="md" variant="ghost" @click="form.downloadDir = ''">恢复默认</UiButton>
+        </div>
+      </UiCard>
+
       <UiCard title="外观">
         <div class="flex flex-wrap gap-2">
           <button
@@ -124,6 +142,7 @@ import {
   clearWebdavCredential,
   getVaultStats,
   testWebdav,
+  pickDirectory,
 } from "../api/tauri";
 import { pushToast } from "../composables/useToast";
 import { confirmAction } from "../composables/useConfirm";
@@ -146,6 +165,7 @@ const form = ref<AppSettingsDto>({
   copyThresholdMib: 100,
   cacheRetentionDays: 7,
   cacheMaxMib: 1024,
+  downloadDir: "",
   scanIntervalMinutes: 30,
   scheduleEnabled: false,
   collectSources: [],
@@ -157,6 +177,16 @@ const testingWebdav = ref(false);
 const clearingCredential = ref(false);
 const webdavTestResult = ref<WebdavCapabilityDto | null>(null);
 const stats = ref<VaultStatsDto | null>(null);
+
+/** 选择下载目录。 */
+async function pickDownloadDir() {
+  try {
+    const dir = await pickDirectory("选择下载目录");
+    if (dir) form.value.downloadDir = dir;
+  } catch (err) {
+    pushToast({ tone: "danger", title: "选择目录失败", description: String(err) });
+  }
+}
 
 /** 删除 Windows 凭据管理器中的 WebDAV 密码；需二次确认。 */
 async function clearStoredCredential() {

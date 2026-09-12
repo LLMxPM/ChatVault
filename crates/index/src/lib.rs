@@ -7,7 +7,10 @@ pub mod query;
 pub mod schema;
 
 pub use db::{Database, DatabaseStats, IngestResult, UploadTaskRow};
-pub use query::{SearchFilter, SearchResultItem, SearchService};
+pub use query::{
+    ObjectLocation, ObjectSearchItem, ObjectSourceItem, SearchFilter, SearchResultItem,
+    SearchService,
+};
 pub use schema::initialize_schema;
 
 mod atomic;

@@ -52,27 +52,6 @@ pub struct ScanResultDto {
     pub duration_ms: u128,
 }
 
-/// 文件记录呈现对象
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileRecordViewDto {
-    pub record_id: String,
-    pub object_id: String,
-    pub original_name: String,
-    pub file_size: u64,
-    pub formatted_size: String,
-    pub hash: String,
-    pub source_type: String,
-    pub source_account_id: Option<String>,
-    pub source_account_name: Option<String>,
-    pub source_conversation_id: Option<String>,
-    pub source_conversation_name: Option<String>,
-    pub file_time: Option<String>,
-    pub discovered_at: String,
-    pub original_path: String,
-    pub category: String,
-}
-
 /// 查询过滤参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
