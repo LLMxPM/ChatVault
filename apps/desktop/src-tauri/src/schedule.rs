@@ -9,7 +9,7 @@ pub const TASK_NAME: &str = "ChatVaultScheduledScan";
 
 /// 定位 chatvault-cli 可执行文件
 ///
-/// 查找顺序：当前 exe 同目录 → 系统 PATH
+/// 只使用同版本安装包或构建目录中的 CLI，避免调用 PATH 中的其他程序。
 pub fn find_cli_path() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -17,17 +17,6 @@ pub fn find_cli_path() -> Option<PathBuf> {
             if candidate.exists() {
                 return Some(candidate);
             }
-        }
-    }
-    which_in_path("chatvault-cli.exe")
-}
-
-fn which_in_path(name: &str) -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(name);
-        if candidate.exists() {
-            return Some(candidate);
         }
     }
     None

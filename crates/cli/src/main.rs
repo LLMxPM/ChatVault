@@ -10,6 +10,7 @@ use chatvault_core::models::DiscoveredFile;
 use chatvault_index::{Database, IngestResult, SearchFilter, SearchService};
 use chatvault_scanner::check_file_stability_sync;
 use chatvault_webdav::{CapabilityDetector, WebDavClient, WebDavConfig};
+use chrono::Utc;
 use clap::Parser;
 mod args;
 mod sync_commands;
@@ -35,7 +36,8 @@ async fn main() -> Result<()> {
             target,
             db,
             device_id,
-        } => handle_scan(&target, &db, &device_id)?,
+            full,
+        } => handle_scan(&target, &db, &device_id, full)?,
         Commands::Search {
             keyword,
             ext,
@@ -122,9 +124,21 @@ fn handle_detect() -> Result<()> {
 /// 执行扫描并入库 SQLite
 ///
 /// 职责: 收集文件、检查稳定性、计算 BLAKE3、增量去重并建立 FTS5 索引
-fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str) -> Result<()> {
-    println!("=== 开始执行文件扫描与增量入库 ===");
-    let mut files: Vec<DiscoveredFile> = Vec::new();
+/// 默认增量（按目录 mtime 剪枝 + 已知文件复检）；`full` 时忽略检查点全量发现
+fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> Result<()> {
+    println!(
+        "=== 开始执行文件扫描与入库（{}） ===",
+        if full { "全量" } else { "增量" }
+    );
+    println!("[*] 正在打开/初始化本地数据库: {}", db_path.display());
+    let mut db = Database::open(db_path)?;
+    let device_id = resolve_device(&mut db, device_id)?;
+    let scan_started_ms = Utc::now().timestamp_millis();
+
+    let mut indexed_count = 0;
+    let mut skipped_count = 0;
+    let mut new_object_count = 0;
+    let mut discovered_count = 0;
 
     if target.eq_ignore_ascii_case("wechat") {
         let root = WeChat4Detector::detect_root().context("探测微信 4.x 根目录失败")?;
@@ -135,60 +149,68 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str) -> Result<()> {
         }
         for acc in accounts {
             println!("[*] 正在扫描微信账号 [{}] 的附件...", acc.account_id);
-            let acc_files = WeChat4Parser::parse_account_files(&acc)?;
-            println!("    发现 {} 个候选文件", acc_files.len());
-            files.extend(acc_files);
+            let files_root = acc.files_dir.to_string_lossy().to_string();
+            let since = resolve_scan_since(&db, &files_root, full)?;
+            let walked = WeChat4Parser::parse_account_files_since(&acc, since)?;
+            let changed_known = if since.is_some() {
+                db.list_changed_known_files(&files_root)?
+            } else {
+                Vec::new()
+            };
+            let files = merge_changed_known(
+                walked,
+                changed_known,
+                "wechat-windows-4",
+                Some(&acc.account_id),
+                None,
+            );
+            println!("    本次候选 {} 个文件", files.len());
+            discovered_count += files.len();
+            process_scan_files(
+                &mut db,
+                &device_id,
+                &files,
+                &mut indexed_count,
+                &mut skipped_count,
+                &mut new_object_count,
+            )?;
+            db.mark_scan_started(
+                &files_root,
+                "wechat-windows-4",
+                Some(&acc.account_id),
+                scan_started_ms,
+            )?;
         }
     } else {
         println!("[*] 正在扫描通用目录: {}", target);
-        let custom_files = GenericFolderParser::parse(target)?;
-        println!("    发现 {} 个候选文件", custom_files.len());
-        files.extend(custom_files);
+        let since = resolve_scan_since(&db, target, full)?;
+        let walked = GenericFolderParser::parse_with_since(target, since)?;
+        let changed_known = if since.is_some() {
+            db.list_changed_known_files(target)?
+        } else {
+            Vec::new()
+        };
+        let files = merge_changed_known(walked, changed_known, "generic-folder", None, None);
+        println!("    本次候选 {} 个文件", files.len());
+        discovered_count += files.len();
+        process_scan_files(
+            &mut db,
+            &device_id,
+            &files,
+            &mut indexed_count,
+            &mut skipped_count,
+            &mut new_object_count,
+        )?;
+        db.mark_scan_started(target, "generic-folder", None, scan_started_ms)?;
     }
 
-    if files.is_empty() {
-        println!("未发现符合归档条件的有效文件");
-        return Ok(());
-    }
-
-    println!("[*] 正在打开/初始化本地数据库: {}", db_path.display());
-    let mut db = Database::open(db_path)?;
-
-    let device_id = resolve_device(&mut db, device_id)?;
-
-    let mut indexed_count = 0;
-    let mut skipped_count = 0;
-    let mut new_object_count = 0;
-
-    println!("[*] 开始执行稳定性检测与入库...");
-    for file in &files {
-        // 稳定性校验: 确保文件没有在持续写入中
-        let is_stable = check_file_stability_sync(&file.absolute_path, Duration::from_millis(50))
-            .unwrap_or(false);
-        if !is_stable {
-            println!("[-] 跳过处于写入变动中的不稳定文件: {}", file.file_name);
-            continue;
-        }
-
-        match db.ingest_file(file, &device_id) {
-            Ok(IngestResult::Indexed { is_new_object, .. }) => {
-                indexed_count += 1;
-                if is_new_object {
-                    new_object_count += 1;
-                }
-            }
-            Ok(IngestResult::Skipped { .. }) => {
-                skipped_count += 1;
-            }
-            Err(e) => {
-                eprintln!("[-] 文件入库异常 {}: {}", file.file_name, e);
-            }
-        }
+    if discovered_count == 0 {
+        println!("未发现符合归档条件的新增或变更文件");
     }
 
     let stats = db.get_stats()?;
     println!("\n=== 入库完成总结 ===");
-    println!("  - 本次扫描总数:   {}", files.len());
+    println!("  - 本次候选总数:   {}", discovered_count);
     println!("  - 本次新入库记录: {}", indexed_count);
     println!("  - 本次新增独立对象: {}", new_object_count);
     println!("  - 幂等跳过未变文件: {}", skipped_count);
@@ -196,6 +218,88 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str) -> Result<()> {
     println!("  - 数据库总来源记录: {}", stats.total_records);
     println!("  - 待上传队列任务数: {}", stats.pending_tasks);
 
+    Ok(())
+}
+
+/// 解析扫描根增量起点
+fn resolve_scan_since(
+    db: &Database,
+    root: &str,
+    full: bool,
+) -> Result<Option<std::time::SystemTime>> {
+    if full {
+        return Ok(None);
+    }
+    let ms = db.get_scan_started_ms(root)?;
+    Ok(ms.map(chatvault_index::system_time_from_ms))
+}
+
+/// 合并目录发现与已知文件内容变更
+fn merge_changed_known(
+    walked: Vec<DiscoveredFile>,
+    changed_known: Vec<chatvault_index::KnownLocalFile>,
+    source_type: &str,
+    account_id: Option<&str>,
+    conversation_hint: Option<String>,
+) -> Vec<DiscoveredFile> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut merged = Vec::with_capacity(walked.len() + changed_known.len());
+    for file in walked {
+        let key = chatvault_core::normalize_scan_key(&file.absolute_path);
+        if seen.insert(key) {
+            merged.push(file);
+        }
+    }
+    for known in changed_known {
+        let key = chatvault_core::normalize_scan_key(&known.original_path);
+        if seen.contains(&key) {
+            continue;
+        }
+        if let Some(file) = known.to_discovered(source_type, account_id, conversation_hint.clone())
+        {
+            seen.insert(key);
+            merged.push(file);
+        }
+    }
+    merged
+}
+
+/// 仅对需要处理的文件做稳定性检测并入库
+fn process_scan_files(
+    db: &mut Database,
+    device_id: &str,
+    files: &[DiscoveredFile],
+    indexed_count: &mut usize,
+    skipped_count: &mut usize,
+    new_object_count: &mut usize,
+) -> Result<()> {
+    for file in files {
+        if db.path_is_current(&file.absolute_path)? {
+            *skipped_count += 1;
+            continue;
+        }
+        let is_stable = check_file_stability_sync(&file.absolute_path, Duration::from_millis(50))
+            .unwrap_or(false);
+        if !is_stable {
+            println!("[-] 跳过处于写入变动中的不稳定文件: {}", file.file_name);
+            continue;
+        }
+        match db.ingest_file(file, device_id) {
+            Ok(IngestResult::Indexed { is_new_object, .. }) => {
+                *indexed_count += 1;
+                if is_new_object {
+                    *new_object_count += 1;
+                }
+            }
+            Ok(IngestResult::Skipped { .. }) => {
+                *skipped_count += 1;
+            }
+            Err(e) => {
+                eprintln!("[-] 文件入库异常 {}: {}", file.file_name, e);
+            }
+        }
+    }
     Ok(())
 }
 

@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev:desktop": "pnpm --filter chatvault-desktop dev",
-    "build:desktop": "pnpm --filter chatvault-desktop build"
+    "build:desktop": "pnpm --filter chatvault-desktop build",
+    "release:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release_windows.ps1"
   }
 }

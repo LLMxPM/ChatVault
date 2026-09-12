@@ -29,6 +29,9 @@ pub struct WechatAccountDto {
 pub struct ScanRequestDto {
     pub target_accounts: Vec<String>,
     pub custom_folders: Vec<String>,
+    /// true 时忽略检查点做全量发现；默认 false 使用增量扫描
+    #[serde(default)]
+    pub full_scan: bool,
 }
 
 /// 扫描总结报告

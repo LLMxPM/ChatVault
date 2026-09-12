@@ -16,6 +16,8 @@ export interface WechatAccountDto {
 export interface ScanRequestDto {
   targetAccounts: string[];
   customFolders: string[];
+  /** true 时忽略检查点做全量发现；默认 false 使用增量扫描 */
+  fullScan?: boolean;
 }
 
 /**

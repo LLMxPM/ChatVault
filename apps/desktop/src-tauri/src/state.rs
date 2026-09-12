@@ -25,11 +25,7 @@ pub struct AppState {
 
 impl AppState {
     /// 创建并初始化应用状态，首次启动写入默认 vault/device 设置
-    pub fn new(
-        db_path: PathBuf,
-        default_vault_id: String,
-        _default_device_id: String,
-    ) -> Result<Self> {
+    pub fn new(db_path: PathBuf, default_vault_id: String) -> Result<Self> {
         let mut db = Database::open(&db_path)?;
 
         if db.get_setting(setting_keys::VAULT_ID)?.is_none() {

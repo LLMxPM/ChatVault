@@ -31,6 +31,10 @@ pub(crate) enum Commands {
         /// 当前设备标识
         #[arg(long, default_value = "")]
         device_id: String,
+
+        /// 忽略增量检查点，强制全量发现
+        #[arg(long, default_value_t = false)]
+        full: bool,
     },
 
     /// 在本地 SQLite 数据库中检索文件 (支持中文 FTS5 全文搜索与过滤)

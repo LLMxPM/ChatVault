@@ -107,7 +107,15 @@
     </div>
 
     <!-- 扫描操作与执行按钮 -->
-    <div class="pt-2">
+    <div class="pt-2 space-y-2">
+      <label class="flex items-center space-x-2 text-xs text-slate-300">
+        <input
+          v-model="fullScan"
+          type="checkbox"
+          class="rounded text-emerald-500 focus:ring-emerald-500 border-slate-700 bg-slate-800 cursor-pointer"
+        />
+        <span>强制全量扫描（忽略增量检查点，用于首次或目录异常后校准）</span>
+      </label>
       <button
         class="w-full py-3 px-4 rounded-xl font-semibold text-sm transition-all flex items-center justify-center space-x-2 shadow-lg"
         :class="
@@ -120,8 +128,19 @@
       >
         <Play v-if="!scanning" class="w-4 h-4 fill-current" />
         <RefreshCw v-else class="w-4 h-4 animate-spin" />
-        <span>{{ scanning ? "正在进行哈希与入库去重..." : "开始执行扫描与入库去重" }}</span>
+        <span>
+          {{
+            scanning
+              ? "正在进行哈希与入库去重..."
+              : fullScan
+                ? "开始全量扫描与入库"
+                : "开始增量扫描与入库"
+          }}
+        </span>
       </button>
+      <p class="text-[11px] text-slate-500">
+        默认增量：只进入 mtime 晚于上次扫描的目录，并复检已索引文件的内容变更；未变更文件不读内容。
+      </p>
     </div>
 
     <!-- 扫描结果报告卡片 -->
@@ -168,6 +187,7 @@ const customFolders = ref<string[]>([]);
 
 const detecting = ref(false);
 const scanning = ref(false);
+const fullScan = ref(false);
 const scanResult = ref<ScanResultDto | null>(null);
 
 /**
@@ -220,6 +240,7 @@ async function startScanning() {
     const res = await runScan({
       targetAccounts: selectedAccounts.value,
       customFolders: customFolders.value,
+      fullScan: fullScan.value,
     });
     scanResult.value = res;
   } catch (err) {

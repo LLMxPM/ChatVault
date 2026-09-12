@@ -8,18 +8,28 @@ use chatvault_core::models::DiscoveredFile;
 use chatvault_scanner::walker::{scan_directory, ScanOptions};
 use chrono::{DateTime, Utc};
 use std::path::Path;
+use std::time::SystemTime;
 
 /// 通用目录解析器
 pub struct GenericFolderParser;
 
 impl GenericFolderParser {
-    /// 扫描指定的本地文件夹
+    /// 全量扫描指定的本地文件夹
+    pub fn parse<P: AsRef<Path>>(folder: P) -> Result<Vec<DiscoveredFile>> {
+        Self::parse_with_since(folder, None)
+    }
+
+    /// 按目录 mtime 增量发现：仅进入 mtime 晚于 `since` 的子树；None 为全量
     ///
     /// 职责: 递归遍历用户指定的任意本地文件夹，生成候选待处理文件清单
     /// 输入:
     ///   - `folder`: 目标目录路径
+    ///   - `since`: 增量起点；目录 mtime 不晚于该时刻时跳过子树
     /// 输出: `Result<Vec<DiscoveredFile>>`
-    pub fn parse<P: AsRef<Path>>(folder: P) -> Result<Vec<DiscoveredFile>> {
+    pub fn parse_with_since<P: AsRef<Path>>(
+        folder: P,
+        since: Option<SystemTime>,
+    ) -> Result<Vec<DiscoveredFile>> {
         let f = folder.as_ref();
         if !f.exists() {
             return Err(ChatVaultError::FileNotFound {
@@ -31,6 +41,7 @@ impl GenericFolderParser {
             max_depth: None,
             skip_hidden: true,
             min_size: 1,
+            since,
         };
 
         let paths = scan_directory(f, &options)?;

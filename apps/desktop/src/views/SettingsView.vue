@@ -94,6 +94,7 @@
     </div>
 
     <CacheSettings v-model="form" />
+    <AppAbout />
 
     <div class="flex items-center space-x-3 max-w-2xl">
       <button
@@ -113,6 +114,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import CacheSettings from "../components/CacheSettings.vue";
+import AppAbout from "../components/AppAbout.vue";
 import { getAppSettings, setAppSettings, getScheduleStatus } from "../api/tauri";
 import type { AppSettingsDto } from "../types";
 

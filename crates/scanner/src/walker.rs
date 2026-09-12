@@ -5,6 +5,7 @@
 
 use chatvault_core::error::{ChatVaultError, Result};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use walkdir::WalkDir;
 
 /// 遍历过滤选项
@@ -16,6 +17,8 @@ pub struct ScanOptions {
     pub skip_hidden: bool,
     /// 最小文件字节数（过滤 0 字节空文件）
     pub min_size: u64,
+    /// 增量扫描起点：子目录 mtime 不晚于该时刻时整棵子树跳过；None 为全量发现
+    pub since: Option<SystemTime>,
 }
 
 impl Default for ScanOptions {
@@ -24,6 +27,7 @@ impl Default for ScanOptions {
             max_depth: None,
             skip_hidden: true,
             min_size: 1,
+            since: None,
         }
     }
 }
@@ -43,10 +47,28 @@ pub fn scan_directory<P: AsRef<Path>>(root: P, options: &ScanOptions) -> Result<
         });
     }
 
-    let mut walker = WalkDir::new(r).follow_links(false);
+    let mut builder = WalkDir::new(r).follow_links(false);
     if let Some(depth) = options.max_depth {
-        walker = walker.max_depth(depth);
+        builder = builder.max_depth(depth);
     }
+
+    // 增量模式：仅进入 mtime 晚于 since 的子目录；根目录始终进入
+    let since = options.since;
+    let walker = builder.into_iter().filter_entry(move |entry| {
+        let Some(since) = since else {
+            return true;
+        };
+        if !entry.file_type().is_dir() || entry.depth() == 0 {
+            return true;
+        }
+        match entry.metadata() {
+            Ok(meta) => match meta.modified() {
+                Ok(mtime) => mtime > since,
+                Err(_) => true,
+            },
+            Err(_) => true,
+        }
+    });
 
     let mut files = Vec::new();
 
@@ -99,6 +121,7 @@ mod tests {
     use super::*;
     use std::fs::File;
     use std::io::Write;
+    use std::time::Duration;
 
     #[test]
     fn test_walker() {
@@ -125,6 +148,25 @@ mod tests {
 
         assert_eq!(res.len(), 1);
         assert_eq!(res[0], valid_file);
+
+        // 增量：进入尚未过期的子目录；对 mtime <= since 的子树整棵剪枝
+        let sub = temp_dir.join("subdir");
+        std::fs::create_dir_all(&sub).unwrap();
+        let mut f4 = File::create(sub.join("nested.pdf")).unwrap();
+        f4.write_all(b"nested").unwrap();
+        drop(f4);
+
+        let res_full = scan_directory(&temp_dir, &ScanOptions::default()).unwrap();
+        assert_eq!(res_full.len(), 2);
+
+        let options_inc = ScanOptions {
+            since: Some(SystemTime::now() + Duration::from_secs(60)),
+            ..Default::default()
+        };
+        let res_inc = scan_directory(&temp_dir, &options_inc).unwrap();
+        // 根下文件仍在；子树因 mtime 不晚于 since 被剪掉
+        assert_eq!(res_inc.len(), 1);
+        assert_eq!(res_inc[0], valid_file);
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }

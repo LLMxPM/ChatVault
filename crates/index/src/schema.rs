@@ -131,6 +131,14 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             last_seq INTEGER NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        -- 11. 扫描根检查点：last_scan_started_ms 为本次开始时刻，避免漏扫扫描期间新建文件
+        CREATE TABLE IF NOT EXISTS scan_roots (
+            root_path TEXT PRIMARY KEY,
+            source_kind TEXT NOT NULL,
+            account_id TEXT,
+            last_scan_started_ms INTEGER NOT NULL
+        );
         "#,
     )
     .map_err(|e| ChatVaultError::Database(format!("执行表结构初始化失败: {}", e)))?;

@@ -4,6 +4,8 @@
 
 pub mod error;
 pub mod models;
+pub mod paths;
 
 pub use error::{ChatVaultError, Result};
 pub use models::*;
+pub use paths::{is_under_root, normalize_root_path, normalize_scan_key};

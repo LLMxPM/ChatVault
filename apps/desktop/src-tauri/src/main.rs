@@ -5,27 +5,34 @@
 
 mod commands;
 mod connection;
+mod runtime;
 mod schedule;
 mod state;
 
 use state::AppState;
-use std::path::PathBuf;
+use tauri::Manager;
 
+/// 初始化用户资料库与桌面服务；数据路径不依赖快捷方式的工作目录。
 fn main() {
-    // 默认数据库存放在运行目录或用户主目录下
-    let db_path = std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("chatvault.db");
-
-    let app_state = AppState::new(
-        db_path,
-        "default-vault".to_string(),
-        uuid::Uuid::new_v4().to_string(),
-    )
-    .expect("初始化 ChatVault 核心数据库失败");
-
-    tauri::Builder::default()
-        .manage(app_state)
+    let result = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
+        .setup(|app| {
+            let data_dir = app.path().app_local_data_dir()?;
+            std::fs::create_dir_all(&data_dir)?;
+            runtime::init_logging(&data_dir)?;
+            let state = AppState::new(data_dir.join("chatvault.db"), "default-vault".into())?;
+            if let Err(error) = runtime::restore_schedule(&state) {
+                tracing::warn!("恢复定时任务失败，请在设置中重新启用：{error}");
+            }
+            app.manage(state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::scan::detect_wechat_accounts,
             commands::scan::run_scan,
@@ -47,7 +54,12 @@ fn main() {
             commands::tasks::pause_upload_task,
             connection::save_webdav_config,
             connection::list_record_accounts,
+            runtime::get_runtime_info,
+            runtime::open_log_directory,
         ])
-        .run(tauri::generate_context!())
-        .expect("启动 ChatVault 桌面端应用失败");
+        .run(tauri::generate_context!());
+    if let Err(error) = result {
+        runtime::report_startup_error(&error.to_string());
+        std::process::exit(1);
+    }
 }

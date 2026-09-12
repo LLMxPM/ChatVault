@@ -1,9 +1,9 @@
 // ChatVault CLI 定时运行与元数据同步入口：使用持久化身份和共享核心。
 use super::*;
 
-/// 定时任务：读取本地设置，扫描采集目录并归档到 WebDAV
+/// 定时任务：读取本地设置，增量扫描采集目录并归档到 WebDAV
 pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
-    println!("=== ChatVault 定时扫描与归档 ===");
+    println!("=== ChatVault 定时增量扫描与归档 ===");
     let mut db = Database::open(db_path)?;
 
     let device_id = db.ensure_device_identity()?;
@@ -16,46 +16,67 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
         .get_setting("collect_dirs")?
         .unwrap_or_else(|| "[]".to_string());
     let collect_dirs: Vec<String> = serde_json::from_str(&collect_dirs_raw).unwrap_or_default();
+    let scan_started_ms = Utc::now().timestamp_millis();
 
-    // 1. 扫描微信
-    let mut files: Vec<DiscoveredFile> = Vec::new();
+    let mut indexed = 0usize;
+    let mut skipped = 0usize;
+    let mut discovered = 0usize;
+
+    // 1. 扫描微信（有检查点则增量）
     if let Ok(root) = WeChat4Detector::detect_root() {
         let accounts = WeChat4Detector::find_accounts(&root)?;
         for acc in accounts {
             println!("[*] 扫描微信账号 [{}]", acc.account_id);
-            if let Ok(acc_files) = WeChat4Parser::parse_account_files(&acc) {
-                files.extend(acc_files);
-            }
+            let files_root = acc.files_dir.to_string_lossy().to_string();
+            let since = resolve_since(&db, &files_root)?;
+            let walked = WeChat4Parser::parse_account_files_since(&acc, since)?;
+            let changed_known = if since.is_some() {
+                db.list_changed_known_files(&files_root)?
+            } else {
+                Vec::new()
+            };
+            let files = merge_changed_known(
+                walked,
+                changed_known,
+                "wechat-windows-4",
+                Some(&acc.account_id),
+                None,
+            );
+            discovered += files.len();
+            process_files(&mut db, &device_id, &files, &mut indexed, &mut skipped)?;
+            db.mark_scan_started(
+                &files_root,
+                "wechat-windows-4",
+                Some(&acc.account_id),
+                scan_started_ms,
+            )?;
         }
     }
 
-    // 2. 扫描设置中的采集目录
+    // 2. 扫描设置中的采集目录（有检查点则增量）
     for dir in &collect_dirs {
         let p = PathBuf::from(dir);
-        if p.exists() {
-            println!("[*] 扫描采集目录: {}", dir);
-            if let Ok(f) = GenericFolderParser::parse(&p) {
-                files.extend(f);
-            }
-        }
-    }
-
-    println!("[*] 候选文件 {} 个，开始入库...", files.len());
-    let mut indexed = 0usize;
-    for file in &files {
-        let stable = check_file_stability_sync(&file.absolute_path, Duration::from_millis(50))
-            .unwrap_or(false);
-        if !stable {
+        if !p.exists() {
             continue;
         }
-        if matches!(
-            db.ingest_file(file, &device_id),
-            Ok(IngestResult::Indexed { .. })
-        ) {
-            indexed += 1;
-        }
+        println!("[*] 扫描采集目录: {}", dir);
+        let since = resolve_since(&db, dir)?;
+        let walked = GenericFolderParser::parse_with_since(&p, since)?;
+        let changed_known = if since.is_some() {
+            db.list_changed_known_files(dir)?
+        } else {
+            Vec::new()
+        };
+        let files = merge_changed_known(walked, changed_known, "generic-folder", None, None);
+        discovered += files.len();
+        process_files(&mut db, &device_id, &files, &mut indexed, &mut skipped)?;
+        db.mark_scan_started(dir, "generic-folder", None, scan_started_ms)?;
     }
-    println!("[+] 本次新入库 {} 条", indexed);
+
+    println!(
+        "[*] 候选 {} 个，跳过未变 {}，新入库 {}",
+        discovered, skipped, indexed
+    );
 
     // 3. 若未配置 WebDAV 则仅完成本地扫描
     if webdav_url.is_empty() {
@@ -98,6 +119,70 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// 定时任务始终使用增量：无检查点时自动退化为全量
+fn resolve_since(db: &Database, root: &str) -> Result<Option<std::time::SystemTime>> {
+    let ms = db.get_scan_started_ms(root)?;
+    Ok(ms.map(chatvault_index::system_time_from_ms))
+}
+
+/// 合并目录发现与已知文件内容变更
+fn merge_changed_known(
+    walked: Vec<DiscoveredFile>,
+    changed_known: Vec<chatvault_index::KnownLocalFile>,
+    source_type: &str,
+    account_id: Option<&str>,
+    conversation_hint: Option<String>,
+) -> Vec<DiscoveredFile> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut merged = Vec::with_capacity(walked.len() + changed_known.len());
+    for file in walked {
+        let key = chatvault_core::normalize_scan_key(&file.absolute_path);
+        if seen.insert(key) {
+            merged.push(file);
+        }
+    }
+    for known in changed_known {
+        let key = chatvault_core::normalize_scan_key(&known.original_path);
+        if seen.contains(&key) {
+            continue;
+        }
+        if let Some(file) = known.to_discovered(source_type, account_id, conversation_hint.clone())
+        {
+            seen.insert(key);
+            merged.push(file);
+        }
+    }
+    merged
+}
+
+/// 仅对需要处理的文件做稳定性检测并入库
+fn process_files(
+    db: &mut Database,
+    device_id: &str,
+    files: &[DiscoveredFile],
+    indexed: &mut usize,
+    skipped: &mut usize,
+) -> Result<()> {
+    for file in files {
+        if db.path_is_current(&file.absolute_path)? {
+            *skipped += 1;
+            continue;
+        }
+        let stable = check_file_stability_sync(&file.absolute_path, Duration::from_millis(50))
+            .unwrap_or(false);
+        if !stable {
+            continue;
+        }
+        match db.ingest_file(file, device_id) {
+            Ok(IngestResult::Indexed { .. }) => *indexed += 1,
+            Ok(IngestResult::Skipped { .. }) => *skipped += 1,
+            Err(e) => eprintln!("[-] 入库异常 {}: {}", file.file_name, e),
+        }
+    }
     Ok(())
 }
 
