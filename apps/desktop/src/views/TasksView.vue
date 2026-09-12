@@ -98,7 +98,7 @@
                     type="number"
                     class="w-16"
                     min="0.5"
-                    max="24"
+                    :max="maxScanIntervalHours"
                     step="0.5"
                     @update:model-value="onIntervalInput"
                   />
@@ -271,6 +271,7 @@ const collectDirs = ref<string[]>([]);
 const newDir = ref("");
 const scheduleEnabled = ref(false);
 const scanIntervalMinutes = ref(30);
+const maxScanIntervalHours = 168;
 const scheduleRegistered = ref(false);
 const fullScan = ref(false);
 const running = ref(false);
@@ -470,7 +471,7 @@ async function saveSchedule() {
     window.clearTimeout(scheduleSaveTimer);
     scheduleSaveTimer = undefined;
   }
-  const interval = Math.min(1440, Math.max(5, Number(scanIntervalMinutes.value) || 30));
+  const interval = Math.min(maxScanIntervalHours * 60, Math.max(5, Number(scanIntervalMinutes.value) || 30));
   scanIntervalMinutes.value = interval;
   try {
     await setScheduleConfig(scheduleEnabled.value, interval);

@@ -7,6 +7,9 @@ use std::process::Command;
 /// 计划任务名称
 pub const TASK_NAME: &str = "ChatVaultScheduledScan";
 
+/// 计划任务允许的最大执行间隔：7 天。
+pub const MAX_INTERVAL_MINUTES: u32 = 7 * 24 * 60;
+
 /// 定位 chatvault-cli 可执行文件
 ///
 /// 只使用同版本安装包或构建目录中的 CLI，避免调用 PATH 中的其他程序。
@@ -33,7 +36,7 @@ pub fn register_scheduled_task(
     db_path: &Path,
     interval_minutes: u32,
 ) -> Result<(), String> {
-    let minutes = interval_minutes.clamp(5, 1440);
+    let minutes = interval_minutes.clamp(5, MAX_INTERVAL_MINUTES);
     let tr = format!(
         "\"{}\" scheduled-run --db \"{}\"",
         cli_path.display(),

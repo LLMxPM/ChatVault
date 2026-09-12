@@ -126,7 +126,7 @@ pub async fn set_schedule_config(
     state: State<'_, AppState>,
 ) -> std::result::Result<(), String> {
     if enabled {
-        let interval = interval_minutes.clamp(5, 1440);
+        let interval = interval_minutes.clamp(5, crate::schedule::MAX_INTERVAL_MINUTES);
         let cli = crate::schedule::find_cli_path()
             .ok_or_else(|| "未找到 chatvault-cli.exe，请将其放在桌面程序同目录".to_string())?;
         crate::schedule::register_scheduled_task(&cli, &state.db_path, interval)?;
@@ -141,7 +141,7 @@ pub async fn set_schedule_config(
         db.set_setting(setting_keys::SCHEDULE_ENABLED, "false")
             .map_err(|e| e.to_string())?;
         if interval_minutes > 0 {
-            let interval = interval_minutes.clamp(5, 1440);
+            let interval = interval_minutes.clamp(5, crate::schedule::MAX_INTERVAL_MINUTES);
             db.set_setting(setting_keys::SCAN_INTERVAL_MINUTES, &interval.to_string())
                 .map_err(|e| e.to_string())?;
         }
