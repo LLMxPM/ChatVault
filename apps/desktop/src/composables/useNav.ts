@@ -1,7 +1,7 @@
 // 全局导航状态：供 App 与各视图共享切换
 import { ref } from "vue";
 
-export type AppTab = "library" | "collect" | "archive" | "tasks" | "settings";
+export type AppTab = "library" | "tasks" | "settings";
 
 export const currentTab = ref<AppTab>("library");
 

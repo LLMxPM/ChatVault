@@ -50,7 +50,7 @@ pub async fn get_app_settings(
     })
 }
 
-/// 保存全部应用设置，并按开关注册/注销 Windows 计划任务
+/// 保存设置页基础项（身份/连接/缓存）；调度与采集目录由独立命令维护。
 #[tauri::command]
 pub async fn set_app_settings(
     settings: AppSettingsDto,
@@ -77,18 +77,6 @@ pub async fn set_app_settings(
     };
     db.check_remote_binding(&normalized_url, &settings.vault_id)
         .map_err(|e| e.to_string())?;
-    // 系统任务注册成功后才保存开关，失败时设置保持原样。
-    if settings.schedule_enabled {
-        let cli = crate::schedule::find_cli_path()
-            .ok_or_else(|| "未找到 chatvault-cli.exe，请将其放在桌面程序同目录".to_string())?;
-        crate::schedule::register_scheduled_task(
-            &cli,
-            &state.db_path,
-            settings.scan_interval_minutes,
-        )?;
-    } else {
-        crate::schedule::unregister_scheduled_task()?;
-    }
     db.atomic(|db| {
         db.connection()
             .execute(
@@ -101,18 +89,6 @@ pub async fn set_app_settings(
         db.set_setting(setting_keys::DEVICE_ID, &settings.device_id)?;
         db.set_setting(setting_keys::WEBDAV_URL, &normalized_url)?;
         db.set_setting(setting_keys::WEBDAV_USERNAME, &settings.webdav_username)?;
-        db.set_setting(
-            setting_keys::SCAN_INTERVAL_MINUTES,
-            &settings.scan_interval_minutes.to_string(),
-        )?;
-        db.set_setting(
-            setting_keys::SCHEDULE_ENABLED,
-            if settings.schedule_enabled {
-                "true"
-            } else {
-                "false"
-            },
-        )?;
 
         db.set_setting(COPY_THRESHOLD_MIB, &settings.copy_threshold_mib.to_string())?;
         db.set_setting(
@@ -120,8 +96,6 @@ pub async fn set_app_settings(
             &settings.cache_retention_days.to_string(),
         )?;
         db.set_setting(CACHE_MAX_MIB, &settings.cache_max_mib.to_string())?;
-        let dirs_json = serde_json::to_string(&settings.collect_dirs)?;
-        db.set_setting(setting_keys::COLLECT_DIRS, &dirs_json)?;
 
         Ok(())
     })
@@ -129,6 +103,49 @@ pub async fn set_app_settings(
 
     db.reclaim_cache()
         .map_err(|e| format!("设置已保存，但缓存回收失败：{e}"))?;
+    Ok(())
+}
+
+/// 持久化采集目录列表（任务页维护）。
+#[tauri::command]
+pub async fn set_collect_dirs(
+    dirs: Vec<String>,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    let mut db = state.get_db().map_err(|e| e.to_string())?;
+    let dirs_json = serde_json::to_string(&dirs).map_err(|e| e.to_string())?;
+    db.set_setting(setting_keys::COLLECT_DIRS, &dirs_json)
+        .map_err(|e| e.to_string())
+}
+
+/// 更新定时扫描开关与周期，并注册/注销系统计划任务。
+#[tauri::command]
+pub async fn set_schedule_config(
+    enabled: bool,
+    interval_minutes: u32,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    if enabled {
+        let interval = interval_minutes.clamp(5, 1440);
+        let cli = crate::schedule::find_cli_path()
+            .ok_or_else(|| "未找到 chatvault-cli.exe，请将其放在桌面程序同目录".to_string())?;
+        crate::schedule::register_scheduled_task(&cli, &state.db_path, interval)?;
+        let mut db = state.get_db().map_err(|e| e.to_string())?;
+        db.set_setting(setting_keys::SCAN_INTERVAL_MINUTES, &interval.to_string())
+            .map_err(|e| e.to_string())?;
+        db.set_setting(setting_keys::SCHEDULE_ENABLED, "true")
+            .map_err(|e| e.to_string())?;
+    } else {
+        crate::schedule::unregister_scheduled_task()?;
+        let mut db = state.get_db().map_err(|e| e.to_string())?;
+        db.set_setting(setting_keys::SCHEDULE_ENABLED, "false")
+            .map_err(|e| e.to_string())?;
+        if interval_minutes > 0 {
+            let interval = interval_minutes.clamp(5, 1440);
+            db.set_setting(setting_keys::SCAN_INTERVAL_MINUTES, &interval.to_string())
+                .map_err(|e| e.to_string())?;
+        }
+    }
     Ok(())
 }
 

@@ -197,6 +197,7 @@ fn format_file_size(bytes: u64) -> String {
 }
 
 pub mod library;
+pub mod pipeline;
 pub mod scan;
 pub mod settings;
 pub mod sources;

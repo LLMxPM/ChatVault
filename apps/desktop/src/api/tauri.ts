@@ -11,7 +11,6 @@ import type {
   VaultStatsDto,
   WebdavConfigDto,
   WebdavCapabilityDto,
-  ArchiveResultDto,
   AppSettingsDto,
   UploadTaskDto,
   SyncResultDto,
@@ -19,6 +18,8 @@ import type {
   SourceConversationDto,
   UpdateSourceAccountDto,
   UpdateSourceConversationDto,
+  PipelineRequestDto,
+  PipelineResultDto,
 } from "../types";
 
 /**
@@ -36,6 +37,21 @@ export async function detectWechatAccounts(): Promise<WechatAccountDto[]> {
  */
 export async function runScan(request: ScanRequestDto): Promise<ScanResultDto> {
   return await invoke<ScanResultDto>("run_scan", { request });
+}
+
+/** 立即运行流水线：扫描 → 归档 → 自动同步，与定时任务同构。 */
+export async function runPipeline(request: PipelineRequestDto): Promise<PipelineResultDto> {
+  return await invoke<PipelineResultDto>("run_pipeline", { request });
+}
+
+/** 保存持久采集目录。 */
+export async function setCollectDirs(dirs: string[]): Promise<void> {
+  return await invoke<void>("set_collect_dirs", { dirs });
+}
+
+/** 保存定时扫描开关与周期。 */
+export async function setScheduleConfig(enabled: boolean, intervalMinutes: number): Promise<void> {
+  return await invoke<void>("set_schedule_config", { enabled, intervalMinutes });
 }
 
 /**
@@ -70,15 +86,6 @@ export async function revealFileInExplorer(path: string): Promise<void> {
  */
 export async function testWebdav(config: WebdavConfigDto): Promise<WebdavCapabilityDto> {
   return await invoke<WebdavCapabilityDto>("test_webdav", { config });
-}
-
-/**
- * 将本地对象归档推送到 WebDAV 并执行流式校验
- * @param config WebDAV 连接配置
- * @returns 归档总结报告
- */
-export async function archiveToWebdav(config: WebdavConfigDto): Promise<ArchiveResultDto> {
-  return await invoke<ArchiveResultDto>("archive_to_webdav", { config });
 }
 
 /**
@@ -148,29 +155,10 @@ export async function pauseUploadTask(taskId: string): Promise<void> {
 }
 
 /**
- * 发布本机元数据日志
- */
-export async function syncPublish(config: WebdavConfigDto): Promise<SyncResultDto> {
-  return await invoke<SyncResultDto>("sync_publish", { config });
-}
-
-/**
- * 拉取远端日志并合并
- */
-export async function syncPull(config: WebdavConfigDto): Promise<SyncResultDto> {
-  return await invoke<SyncResultDto>("sync_pull", { config });
-}
-
-/**
  * 从远端恢复索引
  */
 export async function syncRestore(config: WebdavConfigDto): Promise<SyncResultDto> {
   return await invoke<SyncResultDto>("sync_restore", { config });
-}
-
-/** 保存同步页连接参数，和设置页及计划任务共用。 */
-export async function saveWebdavConfig(config: WebdavConfigDto): Promise<void> {
-  return invoke<void>("save_webdav_config", { config });
 }
 
 /** 读取完整索引中的来源账号映射，独立于文件列表分页。 */

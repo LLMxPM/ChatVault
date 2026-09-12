@@ -142,32 +142,38 @@ fn ingest_candidates(
     Ok(complete)
 }
 
-/// 触发针对指定微信账号与通用目录的扫描（默认增量，可选全量）
+/// 执行扫描入库：target_accounts 为 None 时扫描全部微信账号。
 ///
-/// # 输入
-/// - `request`: 账号列表、通用文件夹与 full_scan 标志
-/// - `state`: 应用全局上下文
-#[tauri::command]
-pub async fn run_scan(
-    request: ScanRequestDto,
-    state: State<'_, AppState>,
+/// 始终合并设置中的 collect_dirs 与调用方追加目录，保证手动与定时范围一致。
+pub(crate) fn execute_scan(
+    db: &mut chatvault_index::Database,
+    device_id: &str,
+    target_accounts: Option<&[String]>,
+    extra_folders: &[String],
+    full_scan: bool,
 ) -> std::result::Result<ScanResultDto, String> {
     let start_time = Instant::now();
-    let mut db = state.get_db().map_err(|e| e.to_string())?;
-    // 使用本轮开始时刻作检查点，扫描过程中新建的文件下轮仍能被发现
     let scan_started_ms = Utc::now().timestamp_millis();
-    let device_id = state.device_id().map_err(|e| e.to_string())?;
     let mut tally = ScanTally::new();
+    let collect_dirs = load_collect_dirs(db)?;
+    let mut folders: Vec<String> = collect_dirs;
+    for folder in extra_folders {
+        if !folders.iter().any(|existing| existing == folder) {
+            folders.push(folder.clone());
+        }
+    }
 
     // 1. 扫描微信账号
     if let Ok(root) = WeChat4Detector::detect_root() {
         let detected_accounts = WeChat4Detector::find_accounts(&root).unwrap_or_default();
         for acc in detected_accounts {
-            if !request.target_accounts.contains(&acc.source_account_id) {
-                continue;
+            if let Some(selected) = target_accounts {
+                if !selected.contains(&acc.source_account_id) {
+                    continue;
+                }
             }
             let files_root = acc.files_dir.to_string_lossy().to_string();
-            let since = resolve_since(&db, &files_root, request.full_scan)?;
+            let since = resolve_since(db, &files_root, full_scan)?;
             let walked =
                 WeChat4Parser::parse_account_files_since(&acc, since).map_err(|e| e.to_string())?;
             let changed_known = if since.is_some() {
@@ -184,7 +190,7 @@ pub async fn run_scan(
                 None,
                 Some(&acc.files_dir),
             );
-            let complete = ingest_candidates(&mut db, &device_id, candidates, &mut tally)?;
+            let complete = ingest_candidates(db, device_id, candidates, &mut tally)?;
             if complete {
                 db.mark_scan_started(
                     &files_root,
@@ -202,14 +208,14 @@ pub async fn run_scan(
         }
     }
 
-    // 2. 扫描通用自定义文件夹
-    for folder in &request.custom_folders {
+    // 2. 扫描附加目录（设置 + 调用方追加）
+    for folder in &folders {
         let p = PathBuf::from(folder);
         if !p.exists() {
             continue;
         }
         let root_s = p.to_string_lossy().to_string();
-        let since = resolve_since(&db, &root_s, request.full_scan)?;
+        let since = resolve_since(db, &root_s, full_scan)?;
         let walked = GenericFolderParser::parse_with_since(&p, since).map_err(|e| e.to_string())?;
         let changed_known = if since.is_some() {
             db.list_changed_known_files(&root_s)
@@ -219,7 +225,7 @@ pub async fn run_scan(
         };
         let candidates =
             merge_candidates(walked, changed_known, "generic-folder", None, None, None);
-        let complete = ingest_candidates(&mut db, &device_id, candidates, &mut tally)?;
+        let complete = ingest_candidates(db, device_id, candidates, &mut tally)?;
         if complete {
             db.mark_scan_started(&root_s, "generic-folder", None, scan_started_ms)
                 .map_err(|e| e.to_string())?;
@@ -234,4 +240,40 @@ pub async fn run_scan(
         total_skipped: tally.skipped,
         duration_ms: start_time.elapsed().as_millis(),
     })
+}
+
+/// 读取设置中的持久采集目录。
+fn load_collect_dirs(db: &chatvault_index::Database) -> std::result::Result<Vec<String>, String> {
+    let raw = db
+        .get_setting(setting_keys::COLLECT_DIRS)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "[]".to_string());
+    serde_json::from_str(&raw).map_err(|e| e.to_string())
+}
+
+/// 触发针对指定微信账号与通用目录的扫描（默认增量，可选全量）
+///
+/// # 输入
+/// - `request`: 账号列表（空则跳过微信）、额外文件夹与 full_scan 标志
+/// - `state`: 应用全局上下文
+#[tauri::command]
+pub async fn run_scan(
+    request: ScanRequestDto,
+    state: State<'_, AppState>,
+) -> std::result::Result<ScanResultDto, String> {
+    let mut db = state.get_db().map_err(|e| e.to_string())?;
+    let device_id = state.device_id().map_err(|e| e.to_string())?;
+    // 空列表表示本次不扫微信，仅扫描目录
+    let target = if request.target_accounts.is_empty() {
+        Some(&[] as &[String])
+    } else {
+        Some(request.target_accounts.as_slice())
+    };
+    execute_scan(
+        &mut db,
+        &device_id,
+        target,
+        &request.custom_folders,
+        request.full_scan,
+    )
 }

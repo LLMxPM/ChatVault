@@ -1,6 +1,9 @@
-<!-- ChatVault 副本与缓存设置：配置复制阈值、归档后保留期和容量目标。 -->
+<!-- ChatVault 副本与缓存设置：复制阈值、归档后保留期与容量目标。 -->
 <template>
-  <UiCard title="副本与缓存">
+  <UiCard
+    title="副本与缓存"
+    info="仅小于阈值的文件在入库时复制；等于或超过阈值直接读取原文件上传。未复制的原文件在上传成功前需保留。仅回收已归档同步的副本；保留天数或容量为 0 表示同步后立即回收。"
+  >
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
       <label class="block">
         <span class="text-cv-caption text-cv-text-2">复制阈值（MiB）</span>
@@ -25,7 +28,7 @@
         />
       </label>
       <label class="block">
-        <span class="text-cv-caption text-cv-text-2">缓存容量目标（MiB）</span>
+        <span class="text-cv-caption text-cv-text-2">容量目标（MiB）</span>
         <UiInput
           :model-value="settings.cacheMaxMib"
           type="number"
@@ -36,10 +39,6 @@
         />
       </label>
     </div>
-    <p class="mt-3 text-cv-caption leading-relaxed text-cv-text-3">
-      仅小于阈值的文件在入库时复制；等于或超过阈值直接读取原文件上传。未复制的原文件在上传成功前需保留。
-      仅回收已归档同步的副本；保留天数或容量为 0 表示同步后立即回收。1 MiB = 1024 × 1024 字节。
-    </p>
   </UiCard>
 </template>
 

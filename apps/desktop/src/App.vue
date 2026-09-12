@@ -1,6 +1,6 @@
 <!--
   ChatVault 桌面端根组件
-  职责：五项主导航、主题初始化、全局 Toast/Confirm 挂载与运行状态条。
+  职责：三项主导航、主题初始化、全局 Toast/Confirm 挂载与运行状态条。
 -->
 <template>
   <div class="flex h-screen w-screen overflow-hidden bg-cv-bg font-sans text-cv-text">
@@ -44,14 +44,14 @@
           class="mx-2 mt-1 space-y-1.5 rounded-cv-lg border border-cv-border bg-cv-surface-2 p-3"
         >
           <p class="text-cv-caption font-medium text-cv-text">开始建立资料库</p>
-          <button class="block text-cv-caption text-cv-text-2 hover:text-cv-accent" @click="navigateTo('collect')">
-            1. 识别微信来源并扫描
+          <button class="block text-cv-caption text-cv-text-2 hover:text-cv-accent" @click="navigateTo('tasks')">
+            1. 配置采集范围并立即运行
           </button>
           <button class="block text-cv-caption text-cv-text-2 hover:text-cv-accent" @click="navigateTo('settings')">
             2. 在设置中连接 WebDAV
           </button>
-          <button class="block text-cv-caption text-cv-text-2 hover:text-cv-accent" @click="navigateTo('settings')">
-            3. 配置定时与缓存
+          <button class="block text-cv-caption text-cv-text-2 hover:text-cv-accent" @click="navigateTo('tasks')">
+            3. 启用定时流水线
           </button>
           <button class="text-cv-caption text-cv-text-3 hover:text-cv-text-2" @click="guideDismissed = true">
             收起引导
@@ -75,8 +75,6 @@
 
     <main class="h-full min-w-0 flex-1 overflow-hidden">
       <LibraryView v-if="currentTab === 'library'" />
-      <CollectView v-else-if="currentTab === 'collect'" />
-      <ArchiveView v-else-if="currentTab === 'archive'" />
       <TasksView v-else-if="currentTab === 'tasks'" />
       <SettingsView v-else-if="currentTab === 'settings'" />
     </main>
@@ -88,14 +86,12 @@
 
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref } from "vue";
-import { FolderSearch, FolderInput, Cloud, ListTodo, Settings } from "lucide-vue-next";
+import { FolderSearch, ListTodo, Settings } from "lucide-vue-next";
 import appIcon from "./assets/app-icon.png";
 import { loadRuntime, runtime } from "./api/runtime";
 import { initTheme, disposeTheme } from "./composables/useTheme";
 import { currentTab, navigateTo, type AppTab } from "./composables/useNav";
 import LibraryView from "./views/LibraryView.vue";
-import CollectView from "./views/CollectView.vue";
-import ArchiveView from "./views/ArchiveView.vue";
 import TasksView from "./views/TasksView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import UiToast from "./components/ui/UiToast.vue";
@@ -105,8 +101,6 @@ const guideDismissed = ref(false);
 
 const navItems: { id: AppTab; label: string; icon: typeof FolderSearch }[] = [
   { id: "library", label: "文件库", icon: FolderSearch },
-  { id: "collect", label: "采集", icon: FolderInput },
-  { id: "archive", label: "归档", icon: Cloud },
   { id: "tasks", label: "任务", icon: ListTodo },
   { id: "settings", label: "设置", icon: Settings },
 ];
@@ -114,7 +108,7 @@ const navItems: { id: AppTab; label: string; icon: typeof FolderSearch }[] = [
 onMounted(async () => {
   initTheme();
   await loadRuntime();
-  if (runtime.firstRun) navigateTo("collect");
+  if (runtime.firstRun) navigateTo("tasks");
 });
 
 onBeforeUnmount(() => {

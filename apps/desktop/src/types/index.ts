@@ -151,7 +151,7 @@ export interface ArchiveResultDto {
 }
 
 /**
- * 应用设置（Vault/设备/定时/采集目录）
+ * 应用设置（Vault/设备/WebDAV/缓存/采集目录/调度）
  */
 export interface AppSettingsDto {
   vaultId: string;
@@ -164,6 +164,25 @@ export interface AppSettingsDto {
   scanIntervalMinutes: number;
   scheduleEnabled: boolean;
   collectDirs: string[];
+}
+
+/** 流水线请求：与定时任务同构。 */
+export interface PipelineRequestDto {
+  /** 未传或 null 表示扫描全部微信账号 */
+  targetAccounts?: string[] | null;
+  /** 仅本次附加的目录，不写入设置 */
+  extraFolders?: string[];
+  fullScan?: boolean;
+}
+
+/** 流水线结果。 */
+export interface PipelineResultDto {
+  webdavConfigured: boolean;
+  scan: ScanResultDto;
+  archive: ArchiveResultDto | null;
+  syncMessage: string | null;
+  message: string;
+  durationMs: number;
 }
 
 /**

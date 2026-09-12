@@ -1,19 +1,18 @@
 <!--
   ChatVault 设置视图
-  职责：身份、采集目录、定时任务、WebDAV 配置、缓存、外观主题与关于信息。
+  职责：身份、WebDAV 连接、缓存、外观主题与关于。采集范围与调度在任务页维护。
 -->
 <template>
   <div class="flex h-full flex-col gap-4 p-6">
     <div class="flex flex-wrap items-end justify-between gap-3">
       <div>
         <h2 class="text-cv-page text-cv-text">设置</h2>
-        <p class="mt-0.5 text-cv-caption text-cv-text-2">本机身份、采集、归档连接与外观</p>
       </div>
       <UiButton variant="primary" :loading="saving" @click="save">保存设置</UiButton>
     </div>
 
     <div class="min-h-0 flex-1 space-y-4 overflow-y-auto pb-4">
-      <UiCard title="身份与资料库">
+      <UiCard title="身份与资料库" info="Vault ID 标识资料库；设备 ID 由系统生成，不可修改。">
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <label class="block">
             <span class="text-cv-caption text-cv-text-2">Vault ID</span>
@@ -26,46 +25,10 @@
         </div>
       </UiCard>
 
-      <UiCard title="采集与定时" description="采集目录与「采集」页共用；定时任务由系统计划程序拉起">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <span class="text-cv-caption text-cv-text-2">采集目录</span>
-          <UiButton size="sm" variant="secondary" :loading="picking" @click="addCollectDir">选择文件夹</UiButton>
-        </div>
-        <p v-if="!form.collectDirs.length" class="mt-2 text-cv-caption text-cv-text-3">尚未添加采集目录</p>
-        <ul v-else class="mt-2 space-y-1">
-          <li
-            v-for="(path, idx) in form.collectDirs"
-            :key="path"
-            class="flex items-center justify-between gap-2 rounded-cv bg-cv-surface-2 px-2.5 py-1.5"
-          >
-            <span class="truncate font-mono text-cv-caption text-cv-text-2" :title="path">{{ path }}</span>
-            <button class="shrink-0 text-cv-caption text-cv-danger hover:underline" @click="removeCollectDir(idx)">移除</button>
-          </li>
-        </ul>
-        <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
-          <label class="flex items-center gap-2 whitespace-nowrap text-cv-caption text-cv-text-2">
-            <input v-model="form.scheduleEnabled" type="checkbox" class="accent-[var(--cv-accent)]" />
-            启用系统定时扫描
-          </label>
-          <label class="flex items-center gap-2 whitespace-nowrap text-cv-caption text-cv-text-2">
-            周期（分钟）
-            <UiInput
-              :model-value="form.scanIntervalMinutes"
-              type="number"
-              class="w-24"
-              min="5"
-              max="1440"
-              @update:model-value="(v) => (form.scanIntervalMinutes = Number(v) || 0)"
-            />
-          </label>
-        </div>
-        <p class="mt-2 text-cv-caption text-cv-text-3">
-          <span v-if="scheduleRegistered" class="text-cv-success">当前已注册计划任务。</span>
-          <span v-else>当前未注册计划任务。</span>
-        </p>
-      </UiCard>
-
-      <UiCard title="WebDAV 连接" description="归档页读取此处配置；密码保存在 Windows 凭据管理器">
+      <UiCard
+        title="WebDAV 连接"
+        info="任务流水线与换机恢复共用。密码保存在 Windows 凭据管理器；测试用当前表单与已存凭据。"
+      >
         <div class="space-y-3">
           <label class="block">
             <span class="text-cv-caption text-cv-text-2">服务器地址</span>
@@ -77,8 +40,8 @@
               <UiInput v-model="form.webdavUsername" class="mt-1 font-mono" />
             </label>
             <label class="block">
-              <span class="text-cv-caption text-cv-text-2">新密码（留空则保留已存凭据）</span>
-              <UiInput v-model="webdavPassword" type="password" class="mt-1" />
+              <span class="text-cv-caption text-cv-text-2">新密码</span>
+              <UiInput v-model="webdavPassword" type="password" class="mt-1" placeholder="留空则保留已存凭据" />
             </label>
           </div>
           <div class="flex flex-wrap items-center gap-2">
@@ -94,7 +57,6 @@
             >
               清除已存密码
             </UiButton>
-            <span class="text-cv-caption text-cv-text-3">测试用当前表单与已存凭据；清除仅删除系统凭据管理器中的密码</span>
           </div>
           <WebdavTestResult v-if="webdavTestResult" :capability="webdavTestResult" />
         </div>
@@ -102,7 +64,7 @@
 
       <CacheSettings v-model="form" />
 
-      <UiCard title="外观" description="默认浅色；可固定深色或跟随系统">
+      <UiCard title="外观">
         <div class="flex flex-wrap gap-2">
           <button
             v-for="opt in themeOptions"
@@ -158,11 +120,9 @@ import WebdavTestResult from "../components/WebdavTestResult.vue";
 import {
   getAppSettings,
   setAppSettings,
-  getScheduleStatus,
   saveWebdavCredential,
   clearWebdavCredential,
   getVaultStats,
-  pickDirectory,
   testWebdav,
 } from "../api/tauri";
 import { pushToast } from "../composables/useToast";
@@ -193,11 +153,9 @@ const form = ref<AppSettingsDto>({
 
 const webdavPassword = ref("");
 const saving = ref(false);
-const picking = ref(false);
 const testingWebdav = ref(false);
 const clearingCredential = ref(false);
 const webdavTestResult = ref<WebdavCapabilityDto | null>(null);
-const scheduleRegistered = ref(false);
 const stats = ref<VaultStatsDto | null>(null);
 
 /** 删除 Windows 凭据管理器中的 WebDAV 密码；需二次确认。 */
@@ -252,30 +210,7 @@ async function testWebdavConnection() {
   }
 }
 
-/** 弹出系统目录选择框并加入采集目录；取消或重复路径不写入。 */
-async function addCollectDir() {
-  picking.value = true;
-  try {
-    const path = await pickDirectory();
-    if (!path) return;
-    if (form.value.collectDirs.includes(path)) {
-      pushToast({ tone: "warning", title: "目录已存在" });
-      return;
-    }
-    form.value.collectDirs = [...form.value.collectDirs, path];
-  } catch (err) {
-    pushToast({ tone: "danger", title: "选择目录失败", description: String(err) });
-  } finally {
-    picking.value = false;
-  }
-}
-
-/** 按索引移除采集目录，保存前只改本地表单。 */
-function removeCollectDir(index: number) {
-  form.value.collectDirs = form.value.collectDirs.filter((_, i) => i !== index);
-}
-
-/** 校验缓存与计划周期并写入设置；若填写了新密码则写入凭据管理器。 */
+/** 校验缓存并写入设置；若填写了新密码则写入凭据管理器。调度与采集目录在任务页维护。 */
 async function save() {
   saving.value = true;
   try {
@@ -288,17 +223,11 @@ async function save() {
         throw new Error("缓存设置必须是 0 到 4294967295 之间的整数");
       }
     }
-    const interval = Number(form.value.scanIntervalMinutes);
-    if (!Number.isInteger(interval) || interval < 5 || interval > 1440) {
-      throw new Error("扫描周期需在 5–1440 分钟之间");
-    }
-    form.value.scanIntervalMinutes = interval;
     await setAppSettings(form.value);
     if (webdavPassword.value && form.value.webdavUrl && form.value.webdavUsername) {
       await saveWebdavCredential(form.value.webdavUrl, form.value.webdavUsername, webdavPassword.value);
       webdavPassword.value = "";
     }
-    scheduleRegistered.value = await getScheduleStatus();
     pushToast({ tone: "success", title: "设置已保存" });
   } catch (err) {
     pushToast({ tone: "danger", title: "保存失败", description: String(err) });
@@ -309,9 +238,7 @@ async function save() {
 
 onMounted(async () => {
   try {
-    const s = await getAppSettings();
-    form.value = s;
-    scheduleRegistered.value = await getScheduleStatus();
+    form.value = await getAppSettings();
   } catch (err) {
     pushToast({ tone: "danger", title: "读取设置失败", description: String(err) });
   }

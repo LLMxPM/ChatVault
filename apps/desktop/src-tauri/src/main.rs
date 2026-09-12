@@ -33,6 +33,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .invoke_handler(tauri::generate_handler![
             commands::scan::detect_wechat_accounts,
             commands::scan::run_scan,
+            commands::pipeline::run_pipeline,
             commands::library::search_records,
             commands::library::get_vault_stats,
             commands::library::reveal_file_in_explorer,
@@ -47,6 +48,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::webdav::clear_webdav_credential,
             commands::settings::get_app_settings,
             commands::settings::set_app_settings,
+            commands::settings::set_collect_dirs,
+            commands::settings::set_schedule_config,
             commands::settings::get_schedule_status,
             commands::settings::pick_directory,
             commands::sync::sync_publish,

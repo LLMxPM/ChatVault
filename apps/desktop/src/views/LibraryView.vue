@@ -1,13 +1,12 @@
 <!--
   ChatVault 文件库与全文检索视图
-  职责：中文即输即搜、多维筛选、分页列表与资源管理器定位。
+  职责：中文即输即搜、多维筛选、分页列表、资源管理器定位与来源标注入口。
 -->
 <template>
   <div class="flex h-full flex-col gap-4 p-6">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h2 class="text-cv-page text-cv-text">文件库</h2>
-        <p class="mt-0.5 text-cv-caption text-cv-text-2">按文件名、类型、来源检索已入库附件</p>
       </div>
       <div class="flex items-center gap-2 text-cv-caption text-cv-text-2">
         <template v-if="stats">
@@ -17,6 +16,7 @@
           <span class="text-cv-text-3">·</span>
           <span>去重节省 {{ stats.formattedSavedBytes }}</span>
         </template>
+        <UiButton size="sm" variant="secondary" @click="showSources = true">来源标注</UiButton>
       </div>
     </div>
 
@@ -137,9 +137,9 @@
               <td colspan="6" class="py-16 text-center">
                 <FileQuestion class="mx-auto mb-2 h-10 w-10 text-cv-text-3" />
                 <p class="text-cv-body font-medium text-cv-text">未找到符合条件的文件</p>
-                <p class="mt-1 text-cv-caption text-cv-text-2">可先到「采集」扫描微信附件入库</p>
-                <UiButton class="mt-3" variant="primary" size="sm" @click="navigateTo('collect')">
-                  去采集
+                <p class="mt-1 text-cv-caption text-cv-text-2">可先到「任务」配置范围并立即运行</p>
+                <UiButton class="mt-3" variant="primary" size="sm" @click="navigateTo('tasks')">
+                  去任务
                 </UiButton>
               </td>
             </tr>
@@ -161,6 +161,8 @@
         </UiButton>
       </div>
     </div>
+
+    <SourceLabelPanel v-if="showSources" @close="showSources = false" @changed="onSourcesChanged" />
   </div>
 </template>
 
@@ -183,6 +185,7 @@ import {
 import UiInput from "../components/ui/UiInput.vue";
 import UiSelect from "../components/ui/UiSelect.vue";
 import UiButton from "../components/ui/UiButton.vue";
+import SourceLabelPanel from "../components/SourceLabelPanel.vue";
 import { searchRecords, revealFileInExplorer, listSourceAccounts, getVaultStats } from "../api/tauri";
 import { pushToast } from "../composables/useToast";
 import { navigateTo } from "../composables/useNav";
@@ -199,6 +202,7 @@ const page = ref(0);
 const pageSize = 100;
 const hasNext = ref(false);
 const error = ref("");
+const showSources = ref(false);
 let requestId = 0;
 let debounceTimer: number | undefined;
 
@@ -322,6 +326,12 @@ async function loadMeta() {
   }
 }
 
+/** 来源标注保存后刷新筛选与列表。 */
+async function onSourcesChanged() {
+  await loadMeta();
+  await fetchRecords(false);
+}
+
 onMounted(() => {
   fetchRecords();
   loadMeta();
@@ -330,6 +340,4 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (debounceTimer) window.clearTimeout(debounceTimer);
 });
-
 </script>
-

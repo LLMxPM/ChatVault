@@ -139,10 +139,7 @@ impl WebDavClient {
                 .map_err(|e| ChatVaultError::WebDav(format!("解析 Location 失败: {loc} ({e})")))?;
             if next.scheme() != "https"
                 && !(next.scheme() == "http"
-                    && matches!(
-                        next.host_str(),
-                        Some("localhost" | "127.0.0.1" | "[::1]")
-                    ))
+                    && matches!(next.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")))
             {
                 return Err(ChatVaultError::WebDav(format!(
                     "拒绝非 HTTPS 重定向: {} -> {next}",
