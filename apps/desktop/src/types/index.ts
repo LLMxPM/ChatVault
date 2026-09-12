@@ -133,10 +133,11 @@ export interface WebdavConfigDto {
  */
 export interface WebdavCapabilityDto {
   reachable: boolean;
-  serverHeader?: string | null;
-  davCompliance: string[];
-  supportsLock: boolean;
+  authenticated: boolean;
+  supportMkcol: boolean;
+  supportMove: boolean;
   message: string;
+  durationMs: number;
 }
 
 /**

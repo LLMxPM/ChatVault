@@ -38,7 +38,7 @@ impl<'a> CapabilityDetector<'a> {
 
     /// 执行全套能力探测
     ///
-    /// 职责: 依次测试 HEAD、MKCOL、PUT 测试文件、MOVE 重命名与清理
+    /// 职责: 依次测试 MKCOL、PUT、HEAD、GET 回读、PROPFIND、MOVE 与清理
     /// 输出: `Result<CapabilityReport>`
     pub async fn detect(&self) -> Result<CapabilityReport> {
         let test_root = format!(
@@ -56,18 +56,22 @@ impl<'a> CapabilityDetector<'a> {
                 message: format!("连接或 MKCOL 检测失败: {e}"),
             });
         }
+        let payload = b"ChatVault Probe Payload";
+        let hash = blake3::hash(payload).to_hex().to_string();
+        // 分步记录：避免前面步骤失败时把未执行的 MOVE 误标为失败。
+        let mut authenticated = false;
+        let mut support_move = false;
         let probe = async {
-            let payload = b"ChatVault Probe Payload";
             self.client.upload_bytes(payload.to_vec(), &src).await?;
             if !self.client.exists(&src).await? {
                 return Err(chatvault_core::error::ChatVaultError::WebDav(
                     "上传后 HEAD 未找到对象".into(),
                 ));
             }
-            let hash = blake3::hash(payload).to_hex().to_string();
             crate::RemoteVerifier::new(self.client)
                 .verify_remote_hash(&src, &hash)
                 .await?;
+            authenticated = true;
             if !self.client.list_dir(&test_root).await?.contains(&src) {
                 return Err(chatvault_core::error::ChatVaultError::WebDav(
                     "PROPFIND 未返回测试文件".into(),
@@ -76,19 +80,20 @@ impl<'a> CapabilityDetector<'a> {
             self.client.move_resource(&src, &dest, false).await?;
             crate::RemoteVerifier::new(self.client)
                 .verify_remote_hash(&dest, &hash)
-                .await
+                .await?;
+            support_move = true;
+            Ok::<(), chatvault_core::error::ChatVaultError>(())
         }
         .await;
         // 只清理本次随机探测目录，不触及用户 Vault。
         let _ = self.client.delete_resource(&src).await;
         let _ = self.client.delete_resource(&dest).await;
         let _ = self.client.delete_resource(&test_root).await;
-        let passed = probe.is_ok();
         Ok(CapabilityReport {
             reachable: true,
-            authenticated: passed,
+            authenticated,
             support_mkcol: true,
-            support_move: passed,
+            support_move,
             message: match probe {
                 Ok(()) => "WebDAV 创建、上传、列举、移动和完整回读检测通过".into(),
                 Err(e) => format!("WebDAV 能力检测未通过: {e}"),

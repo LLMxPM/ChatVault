@@ -95,6 +95,11 @@ export async function loadWebdavCredential(url: string, username: string): Promi
   return await invoke<string>("load_webdav_credential", { url, username });
 }
 
+/** 删除系统凭据管理器中已保存的 WebDAV 密码（不存在时视为成功）。 */
+export async function clearWebdavCredential(url: string, username: string): Promise<void> {
+  return await invoke<void>("clear_webdav_credential", { url, username });
+}
+
 /**
  * 读取应用设置
  */

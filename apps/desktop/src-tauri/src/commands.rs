@@ -154,11 +154,18 @@ pub struct WebdavConfigDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebdavCapabilityDto {
+    /// 基础网络连通
     pub reachable: bool,
-    pub server_header: Option<String>,
-    pub dav_compliance: Vec<String>,
-    pub supports_lock: bool,
+    /// 认证与上传/回读是否通过
+    pub authenticated: bool,
+    /// 目录创建能力
+    pub support_mkcol: bool,
+    /// 暂存移动能力
+    pub support_move: bool,
+    /// 探测说明或错误信息
     pub message: String,
+    /// 探测耗时（毫秒）
+    pub duration_ms: u128,
 }
 
 /// 归档执行报告

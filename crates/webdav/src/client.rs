@@ -48,6 +48,8 @@ impl WebDavClient {
             ));
         }
         config.base_url = base.to_string().trim_end_matches('/').to_string();
+        // 写操作（PUT/MOVE/DELETE/MKCOL/PROPFIND）不自动跟随重定向；
+        // GET/HEAD 在 send_read 中手动跟随（兼容 123pan 等跨主机下载跳转）。
         let client = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
             .timeout(std::time::Duration::from_secs(3600))
@@ -82,6 +84,81 @@ impl WebDavClient {
         req
     }
 
+    /// GET/HEAD 专用：有限次跟随 HTTPS 重定向。
+    ///
+    /// 123pan 等网关在 GET 时会 302 到下载 CDN（跨主机）。跨主机后剥离 Basic 凭据，
+    /// 写路径仍使用 build_request 且不跟随跳转。
+    async fn send_read(&self, method: Method, start_url: &str) -> Result<Response> {
+        const MAX_HOPS: usize = 5;
+        let mut url = start_url.to_string();
+        let mut chain = vec![url.clone()];
+        // 仅在与起始主机一致时携带凭据；跨主机跳转后清空。
+        let start = reqwest::Url::parse(&url)
+            .map_err(|e| ChatVaultError::WebDav(format!("解析 URL 失败: {e}")))?;
+        let start_host = start.host_str().map(|s| s.to_string());
+        let start_port = start.port_or_known_default();
+
+        for _ in 0..=MAX_HOPS {
+            let current = reqwest::Url::parse(&url)
+                .map_err(|e| ChatVaultError::WebDav(format!("解析重定向 URL 失败: {e}")))?;
+            let same_origin = current.host_str().map(|s| s.to_string()) == start_host
+                && current.port_or_known_default() == start_port;
+
+            let mut req = self.client.request(method.clone(), &url);
+            if same_origin {
+                if let (Some(u), Some(p)) = (&self.config.username, &self.config.password) {
+                    req = req.basic_auth(u, Some(p));
+                }
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| ChatVaultError::WebDav(format!("{method} 请求异常: {e}")))?;
+
+            let status = resp.status();
+            if status.is_success() || status == StatusCode::NOT_FOUND {
+                return Ok(resp);
+            }
+            if !status.is_redirection() {
+                return Err(ChatVaultError::WebDav(format!(
+                    "{method} 请求 {} 失败: 状态码 {}",
+                    chain.last().unwrap_or(&url),
+                    status
+                )));
+            }
+
+            let loc = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| {
+                    ChatVaultError::WebDav(format!("{method} 收到 {status} 但缺少 Location 头"))
+                })?;
+            let next = current
+                .join(loc)
+                .map_err(|e| ChatVaultError::WebDav(format!("解析 Location 失败: {loc} ({e})")))?;
+            if next.scheme() != "https"
+                && !(next.scheme() == "http"
+                    && matches!(
+                        next.host_str(),
+                        Some("localhost" | "127.0.0.1" | "[::1]")
+                    ))
+            {
+                return Err(ChatVaultError::WebDav(format!(
+                    "拒绝非 HTTPS 重定向: {} -> {next}",
+                    chain.last().unwrap_or(&url)
+                )));
+            }
+            url = next.to_string();
+            chain.push(url.clone());
+        }
+
+        Err(ChatVaultError::WebDav(format!(
+            "{method} 重定向次数过多: {}",
+            chain.join(" -> ")
+        )))
+    }
+
     /// HEAD 检查资源是否存在
     ///
     /// 职责: 快速探测远端文件或目录是否存在
@@ -89,20 +166,17 @@ impl WebDavClient {
     /// 输出: 存在返回 Ok(true)，不存在（404）返回 Ok(false)，其它返回 Err
     pub async fn exists(&self, relative_path: &str) -> Result<bool> {
         let url = self.get_full_url(relative_path)?;
-        let resp = self
-            .build_request(Method::HEAD, &url)
-            .send()
-            .await
-            .map_err(|e| ChatVaultError::WebDav(format!("HEAD 请求异常: {}", e)))?;
+        let resp = self.send_read(Method::HEAD, &url).await?;
 
-        if resp.status().is_success() {
+        let status = resp.status();
+        if status.is_success() {
             Ok(true)
-        } else if resp.status() == StatusCode::NOT_FOUND {
+        } else if status == StatusCode::NOT_FOUND {
             Ok(false)
         } else {
             Err(ChatVaultError::WebDav(format!(
                 "HEAD 响应异常状态码: {}",
-                resp.status()
+                status
             )))
         }
     }
@@ -309,21 +383,7 @@ impl WebDavClient {
     /// 输出: `Result<Response>`
     pub async fn get_stream(&self, relative_path: &str) -> Result<Response> {
         let url = self.get_full_url(relative_path)?;
-        let resp = self
-            .build_request(Method::GET, &url)
-            .send()
-            .await
-            .map_err(|e| ChatVaultError::WebDav(format!("GET 发起失败: {}", e)))?;
-
-        if !resp.status().is_success() {
-            return Err(ChatVaultError::WebDav(format!(
-                "GET 请求 {} 失败: 状态码 {}",
-                relative_path,
-                resp.status()
-            )));
-        }
-
-        Ok(resp)
+        self.send_read(Method::GET, &url).await
     }
 
     /// DELETE 删除远端资源

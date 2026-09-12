@@ -44,14 +44,8 @@
       </div>
     </UiCard>
 
-    <UiCard v-if="capability" title="连接探测">
-      <p class="text-cv-body" :class="capability.reachable ? 'text-cv-success' : 'text-cv-danger'">
-        {{ capability.message }}
-      </p>
-      <div v-if="capability.reachable" class="mt-2 space-y-1 text-cv-caption text-cv-text-2">
-        <p>服务端标识：{{ capability.serverHeader || "未知" }}</p>
-        <p>RFC4918：{{ capability.davCompliance.join(", ") || "基础" }}</p>
-      </div>
+    <UiCard v-if="capability" title="连接探测" description="对远端执行创建、上传、列举、移动与回读校验">
+      <WebdavTestResult :capability="capability" />
     </UiCard>
 
     <UiCard v-if="archiveResult" title="归档结果">
@@ -78,6 +72,7 @@
 import { computed, onMounted, ref } from "vue";
 import UiButton from "../components/ui/UiButton.vue";
 import UiCard from "../components/ui/UiCard.vue";
+import WebdavTestResult from "../components/WebdavTestResult.vue";
 import {
   testWebdav,
   archiveToWebdav,
@@ -124,9 +119,11 @@ async function testConnection() {
   } catch (err) {
     capability.value = {
       reachable: false,
-      davCompliance: [],
-      supportsLock: false,
+      authenticated: false,
+      supportMkcol: false,
+      supportMove: false,
       message: "连接失败: " + err,
+      durationMs: 0,
     };
   } finally {
     testing.value = false;

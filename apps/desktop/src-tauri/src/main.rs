@@ -44,6 +44,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::webdav::archive_to_webdav,
             commands::webdav::save_webdav_credential,
             commands::webdav::load_webdav_credential,
+            commands::webdav::clear_webdav_credential,
             commands::settings::get_app_settings,
             commands::settings::set_app_settings,
             commands::settings::get_schedule_status,

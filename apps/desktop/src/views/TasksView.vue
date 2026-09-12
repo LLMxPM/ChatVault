@@ -54,7 +54,7 @@
             <td class="px-3 py-2 text-cv-text-2">{{ t.formattedSize }}</td>
             <td class="px-3 py-2 text-cv-text-2">{{ t.retryCount }}</td>
             <td class="px-3 py-2 text-cv-text-3">{{ formatTime(t.updatedAt) }}</td>
-            <td class="max-w-[220px] truncate px-3 py-2 text-cv-danger" :title="t.errorMessage || ''">
+            <td class="max-w-[220px] truncate px-3 py-2" :class="t.errorMessage ? 'text-cv-danger' : 'text-cv-text-3'" :title="t.errorMessage || ''">
               {{ t.errorMessage || "—" }}
             </td>
             <td class="px-3 py-2">

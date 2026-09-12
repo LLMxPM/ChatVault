@@ -81,6 +81,22 @@
               <UiInput v-model="webdavPassword" type="password" class="mt-1" />
             </label>
           </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <UiButton size="sm" variant="secondary" :loading="testingWebdav" :disabled="!form.webdavUrl" @click="testWebdavConnection">
+              测试连接
+            </UiButton>
+            <UiButton
+              size="sm"
+              variant="ghost"
+              :loading="clearingCredential"
+              :disabled="!form.webdavUrl || !form.webdavUsername"
+              @click="clearStoredCredential"
+            >
+              清除已存密码
+            </UiButton>
+            <span class="text-cv-caption text-cv-text-3">测试用当前表单与已存凭据；清除仅删除系统凭据管理器中的密码</span>
+          </div>
+          <WebdavTestResult v-if="webdavTestResult" :capability="webdavTestResult" />
         </div>
       </UiCard>
 
@@ -138,17 +154,21 @@ import UiCard from "../components/ui/UiCard.vue";
 import UiInput from "../components/ui/UiInput.vue";
 import CacheSettings from "../components/CacheSettings.vue";
 import AppAbout from "../components/AppAbout.vue";
+import WebdavTestResult from "../components/WebdavTestResult.vue";
 import {
   getAppSettings,
   setAppSettings,
   getScheduleStatus,
   saveWebdavCredential,
+  clearWebdavCredential,
   getVaultStats,
   pickDirectory,
+  testWebdav,
 } from "../api/tauri";
 import { pushToast } from "../composables/useToast";
+import { confirmAction } from "../composables/useConfirm";
 import { useTheme, type ThemePreference } from "../composables/useTheme";
-import type { AppSettingsDto, VaultStatsDto } from "../types";
+import type { AppSettingsDto, VaultStatsDto, WebdavCapabilityDto, WebdavConfigDto } from "../types";
 
 const { preference, setThemePreference } = useTheme();
 
@@ -174,8 +194,63 @@ const form = ref<AppSettingsDto>({
 const webdavPassword = ref("");
 const saving = ref(false);
 const picking = ref(false);
+const testingWebdav = ref(false);
+const clearingCredential = ref(false);
+const webdavTestResult = ref<WebdavCapabilityDto | null>(null);
 const scheduleRegistered = ref(false);
 const stats = ref<VaultStatsDto | null>(null);
+
+/** 删除 Windows 凭据管理器中的 WebDAV 密码；需二次确认。 */
+async function clearStoredCredential() {
+  if (!form.value.webdavUrl || !form.value.webdavUsername) return;
+  const ok = await confirmAction({
+    title: "清除已存 WebDAV 密码？",
+    description: `将删除「${form.value.webdavUsername} @ ${form.value.webdavUrl}」在系统凭据管理器中的密码。地址与用户名设置会保留。`,
+    confirmLabel: "确认清除",
+    danger: true,
+  });
+  if (!ok) return;
+  clearingCredential.value = true;
+  try {
+    await clearWebdavCredential(form.value.webdavUrl, form.value.webdavUsername);
+    webdavPassword.value = "";
+    pushToast({ tone: "success", title: "已清除 WebDAV 密码" });
+  } catch (err) {
+    pushToast({ tone: "danger", title: "清除失败", description: String(err) });
+  } finally {
+    clearingCredential.value = false;
+  }
+}
+
+/** 用当前表单中的 WebDAV 地址/用户名与已存（或刚输入）密码执行探测。 */
+async function testWebdavConnection() {
+  if (!form.value.webdavUrl) {
+    pushToast({ tone: "warning", title: "请先填写服务器地址" });
+    return;
+  }
+  testingWebdav.value = true;
+  webdavTestResult.value = null;
+  try {
+    const config: WebdavConfigDto = {
+      url: form.value.webdavUrl,
+      username: form.value.webdavUsername,
+      password: webdavPassword.value || undefined,
+      vaultId: form.value.vaultId,
+    };
+    webdavTestResult.value = await testWebdav(config);
+  } catch (err) {
+    webdavTestResult.value = {
+      reachable: false,
+      authenticated: false,
+      supportMkcol: false,
+      supportMove: false,
+      message: "连接失败: " + err,
+      durationMs: 0,
+    };
+  } finally {
+    testingWebdav.value = false;
+  }
+}
 
 /** 弹出系统目录选择框并加入采集目录；取消或重复路径不写入。 */
 async function addCollectDir() {
