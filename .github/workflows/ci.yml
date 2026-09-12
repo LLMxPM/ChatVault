@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Windows x64 全量校验
+    runs-on: windows-2022
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+          run_install: false
+
+      - name: 安装 stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 获取 pnpm 缓存目录
+        id: pnpm-store
+        shell: pwsh
+        run: Add-Content $env:GITHUB_OUTPUT ("path=" + (pnpm store path --silent))
+
+      - name: 缓存构建依赖
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.pnpm-store.outputs.path }}
+            ~\.cargo\registry
+            ~\.cargo\git
+            target
+          key: ${{ runner.os }}-chatvault-${{ hashFiles('pnpm-lock.yaml', 'Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-chatvault-
+
+      - name: 校验版本
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate_versions.ps1
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 前端类型检查
+        run: pnpm check:frontend
+
+      - name: Rust 格式检查
+        run: cargo fmt --all -- --check
+
+      - name: Rust workspace 检查
+        run: pnpm check:rust
+
+      - name: Rust Clippy
+        run: pnpm lint:rust
+
+      - name: Rust workspace 测试
+        run: pnpm test:rust
+
+      - name: 桌面端编译
+        run: pnpm build:desktop
+
+      - name: 安装钩子测试
+        run: pnpm test:installer

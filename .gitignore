@@ -29,6 +29,7 @@ dist-ssr/
 
 # 4. 桌面打包产物 (Tauri / Electron)
 src-tauri/target/
+apps/desktop/src-tauri/binaries/
 *.exe
 *.dll
 *.so

@@ -49,7 +49,8 @@ ChatVault 是桌面端聊天附件归档与检索工具，当前优先支持 Win
 
 - 根据改动范围执行必要的检查；仅修改文档时检查内容与差异即可。
 - Rust 格式检查：`cargo fmt --all -- --check`。
-- Rust 测试：`cargo test -p <包名>`；涉及跨模块行为时执行 `cargo test --workspace`。
-- 前端类型检查与构建：`pnpm build:desktop`。
-- 需要启动前端开发服务且确认没有现有服务时，使用 `pnpm dev:desktop`。
+- Rust 检查、Lint 和测试：`pnpm check:rust`、`pnpm lint:rust`、`pnpm test:rust`；这些命令会先校验标准 Windows x64 构建环境。
+- 前端类型检查与构建：`pnpm check:frontend`、`pnpm build:frontend`。
+- 前端开发服务：`pnpm dev:web`；完整 Tauri 桌面开发：`pnpm dev:desktop`。
+- 桌面端 Rust 编译：`pnpm build:desktop`；安装钩子隔离测试：`pnpm test:installer`。
 - 更改架构、数据格式或业务行为时，同步维护 `docs/` 中对应文档。

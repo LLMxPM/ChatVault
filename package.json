@@ -2,9 +2,23 @@
   "name": "chatvault-monorepo",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
   "scripts": {
-    "dev:desktop": "pnpm --filter chatvault-desktop dev",
-    "build:desktop": "pnpm --filter chatvault-desktop build",
+    "dev:web": "pnpm --filter chatvault-desktop dev",
+    "dev:desktop": "pnpm --filter chatvault-desktop tauri dev",
+    "check:frontend": "pnpm --filter chatvault-desktop typecheck",
+    "build:frontend": "pnpm --filter chatvault-desktop build",
+    "check:rust": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 check",
+    "lint:rust": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 lint",
+    "test:rust": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 test",
+    "test:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test_installer.ps1",
+    "build:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 desktop-build",
     "release:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release_windows.ps1"
   }
 }

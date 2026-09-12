@@ -1,46 +1,120 @@
-﻿# 配置 Windows x64 构建环境：探测 Visual Studio，使用当前 Rust 工具链及仓库 SQLite。
-param([string]$ToolchainRoot = $env:CHATVAULT_TOOLCHAIN_ROOT)
+# 初始化并校验 ChatVault 的标准 Windows x64 MSVC 构建环境。
+[CmdletBinding()]
+param()
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
-# 当前机器的独立工具链可通过参数或环境变量指定；正常安装的工具链直接使用 PATH。
-if (-not $ToolchainRoot -and -not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-    if (Test-Path -LiteralPath 'C:\codetools\rust\cargo\bin\cargo.exe') {
-        $ToolchainRoot = 'C:\codetools\rust'
+# 清除旧版本脚本可能留下的自定义资源编译器变量，强制使用 Windows SDK 工具链。
+Remove-Item Env:CHATVAULT_RESOURCE_COMPILER -ErrorAction SilentlyContinue
+Remove-Item Env:RC -ErrorAction SilentlyContinue
+
+function Require-Command {
+    param([string]$Name)
+
+    # 在执行 Cargo 或 Tauri 之前检查命令是否已安装，避免进入长时间编译后才失败。
+    if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
+        throw "缺少命令 $Name。请安装标准 Node/pnpm、Rust MSVC 或 Visual Studio Build Tools。"
     }
-}
-if ($ToolchainRoot) {
-    $env:CARGO_HOME = Join-Path $ToolchainRoot 'cargo'
-    $env:RUSTUP_HOME = Join-Path $ToolchainRoot 'rustup'
-    $env:PATH = "$(Join-Path $env:CARGO_HOME 'bin');$env:PATH"
-    $resourceCompiler = Join-Path $ToolchainRoot 'llvm-mingw\bin\rc.exe'
-    if (Test-Path -LiteralPath $resourceCompiler) {
-        # LLVM RC 的默认代码页不能读取中文产品名，统一按 UTF-8 编译资源。
-        $env:CHATVAULT_RESOURCE_COMPILER = $resourceCompiler
-        $env:RC = Join-Path $PSScriptRoot 'resource_compiler.cmd'
-        $env:PATH = "$(Split-Path -Parent $resourceCompiler);$env:PATH"
-    }
-    $windowsLibs = Join-Path $ToolchainRoot 'win_libs'
-    if (Test-Path -LiteralPath $windowsLibs) { $env:LIB = "$windowsLibs;$env:LIB" }
 }
 
-$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-if (Test-Path -LiteralPath $vswhere) {
-    $visualStudio = & $vswhere -all -products '*' -property installationPath | Where-Object {
-        Test-Path -LiteralPath (Join-Path $_ 'VC\Auxiliary\Build\vcvars64.bat')
+function Import-VisualStudioEnvironment {
+    # 查找完整的 Visual Studio C++ 工具链，并把 vcvars64 的环境导入当前 PowerShell 进程。
+    $vswhereCandidates = @()
+    if (${env:ProgramFiles(x86)}) {
+        $vswhereCandidates += (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe')
+    }
+    if ($env:ProgramFiles) {
+        $vswhereCandidates += (Join-Path $env:ProgramFiles 'Microsoft Visual Studio\Installer\vswhere.exe')
+    }
+    $vswhere = $vswhereCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $vswhere) {
+        throw '未找到 vswhere.exe。请安装 Visual Studio Build Tools，并勾选 C++ 构建工具。'
+    }
+
+    $installations = @(& $vswhere -all -products '*' -requires 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' -format json | ConvertFrom-Json)
+    $visualStudio = $installations | Where-Object {
+        $_.isComplete -eq $true -and $_.installationPath
     } | Select-Object -First 1
-    if ($visualStudio) {
-        $vcvars = Join-Path $visualStudio 'VC\Auxiliary\Build\vcvars64.bat'
-        cmd /d /c "call `"$vcvars`" >nul && set" | ForEach-Object {
-            if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($matches[1])" -Value $matches[2] }
-        }
-        if ($LASTEXITCODE -ne 0) { throw '加载 Visual Studio 编译环境失败' }
+    if (-not $visualStudio) {
+        throw '未找到完整的 Visual Studio C++ 安装。请安装 Visual Studio Build Tools、C++ 工具和 Windows SDK。'
     }
+
+    $vcvars = Join-Path $visualStudio.installationPath 'VC\Auxiliary\Build\vcvars64.bat'
+    if (-not (Test-Path -LiteralPath $vcvars)) {
+        throw "Visual Studio 缺少 x64 环境脚本：$vcvars"
+    }
+
+    $envDump = cmd.exe /d /c "call `"$vcvars`" >nul && set"
+    if ($LASTEXITCODE -ne 0) {
+        throw '加载 Visual Studio x64 编译环境失败'
+    }
+    foreach ($line in $envDump) {
+        if ($line -match '^([^=]+)=(.*)$') {
+            Set-Item -Path "env:$($matches[1])" -Value $matches[2]
+        }
+    }
+
+    return $visualStudio.installationPath
 }
 
-$sqliteLibs = Join-Path $repoRoot 'libs\win_x64'
-if (-not (Test-Path -LiteralPath (Join-Path $sqliteLibs 'sqlite3.lib'))) { throw '缺少 libs/win_x64/sqlite3.lib' }
-$env:SQLITE3_LIB_DIR = $sqliteLibs
-$env:LIB = "$sqliteLibs;$env:LIB"
-if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { throw '请安装 Rust MSVC 工具链，或设置 CHATVAULT_TOOLCHAIN_ROOT' }
+function Assert-WindowsSdk {
+    # 校验链接器真正需要的 Windows SDK 库，而不是只检查 cl.exe 是否存在。
+    if ([string]::IsNullOrWhiteSpace($env:WindowsSdkDir) -or [string]::IsNullOrWhiteSpace($env:WindowsSDKVersion)) {
+        throw '未加载 Windows SDK 环境。请在 Visual Studio Installer 中安装 Windows 10/11 SDK。'
+    }
+
+    $sdkRoot = $env:WindowsSdkDir.TrimEnd('\')
+    $sdkVersion = $env:WindowsSDKVersion.Trim('\')
+    $sdkLibRoot = Join-Path $sdkRoot "Lib\$sdkVersion"
+    $umLib = Join-Path $sdkLibRoot 'um\x64'
+    $ucrtLib = Join-Path $sdkLibRoot 'ucrt\x64'
+    foreach ($library in @('kernel32.lib', 'OleAut32.lib')) {
+        $libraryPath = Join-Path $umLib $library
+        if (-not (Test-Path -LiteralPath $libraryPath)) {
+            throw "Windows SDK 缺少 $library：$libraryPath"
+        }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $ucrtLib 'ucrt.lib'))) {
+        throw "Windows SDK 缺少 ucrt.lib：$ucrtLib"
+    }
+
+    $env:LIB = "$umLib;$ucrtLib;$env:LIB"
+}
+
+Push-Location $repoRoot
+try {
+    $visualStudioPath = Import-VisualStudioEnvironment
+    foreach ($command in @('cargo', 'rustc', 'node', 'pnpm', 'cl', 'link', 'rc')) {
+        Require-Command $command
+    }
+
+    $rustInfo = (& rustc -vV) -join "`n"
+    if ($LASTEXITCODE -ne 0 -or $rustInfo -notmatch 'host: x86_64-pc-windows-msvc') {
+        throw '当前 Rust 工具链不是 x86_64-pc-windows-msvc。请使用 stable MSVC 工具链。'
+    }
+    $nodeMajor = [int]((& node --version).Trim().TrimStart('v').Split('.')[0])
+    if ($LASTEXITCODE -ne 0 -or $nodeMajor -ne 22) {
+        throw '项目要求 Node.js 22.x。'
+    }
+    $pnpmVersion = (& pnpm --version).Trim()
+    if ($LASTEXITCODE -ne 0 -or $pnpmVersion -ne '10.30.3') {
+        throw "项目要求 pnpm 10.30.3，当前为 $pnpmVersion。"
+    }
+
+    Assert-WindowsSdk
+
+    $sqliteLibs = Join-Path $repoRoot 'libs\win_x64'
+    $sqliteLibrary = Join-Path $sqliteLibs 'sqlite3.lib'
+    if (-not (Test-Path -LiteralPath $sqliteLibrary)) {
+        throw "缺少仓库 SQLite 静态库：$sqliteLibrary"
+    }
+    $env:SQLITE3_LIB_DIR = $sqliteLibs
+    $env:LIB = "$sqliteLibs;$env:LIB"
+
+    Write-Output "Windows 构建环境通过：VS=$visualStudioPath Rust=MSVC Node=22 pnpm=$pnpmVersion"
+    Write-Output "SQLite 静态库：$sqliteLibrary"
+}
+finally {
+    Pop-Location
+}

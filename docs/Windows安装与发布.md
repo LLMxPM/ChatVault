@@ -10,7 +10,7 @@ pnpm release:windows
 
 发行脚本执行以下步骤：
 
-1. 通过 `vswhere` 探测 Visual Studio C++ 编译环境，并配置仓库内置的 `libs/win_x64/sqlite3.lib`。
+1. 通过 `vswhere` 探测完整的标准 Visual Studio C++/Windows SDK 环境，并配置仓库内置的 `libs/win_x64/sqlite3.lib`。
 2. 验证 Rust 主机为 `x86_64-pc-windows-msvc`，并检查 Cargo workspace、根包和桌面包版本一致。
 3. 使用 `pnpm install --frozen-lockfile` 校验前端依赖，使用 `cargo rustc --release --locked -p chatvault-cli` 及脚本内链接参数编译归档程序，静态链接 VCRuntime、使用系统 UCRT。
 4. 将 CLI 复制至打包暂存目录，合并 `tauri.release.conf.json` 后执行 Tauri 发行构建。Tauri 自动调用前端构建。
@@ -18,9 +18,9 @@ pnpm release:windows
 
 默认输出目录是 `target/release/bundle/nsis/`。若配置了 Cargo 输出目录，则以 `cargo metadata` 返回的目录为准。正式发行统一使用上述入口，单独执行前端构建或 Cargo 编译不会得到完整安装包。
 
-构建依赖包括 Node、pnpm、Rust MSVC 工具链、Visual Studio C++ 工具和可用资源编译器。首次打包需要联网下载 Tauri 所需的 NSIS 工具。用户安装应用无需安装上述开发工具。
+构建依赖包括 Node 22、pnpm 10.30.3、Rust stable MSVC 工具链、Visual Studio C++ 工具、Windows SDK 和可用资源编译器。首次打包需要联网下载 Tauri 所需的 NSIS 工具。用户安装应用无需安装上述开发工具。
 
-独立 Rust 工具链可通过 `CHATVAULT_TOOLCHAIN_ROOT` 指定，其中应包含 `cargo` 和 `rustup` 目录。本机的 `C:\codetools\rust` 仅在 PATH 中没有 Cargo 时被自动探测，不写入安装包。使用该目录中的 LLVM RC 时，包装脚本显式指定 UTF-8，以正确编译中文产品名。
+本地和 CI 均使用标准 Visual Studio Build Tools、Windows SDK 和 stable Rust MSVC 工具链。仓库不依赖开发机私有工具链或固定安装路径。
 
 ## 安装行为
 
@@ -47,7 +47,7 @@ pnpm release:windows
     desktop.previous.log 上次启动日志
 ```
 
-目录位置不受程序安装目录、快捷方式工作目录或命令行启动位置影响。设置页展示真实版本与数据目录，并提供日志入口。版本来自桌面 `package.json`，发行脚本负责校验 Rust 和根包版本一致。
+目录位置不受程序安装目录、快捷方式工作目录或命令行启动位置影响。设置页展示真实版本与数据目录，并提供日志入口。发行版本真值来自根 `package.json`，发行脚本负责校验桌面包和 Rust workspace 版本一致。
 
 开发目录中的旧 `chatvault.db` 不会自动导入或删除。项目不提供历史开发数据迁移；可重新扫描当前来源或按当前数据结构恢复资料库。
 
@@ -73,7 +73,7 @@ pnpm release:windows
 
 ## 验证记录与发布边界
 
-2026-09-11：
+重构前历史记录（2026-09-11）：
 
 - 前端类型检查和构建通过。
 - 桌面 Rust `cargo check`、`cargo fmt --all -- --check` 和 `cargo test --workspace --locked` 通过。
@@ -85,6 +85,13 @@ pnpm release:windows
 - 发行桌面程序启动冒烟检查通过：从 `target/` 工作目录启动，在固定用户目录创建数据库和日志；窗口标题正确。再从仓库根目录启动，第二个进程正常退出、原实例仍存活；关闭窗口后原实例正常退出。
 
 本次安装包 SHA256：`42ac5196d4e5e70a06056759b7acc5c0ccd9a089ac347eb720e7df14de8a006d`。重新构建后以随产物生成的校验文件为准。
+
+构建体系重构后的本地验证（2026-09-12）：
+
+- `pnpm install --frozen-lockfile`、前端类型检查、前端构建、版本校验、Tauri CLI 入口检查和 PowerShell 语法检查通过。
+- 安装钩子 7 项隔离测试通过。
+- 当前开发机的 Visual Studio 安装状态不完整，且未提供 Windows SDK 库；统一环境脚本已在编译前明确阻止构建，因此本机尚未重新生成发行安装包。
+- GitHub Actions 的 Windows x64 CI/CD 工作流已加入，首次远程运行结果以 workflow 为准。
 
 尚待真实环境验收：干净系统首次安装、WebView2 缺失、普通用户权限、实际安装/卸载、覆盖安装、不同启动入口、100%/150%/200% 缩放。
 

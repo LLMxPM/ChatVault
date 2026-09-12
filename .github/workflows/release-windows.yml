@@ -1,0 +1,74 @@
+name: Release Windows
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: 发布前全量校验
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  release:
+    name: 构建并发布 NSIS 安装包
+    needs: validate
+    runs-on: windows-2022
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+          run_install: false
+
+      - name: 安装 stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 构建 Windows 安装包
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release_windows.ps1 -Tag "${{ github.ref_name }}"
+
+      - name: 创建草稿 Release
+        id: draft-release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $metadata = cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw '读取 Cargo 输出目录失败' }
+          $installerDirectory = Join-Path $metadata.target_directory 'release/bundle/nsis'
+          $installers = @(Get-ChildItem -LiteralPath $installerDirectory -Filter '*-setup.exe' -File)
+          if ($installers.Count -eq 0) { throw '未找到 NSIS 安装包' }
+          $files = @()
+          foreach ($installer in $installers) {
+              $checksum = "$($installer.FullName).sha256"
+              if (-not (Test-Path -LiteralPath $checksum)) { throw "缺少校验文件：$checksum" }
+              $files += $installer.FullName
+              $files += $checksum
+          }
+          & gh release create $tag --draft --verify-tag --title "ChatVault $tag" --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw '创建草稿 Release 失败' }
+          & gh release upload $tag @files --clobber
+          if ($LASTEXITCODE -ne 0) { throw '上传 Release 资产失败' }
+          & gh release edit $tag --draft=false
+          if ($LASTEXITCODE -ne 0) { throw '发布 Release 失败' }
