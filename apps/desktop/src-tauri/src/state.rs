@@ -13,7 +13,7 @@ pub mod setting_keys {
     pub const WEBDAV_USERNAME: &str = "webdav_username";
     pub const SCAN_INTERVAL_MINUTES: &str = "scan_interval_minutes";
     pub const SCHEDULE_ENABLED: &str = "schedule_enabled";
-    pub const COLLECT_DIRS: &str = "collect_dirs";
+    pub const COLLECT_SOURCES: &str = "collect_sources";
 }
 
 /// 桌面端全局应用上下文状态
@@ -40,6 +40,9 @@ impl AppState {
         }
         if db.get_setting(setting_keys::SCHEDULE_ENABLED)?.is_none() {
             db.set_setting(setting_keys::SCHEDULE_ENABLED, "false")?;
+        }
+        if db.get_setting(setting_keys::COLLECT_SOURCES)?.is_none() {
+            db.set_setting(setting_keys::COLLECT_SOURCES, "[]")?;
         }
 
         Ok(Self { db_path })

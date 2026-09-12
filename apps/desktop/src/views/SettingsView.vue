@@ -148,7 +148,7 @@ const form = ref<AppSettingsDto>({
   cacheMaxMib: 1024,
   scanIntervalMinutes: 30,
   scheduleEnabled: false,
-  collectDirs: [],
+  collectSources: [],
 });
 
 const webdavPassword = ref("");
@@ -210,7 +210,7 @@ async function testWebdavConnection() {
   }
 }
 
-/** 校验缓存并写入设置；若填写了新密码则写入凭据管理器。调度与采集目录在任务页维护。 */
+/** 校验缓存并写入设置；若填写了新密码则写入凭据管理器。调度与采集源在任务页维护。 */
 async function save() {
   saving.value = true;
   try {

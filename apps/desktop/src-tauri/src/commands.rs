@@ -20,15 +20,23 @@ use tauri::State;
 pub struct WechatAccountDto {
     pub source_account_id: String,
     pub source_dir: String,
+    pub source_root: String,
     pub files_count_estimated: usize,
+}
+
+/// 立即扫描时用于定位微信账号的目录与账号标识。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WechatAccountTargetDto {
+    pub source_root: String,
+    pub source_account_id: String,
 }
 
 /// 扫描请求参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanRequestDto {
-    pub target_accounts: Vec<String>,
-    pub custom_folders: Vec<String>,
+    pub target_accounts: Vec<WechatAccountTargetDto>,
     /// true 时忽略检查点做全量发现；默认 false 使用增量扫描
     #[serde(default)]
     pub full_scan: bool,

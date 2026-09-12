@@ -6,6 +6,46 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// 微信 4.x 文件来源适配器标识。
+pub const WECHAT_WINDOWS_4_SOURCE_TYPE: &str = "wechat-windows-4";
+
+/// 通用附件目录适配器标识。
+pub const GENERIC_FOLDER_SOURCE_TYPE: &str = "generic-folder";
+
+/// 持久化的采集源配置。
+///
+/// 目录路径与适配器类型成对保存，扫描编排层据此选择对应适配器。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectSource {
+    /// 适配器来源类型，例如 `wechat-windows-4` 或 `generic-folder`。
+    pub source_type: String,
+    /// 用户选择的目录绝对路径。
+    pub path: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CollectSource, GENERIC_FOLDER_SOURCE_TYPE};
+
+    #[test]
+    fn collect_source_uses_camel_case_wire_fields() {
+        let source = CollectSource {
+            source_type: GENERIC_FOLDER_SOURCE_TYPE.to_string(),
+            path: r"C:\attachments".to_string(),
+        };
+        let encoded = serde_json::to_string(&source).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"sourceType":"generic-folder","path":"C:\\attachments"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<CollectSource>(&encoded).unwrap(),
+            source
+        );
+    }
+}
+
 /// 资料库核心配置元信息
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultConfig {

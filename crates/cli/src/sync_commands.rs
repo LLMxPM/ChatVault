@@ -1,5 +1,8 @@
 // ChatVault CLI 定时运行与元数据同步入口：使用持久化身份和共享核心。
 use super::*;
+use chatvault_core::models::{
+    CollectSource, GENERIC_FOLDER_SOURCE_TYPE, WECHAT_WINDOWS_4_SOURCE_TYPE,
+};
 
 /// 定时任务：读取本地设置，增量扫描采集目录并归档到 WebDAV
 pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
@@ -12,76 +15,39 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
         .unwrap_or_else(|| "default-vault".to_string());
     let webdav_url = db.get_setting("webdav_url")?.unwrap_or_default();
     let webdav_user = db.get_setting("webdav_username")?.unwrap_or_default();
-    let collect_dirs_raw = db
-        .get_setting("collect_dirs")?
+    let collect_sources_raw = db
+        .get_setting("collect_sources")?
         .unwrap_or_else(|| "[]".to_string());
-    let collect_dirs: Vec<String> = serde_json::from_str(&collect_dirs_raw).unwrap_or_default();
+    let collect_sources: Vec<CollectSource> =
+        serde_json::from_str(&collect_sources_raw).context("解析采集源配置失败")?;
     let scan_started_ms = Utc::now().timestamp_millis();
 
     let mut indexed = 0usize;
     let mut skipped = 0usize;
     let mut discovered = 0usize;
 
-    // 1. 扫描微信（有检查点则增量）
-    if let Ok(root) = WeChat4Detector::detect_root() {
-        let accounts = WeChat4Detector::find_accounts(&root)?;
-        for acc in accounts {
-            println!("[*] 扫描微信账号 [{}]", acc.source_account_id);
-            let files_root = acc.files_dir.to_string_lossy().to_string();
-            let since = resolve_since(&db, &files_root)?;
-            let walked = WeChat4Parser::parse_account_files_since(&acc, since)?;
-            let changed_known = if since.is_some() {
-                db.list_changed_known_files(&files_root)?
-            } else {
-                Vec::new()
-            };
-            let files = merge_changed_known(
-                walked,
-                changed_known,
-                "wechat-windows-4",
-                Some(&acc.source_account_id),
-                None,
-                Some(&acc.files_dir),
-            );
-            discovered += files.len();
-            let complete = process_files(&mut db, &device_id, &files, &mut indexed, &mut skipped)?;
-            if complete {
-                db.mark_scan_started(
-                    &files_root,
-                    "wechat-windows-4",
-                    Some(&acc.source_account_id),
-                    scan_started_ms,
-                )?;
-            } else {
-                println!(
-                    "[-] 微信账号 {} 存在未完成候选，保留原扫描检查点",
-                    acc.source_account_id
-                );
-            }
-        }
-    }
-
-    // 2. 扫描设置中的采集目录（有检查点则增量）
-    for dir in &collect_dirs {
-        let p = PathBuf::from(dir);
-        if !p.exists() {
-            continue;
-        }
-        println!("[*] 扫描采集目录: {}", dir);
-        let since = resolve_since(&db, dir)?;
-        let walked = GenericFolderParser::parse_with_since(&p, since)?;
-        let changed_known = if since.is_some() {
-            db.list_changed_known_files(dir)?
-        } else {
-            Vec::new()
-        };
-        let files = merge_changed_known(walked, changed_known, "generic-folder", None, None, None);
-        discovered += files.len();
-        let complete = process_files(&mut db, &device_id, &files, &mut indexed, &mut skipped)?;
-        if complete {
-            db.mark_scan_started(dir, "generic-folder", None, scan_started_ms)?;
-        } else {
-            println!("[-] 通用目录存在未完成候选，保留原扫描检查点");
+    // 1. 按配置的适配器扫描采集源（有检查点则增量）。
+    for source in &collect_sources {
+        match source.source_type.as_str() {
+            WECHAT_WINDOWS_4_SOURCE_TYPE => scan_wechat_source(
+                &mut db,
+                &device_id,
+                &source.path,
+                scan_started_ms,
+                &mut indexed,
+                &mut skipped,
+                &mut discovered,
+            )?,
+            GENERIC_FOLDER_SOURCE_TYPE => scan_generic_source(
+                &mut db,
+                &device_id,
+                &source.path,
+                scan_started_ms,
+                &mut indexed,
+                &mut skipped,
+                &mut discovered,
+            )?,
+            other => println!("[-] 跳过未知采集源类型 {}: {}", other, source.path),
         }
     }
 
@@ -131,6 +97,100 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// 按微信 4.x 适配器扫描一个配置的根目录。
+fn scan_wechat_source(
+    db: &mut Database,
+    device_id: &str,
+    root_path: &str,
+    scan_started_ms: i64,
+    indexed: &mut usize,
+    skipped: &mut usize,
+    discovered: &mut usize,
+) -> Result<()> {
+    let root = PathBuf::from(root_path);
+    if !root.is_dir() {
+        println!("[-] 微信 4.x 目录不存在，跳过: {}", root_path);
+        return Ok(());
+    }
+    let accounts = WeChat4Detector::find_accounts(&root)?;
+    for acc in accounts {
+        println!("[*] 扫描微信账号 [{}]", acc.source_account_id);
+        let files_root = acc.files_dir.to_string_lossy().to_string();
+        let since = resolve_since(db, &files_root)?;
+        let walked = WeChat4Parser::parse_account_files_since(&acc, since)?;
+        let changed_known = if since.is_some() {
+            db.list_changed_known_files(&files_root)?
+        } else {
+            Vec::new()
+        };
+        let files = merge_changed_known(
+            walked,
+            changed_known,
+            WECHAT_WINDOWS_4_SOURCE_TYPE,
+            Some(&acc.source_account_id),
+            None,
+            Some(&acc.files_dir),
+        );
+        *discovered += files.len();
+        let complete = process_files(db, device_id, &files, indexed, skipped)?;
+        if complete {
+            db.mark_scan_started(
+                &files_root,
+                WECHAT_WINDOWS_4_SOURCE_TYPE,
+                Some(&acc.source_account_id),
+                scan_started_ms,
+            )?;
+        } else {
+            println!(
+                "[-] 微信账号 {} 存在未完成候选，保留原扫描检查点",
+                acc.source_account_id
+            );
+        }
+    }
+    Ok(())
+}
+
+/// 按通用目录适配器扫描一个配置的附件目录。
+fn scan_generic_source(
+    db: &mut Database,
+    device_id: &str,
+    root_path: &str,
+    scan_started_ms: i64,
+    indexed: &mut usize,
+    skipped: &mut usize,
+    discovered: &mut usize,
+) -> Result<()> {
+    let root = PathBuf::from(root_path);
+    if !root.is_dir() {
+        println!("[-] 附件目录不存在，跳过: {}", root_path);
+        return Ok(());
+    }
+    println!("[*] 扫描附件目录: {}", root_path);
+    let since = resolve_since(db, root_path)?;
+    let walked = GenericFolderParser::parse_with_since(&root, since)?;
+    let changed_known = if since.is_some() {
+        db.list_changed_known_files(root_path)?
+    } else {
+        Vec::new()
+    };
+    let files = merge_changed_known(
+        walked,
+        changed_known,
+        GENERIC_FOLDER_SOURCE_TYPE,
+        None,
+        None,
+        None,
+    );
+    *discovered += files.len();
+    let complete = process_files(db, device_id, &files, indexed, skipped)?;
+    if complete {
+        db.mark_scan_started(root_path, GENERIC_FOLDER_SOURCE_TYPE, None, scan_started_ms)?;
+    } else {
+        println!("[-] 附件目录存在未完成候选，保留原扫描检查点");
+    }
     Ok(())
 }
 

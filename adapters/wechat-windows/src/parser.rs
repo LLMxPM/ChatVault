@@ -6,7 +6,7 @@
 
 use crate::detector::WeChatAccount;
 use chatvault_core::error::{ChatVaultError, Result};
-use chatvault_core::models::DiscoveredFile;
+use chatvault_core::models::{DiscoveredFile, WECHAT_WINDOWS_4_SOURCE_TYPE};
 use chatvault_scanner::strategy::MtimeAtDepthStrategy;
 use chatvault_scanner::walker::{scan_directory_with_strategy, ScanOptions};
 use chrono::{DateTime, Utc};
@@ -120,7 +120,7 @@ impl WeChat4Parser {
             // 只有存在明确聊天目录时才写入聊天 ID；标准月份平铺文件保持未知。
             let source_conversation_id = Self::conversation_id_for_path(f, &path);
             discovered.push(DiscoveredFile {
-                source_type: "wechat-windows-4".to_string(),
+                source_type: WECHAT_WINDOWS_4_SOURCE_TYPE.to_string(),
                 source_account_id: source_account_id.map(|s| s.to_string()),
                 absolute_path: path.to_string_lossy().to_string(),
                 file_name,

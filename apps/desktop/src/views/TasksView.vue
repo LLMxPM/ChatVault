@@ -22,60 +22,78 @@
     <div class="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto pb-2 xl:grid-cols-2">
       <UiCard
         title="采集范围"
-        info="定时扫描全部微信账号与附加目录；立即运行可只勾选本次账号。"
+        info="定时扫描全部已配置采集源；立即运行可只勾选本次微信账号。"
       >
         <template #headerExtra>
-          <UiButton size="sm" variant="secondary" :loading="detecting" @click="loadAccounts">
-            重新检测
-          </UiButton>
+          <div class="flex flex-wrap justify-end gap-2">
+            <UiButton size="sm" variant="secondary" @click="pickAndAddWechat">
+              添加微信 4.x
+            </UiButton>
+            <UiButton size="sm" variant="secondary" @click="pickAndAddAttachment">
+              添加附件目录
+            </UiButton>
+            <UiButton size="sm" variant="ghost" :loading="detecting" @click="discoverAndAddWechat">
+              自动发现
+            </UiButton>
+          </div>
         </template>
 
-        <div v-if="accounts.length" class="grid gap-2 sm:grid-cols-2">
-          <label
-            v-for="acc in accounts"
-            :key="acc.sourceAccountId"
-            class="flex cursor-pointer items-start gap-2 rounded-cv border p-2.5 transition-colors"
-            :class="
-              selectedAccounts.includes(acc.sourceAccountId)
-                ? 'border-cv-accent bg-cv-accent-soft'
-                : 'border-cv-border hover:border-cv-text-3'
-            "
+        <div v-if="collectSources.length" class="space-y-2">
+          <div
+            v-for="(source, index) in collectSources"
+            :key="sourceKey(source)"
+            class="rounded-cv border border-cv-border p-2.5"
           >
-            <input
-              type="checkbox"
-              class="mt-0.5 accent-[var(--cv-accent)]"
-              :checked="selectedAccounts.includes(acc.sourceAccountId)"
-              @change="toggleAccount(acc.sourceAccountId)"
-            />
-            <div class="min-w-0 flex-1">
-              <p class="truncate font-mono text-cv-caption font-medium text-cv-text">{{ acc.sourceAccountId }}</p>
-              <p class="mt-0.5 truncate font-mono text-cv-text-3" :title="acc.sourceDir">{{ acc.sourceDir }}</p>
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <UiBadge :tone="source.sourceType === 'wechat-windows-4' ? 'accent' : 'neutral'">
+                    {{ sourceTypeLabel(source.sourceType) }}
+                  </UiBadge>
+                  <UiBadge :tone="sourceStatusTone(source.status)">{{ sourceStatusLabel(source.status) }}</UiBadge>
+                </div>
+                <p class="mt-1 truncate font-mono text-cv-caption text-cv-text" :title="source.path">
+                  {{ source.path }}
+                </p>
+                <p class="mt-0.5 text-cv-caption text-cv-text-3">{{ sourceStatusDetail(source) }}</p>
+              </div>
+              <div class="flex shrink-0 items-center gap-1">
+                <UiButton
+                  size="sm"
+                  variant="ghost"
+                  :loading="source.inspecting"
+                  @click="source.status === 'missing' ? pickAndReplaceSource(index) : refreshSource(index)"
+                >
+                  {{ source.status === 'missing' ? '重新选择' : source.sourceType === 'wechat-windows-4' ? '重新识别' : '重新检查' }}
+                </UiButton>
+                <UiButton size="sm" variant="ghost" @click="removeSource(index)">移除</UiButton>
+              </div>
             </div>
-          </label>
-        </div>
-        <p v-else class="py-3 text-cv-caption text-cv-text-3">未探测到微信 4.x 账号</p>
 
-        <div class="mt-4">
-          <p class="text-cv-caption text-cv-text-2">附加目录</p>
-          <div class="mt-1.5 flex gap-2">
-            <div class="min-w-0 flex-1">
-              <UiInput v-model="newDir" class="font-mono" placeholder="本地文件夹绝对路径" @keyup.enter="addDir" />
-            </div>
-            <UiButton variant="secondary" @click="pickAndAddDir">选择</UiButton>
-            <UiButton variant="secondary" @click="addDir">添加</UiButton>
-          </div>
-          <p v-if="!collectDirs.length" class="mt-2 text-cv-caption text-cv-text-3">尚未添加采集目录</p>
-          <ul v-else class="mt-2 space-y-1">
-            <li
-              v-for="(path, idx) in collectDirs"
-              :key="path"
-              class="flex items-center justify-between gap-2 rounded-cv bg-cv-surface-2 px-2.5 py-1.5"
+            <div
+              v-if="source.sourceType === 'wechat-windows-4' && source.accounts.length"
+              class="mt-2 grid gap-1.5 sm:grid-cols-2"
             >
-              <span class="truncate font-mono text-cv-caption text-cv-text-2" :title="path">{{ path }}</span>
-              <button class="shrink-0 text-cv-caption text-cv-danger hover:underline" @click="removeDir(idx)">移除</button>
-            </li>
-          </ul>
+              <label
+                v-for="account in source.accounts"
+                :key="accountKey(account)"
+                class="flex cursor-pointer items-start gap-2 rounded-cv bg-cv-surface-2 px-2 py-1.5"
+              >
+                <input
+                  type="checkbox"
+                  class="mt-0.5 accent-[var(--cv-accent)]"
+                  :checked="isAccountSelected(account)"
+                  @change="toggleAccount(account)"
+                />
+                <span class="min-w-0">
+                  <span class="block truncate font-mono text-cv-caption text-cv-text">{{ account.sourceAccountId }}</span>
+                  <span class="block text-cv-caption text-cv-text-3">约 {{ account.filesCountEstimated }} 个附件</span>
+                </span>
+              </label>
+            </div>
+          </div>
         </div>
+        <p v-else class="py-3 text-cv-caption text-cv-text-3">尚未添加采集源，请从上方选择目录。</p>
       </UiCard>
 
       <UiCard
@@ -245,30 +263,49 @@ import UiSelect from "../components/ui/UiSelect.vue";
 import UiBadge from "../components/ui/UiBadge.vue";
 import UiSwitch from "../components/ui/UiSwitch.vue";
 import {
-  detectWechatAccounts,
   getAppSettings,
   getScheduleStatus,
   listUploadTasks,
-  pickDirectory,
   requeueUploadTask,
   pauseUploadTask,
   runPipeline,
-  setCollectDirs,
   setScheduleConfig,
   syncRestore,
 } from "../api/tauri";
+import { useCollectSources } from "../composables/useCollectSources";
 import { pushToast } from "../composables/useToast";
 import { confirmAction } from "../composables/useConfirm";
 import { navigateTo } from "../composables/useNav";
-import type { PipelineResultDto, UploadTaskDto, WechatAccountDto, WebdavConfigDto } from "../types";
+import type {
+  PipelineResultDto,
+  UploadTaskDto,
+  WebdavConfigDto,
+} from "../types";
 
 type StageId = "idle" | "scan" | "done" | "failed";
 
-const accounts = ref<WechatAccountDto[]>([]);
-const selectedAccounts = ref<string[]>([]);
-const detecting = ref(false);
-const collectDirs = ref<string[]>([]);
-const newDir = ref("");
+const {
+  allWechatAccounts,
+  accountKey,
+  canRun,
+  collectSources,
+  detecting,
+  discoverAndAddWechat,
+  isAccountSelected,
+  loadSources,
+  pickAndAddAttachment,
+  pickAndAddWechat,
+  pickAndReplaceSource,
+  refreshSource,
+  removeSource,
+  selectedAccounts,
+  sourceKey,
+  sourceStatusDetail,
+  sourceStatusLabel,
+  sourceStatusTone,
+  sourceTypeLabel,
+  toggleAccount,
+} = useCollectSources();
 const scheduleEnabled = ref(false);
 const scanIntervalMinutes = ref(30);
 const maxScanIntervalHours = 168;
@@ -287,7 +324,6 @@ const tasksLoading = ref(false);
 let pollTimer: number | undefined;
 let scheduleSaveTimer: number | undefined;
 
-const canRun = computed(() => selectedAccounts.value.length > 0 || collectDirs.value.length > 0);
 const scanIntervalHours = computed(() => {
   const hours = scanIntervalMinutes.value / 60;
   return Number.isFinite(hours) ? String(Number(hours.toFixed(2))) : "0.5";
@@ -380,30 +416,10 @@ function canPause(s: string) {
   return s === "queued";
 }
 
-/** 探测微信账号；默认全选。 */
-async function loadAccounts() {
-  detecting.value = true;
-  try {
-    const list = await detectWechatAccounts();
-    accounts.value = list;
-    selectedAccounts.value = list.map((a) => a.sourceAccountId);
-  } catch (err) {
-    pushToast({ tone: "danger", title: "探测微信账号失败", description: String(err) });
-  } finally {
-    detecting.value = false;
-  }
-}
-
-function toggleAccount(accId: string) {
-  const idx = selectedAccounts.value.indexOf(accId);
-  if (idx >= 0) selectedAccounts.value.splice(idx, 1);
-  else selectedAccounts.value.push(accId);
-}
-
 async function loadSettings() {
   try {
     const s = await getAppSettings();
-    collectDirs.value = s.collectDirs || [];
+    await loadSources(s.collectSources || []);
     scheduleEnabled.value = s.scheduleEnabled;
     scanIntervalMinutes.value = s.scanIntervalMinutes;
     webdavReady.value = Boolean(s.webdavUrl && s.webdavUrl.trim());
@@ -420,42 +436,6 @@ async function loadSettings() {
     scheduleRegistered.value = await getScheduleStatus();
   } catch {
     scheduleRegistered.value = false;
-  }
-}
-
-async function addDir() {
-  const p = newDir.value.trim();
-  if (!p) return;
-  if (collectDirs.value.includes(p)) {
-    pushToast({ tone: "warning", title: "目录已存在" });
-    return;
-  }
-  collectDirs.value = [...collectDirs.value, p];
-  newDir.value = "";
-  await persistDirs();
-}
-
-async function pickAndAddDir() {
-  try {
-    const path = await pickDirectory();
-    if (!path || collectDirs.value.includes(path)) return;
-    collectDirs.value = [...collectDirs.value, path];
-    await persistDirs();
-  } catch (err) {
-    pushToast({ tone: "danger", title: "选择目录失败", description: String(err) });
-  }
-}
-
-async function removeDir(index: number) {
-  collectDirs.value = collectDirs.value.filter((_, i) => i !== index);
-  await persistDirs();
-}
-
-async function persistDirs() {
-  try {
-    await setCollectDirs(collectDirs.value);
-  } catch (err) {
-    pushToast({ tone: "danger", title: "保存采集目录失败", description: String(err) });
   }
 }
 
@@ -493,13 +473,12 @@ async function startPipeline() {
   pipelineResult.value = null;
   stage.value = "scan";
   try {
-    // 有勾选账号时传列表；探测到账号但用户取消全选则空数组=不扫微信
-    const targetAccounts = accounts.value.length
+    // 已配置微信源且存在账号时传本次勾选项；空数组表示本次跳过微信。
+    const targetAccounts = allWechatAccounts.value.length
       ? selectedAccounts.value.slice()
       : null;
     const result = await runPipeline({
       targetAccounts,
-      extraFolders: [],
       fullScan: fullScan.value,
     });
     pipelineResult.value = result;
@@ -591,7 +570,7 @@ async function pause(taskId: string) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadAccounts(), loadSettings(), refreshTasks()]);
+  await Promise.all([loadSettings(), refreshTasks()]);
   pollTimer = window.setInterval(() => {
     void refreshTasks(true);
   }, 5000);

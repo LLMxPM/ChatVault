@@ -4,6 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   WechatAccountDto,
+  CollectSourceDto,
   ScanRequestDto,
   ScanResultDto,
   FileRecordViewDto,
@@ -30,6 +31,11 @@ export async function detectWechatAccounts(): Promise<WechatAccountDto[]> {
   return await invoke<WechatAccountDto[]>("detect_wechat_accounts");
 }
 
+/** 检查用户选择的微信 4.x 根目录并返回账号列表。 */
+export async function inspectWechatDirectory(path: string): Promise<WechatAccountDto[]> {
+  return await invoke<WechatAccountDto[]>("inspect_wechat_directory", { path });
+}
+
 /**
  * 执行文件库扫描与增量去重
  * @param request 扫描目标配置
@@ -44,9 +50,9 @@ export async function runPipeline(request: PipelineRequestDto): Promise<Pipeline
   return await invoke<PipelineResultDto>("run_pipeline", { request });
 }
 
-/** 保存持久采集目录。 */
-export async function setCollectDirs(dirs: string[]): Promise<void> {
-  return await invoke<void>("set_collect_dirs", { dirs });
+/** 保存带适配器类型的持久采集源。 */
+export async function setCollectSources(sources: CollectSourceDto[]): Promise<void> {
+  return await invoke<void>("set_collect_sources", { sources });
 }
 
 /** 保存定时扫描开关与周期。 */
@@ -131,6 +137,11 @@ export async function getScheduleStatus(): Promise<boolean> {
 /** 打开系统目录选择对话框；用户取消时返回 null。 */
 export async function pickDirectory(): Promise<string | null> {
   return await invoke<string | null>("pick_directory");
+}
+
+/** 检查采集目录当前是否存在且仍为目录。 */
+export async function checkDirectory(path: string): Promise<boolean> {
+  return await invoke<boolean>("check_directory", { path });
 }
 
 /**

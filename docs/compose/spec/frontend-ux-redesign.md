@@ -16,8 +16,8 @@ commits: 815365b..WORKTREE # 未提交，工作区交付
 
 **Journey log**
 1. Vite 旧进程缓存导致 token 类未生成、主按钮透明——需重启 dev server 再验视觉。
-2. `set_app_settings` 会重注册计划任务并回收缓存，前端局部写回不可用；采集改为扫描时合并设置目录，会话目录不持久化。
-3. 后端 `run_scan` 不读 `collect_dirs`，前端必须合并，否则手动扫描与定时扫描范围不一致。
+2. `set_app_settings` 会重注册计划任务并回收缓存，前端局部写回不可用；采集源由任务页独立维护并按适配器类型持久化。
+3. 后端 `run_scan` 读取带类型的 `collect_sources`，前端不再维护目录字符串与适配器的双重配置。
 4. 工具参数对 `\x`、`\u0000`、反引号敏感，大段 Vue 源码宜用 write 工具或分片落盘。
 5. PowerShell 解析错误会整段不执行，修复需逐文件确认落盘。
 
@@ -65,12 +65,12 @@ Tailwind `extend.colors` 映射为 `cv-*`。圆角：控件 6px，卡片 8px。�
 | 导航 | id | 职责 |
 | --- | --- | --- |
 | 文件库 | `library` | 检索、筛选、分页、文件操作；顶部摘要库统计 |
-| 采集 | `collect` | 微信探测、临时目录、扫描；Tab「来源标注」改名收藏 |
+| 采集 | `collect` | 来源标注与扫描；Tab「来源标注」改名收藏 |
 | 归档 | `archive` | WebDAV 摘要、测试、上传、发布/拉取/恢复 |
 | 任务 | `tasks` | 队列、重试/暂停、5s 轮询 |
-| 设置 | `settings` | 身份、采集目录、定时、WebDAV、缓存、外观、存储、关于 |
+| 设置 | `settings` | 身份、定时、WebDAV、缓存、外观、存储、关于 |
 
-边界：WebDAV 配置只在 Settings；Archive 只读摘要+操作。采集目录以 Settings 为准，扫描时合并；会话临时目录不写回（避免 `set_app_settings` 副作用）。存储看板独立导航已取消。
+边界：WebDAV 配置只在 Settings；Archive 只读摘要+操作。采集源以任务页的 `collect_sources` 为准；立即扫描只临时选择微信账号，不增加隐式目录。存储看板独立导航已取消。
 
 ### S2.4 基础组件
 

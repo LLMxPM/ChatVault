@@ -1,6 +1,9 @@
 // ChatVault 桌面命令：scan 职责实现与前端错误映射。
 // 默认增量：由来源策略发现候选 + 已知文件复检；首次或指定 full_scan 时全量发现。
 use super::*;
+use chatvault_core::models::{
+    CollectSource, GENERIC_FOLDER_SOURCE_TYPE, WECHAT_WINDOWS_4_SOURCE_TYPE,
+};
 use chatvault_index::scan_state::system_time_from_ms;
 use chatvault_scanner::check_file_stability_sync;
 use chrono::Utc;
@@ -18,7 +21,26 @@ pub async fn detect_wechat_accounts() -> std::result::Result<Vec<WechatAccountDt
         Err(_) => return Ok(vec![]),
     };
 
-    let accounts = WeChat4Detector::find_accounts(&root).unwrap_or_default();
+    Ok(wechat_account_dtos(&root).unwrap_or_default())
+}
+
+/// 检查用户选择的微信 4.x 根目录并返回账号与附件统计。
+#[tauri::command]
+pub async fn inspect_wechat_directory(
+    path: String,
+) -> std::result::Result<Vec<WechatAccountDto>, String> {
+    let root = WeChat4Detector::validate_root(path.trim()).map_err(|e| e.to_string())?;
+    wechat_account_dtos(&root)
+}
+
+/// 将指定微信根目录下的账号转换为前端展示对象。
+///
+/// 职责: 统一自动探测和手动检查的账号 DTO 结构，并保留微信根目录作为
+/// 多个微信数据目录同时存在时的定位信息。
+fn wechat_account_dtos(
+    root: &std::path::Path,
+) -> std::result::Result<Vec<WechatAccountDto>, String> {
+    let accounts = WeChat4Detector::find_accounts(root).map_err(|e| e.to_string())?;
     let mut dtos = Vec::new();
 
     for acc in accounts {
@@ -26,6 +48,7 @@ pub async fn detect_wechat_accounts() -> std::result::Result<Vec<WechatAccountDt
         dtos.push(WechatAccountDto {
             source_account_id: acc.source_account_id,
             source_dir: acc.files_dir.to_string_lossy().to_string(),
+            source_root: root.to_string_lossy().to_string(),
             files_count_estimated: files.len(),
         });
     }
@@ -142,95 +165,148 @@ fn ingest_candidates(
     Ok(complete)
 }
 
+/// 判断微信账号是否属于本次立即扫描目标。
+fn is_selected_account(
+    target_accounts: Option<&[WechatAccountTargetDto]>,
+    root: &std::path::Path,
+    account_id: &str,
+) -> bool {
+    let Some(targets) = target_accounts else {
+        return true;
+    };
+    let root_key = chatvault_core::normalize_scan_key(&root.to_string_lossy());
+    targets.iter().any(|target| {
+        target.source_account_id == account_id
+            && chatvault_core::normalize_scan_key(&target.source_root) == root_key
+    })
+}
+
+/// 扫描一个微信 4.x 采集源下的全部或指定账号。
+fn scan_wechat_source(
+    db: &mut chatvault_index::Database,
+    device_id: &str,
+    root: &std::path::Path,
+    target_accounts: Option<&[WechatAccountTargetDto]>,
+    full_scan: bool,
+    scan_started_ms: i64,
+    tally: &mut ScanTally,
+) -> std::result::Result<(), String> {
+    if !root.is_dir() {
+        tracing::warn!("微信 4.x 采集目录不存在，跳过扫描: {}", root.display());
+        return Ok(());
+    }
+    let detected_accounts = WeChat4Detector::find_accounts(root).map_err(|e| e.to_string())?;
+    for acc in detected_accounts {
+        if !is_selected_account(target_accounts, root, &acc.source_account_id) {
+            continue;
+        }
+        let files_root = acc.files_dir.to_string_lossy().to_string();
+        let since = resolve_since(db, &files_root, full_scan)?;
+        let walked =
+            WeChat4Parser::parse_account_files_since(&acc, since).map_err(|e| e.to_string())?;
+        let changed_known = if since.is_some() {
+            db.list_changed_known_files(&files_root)
+                .map_err(|e| e.to_string())?
+        } else {
+            Vec::new()
+        };
+        let candidates = merge_candidates(
+            walked,
+            changed_known,
+            WECHAT_WINDOWS_4_SOURCE_TYPE,
+            Some(&acc.source_account_id),
+            None,
+            Some(&acc.files_dir),
+        );
+        let complete = ingest_candidates(db, device_id, candidates, tally)?;
+        if complete {
+            db.mark_scan_started(
+                &files_root,
+                WECHAT_WINDOWS_4_SOURCE_TYPE,
+                Some(&acc.source_account_id),
+                scan_started_ms,
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            tracing::warn!(
+                "微信账号 {} 本轮存在未完成候选，保留原扫描检查点",
+                acc.source_account_id
+            );
+        }
+    }
+    Ok(())
+}
+
+/// 扫描一个通用附件目录采集源。
+fn scan_generic_source(
+    db: &mut chatvault_index::Database,
+    device_id: &str,
+    root: &std::path::Path,
+    full_scan: bool,
+    scan_started_ms: i64,
+    tally: &mut ScanTally,
+) -> std::result::Result<(), String> {
+    if !root.is_dir() {
+        tracing::warn!("附件采集目录不存在，跳过扫描: {}", root.display());
+        return Ok(());
+    }
+    let root_s = root.to_string_lossy().to_string();
+    let since = resolve_since(db, &root_s, full_scan)?;
+    let walked = GenericFolderParser::parse_with_since(root, since).map_err(|e| e.to_string())?;
+    let changed_known = if since.is_some() {
+        db.list_changed_known_files(&root_s)
+            .map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let candidates = merge_candidates(
+        walked,
+        changed_known,
+        GENERIC_FOLDER_SOURCE_TYPE,
+        None,
+        None,
+        None,
+    );
+    let complete = ingest_candidates(db, device_id, candidates, tally)?;
+    if complete {
+        db.mark_scan_started(&root_s, GENERIC_FOLDER_SOURCE_TYPE, None, scan_started_ms)
+            .map_err(|e| e.to_string())?;
+    } else {
+        tracing::warn!("通用目录 {} 本轮存在未完成候选，保留原扫描检查点", root_s);
+    }
+    Ok(())
+}
+
 /// 执行扫描入库：target_accounts 为 None 时扫描全部微信账号。
 ///
-/// 始终合并设置中的 collect_dirs 与调用方追加目录，保证手动与定时范围一致。
+/// 采集源配置携带适配器类型，配置列表是实际扫描范围。
 pub(crate) fn execute_scan(
     db: &mut chatvault_index::Database,
     device_id: &str,
-    target_accounts: Option<&[String]>,
-    extra_folders: &[String],
+    target_accounts: Option<&[WechatAccountTargetDto]>,
     full_scan: bool,
 ) -> std::result::Result<ScanResultDto, String> {
     let start_time = Instant::now();
     let scan_started_ms = Utc::now().timestamp_millis();
     let mut tally = ScanTally::new();
-    let collect_dirs = load_collect_dirs(db)?;
-    let mut folders: Vec<String> = collect_dirs;
-    for folder in extra_folders {
-        if !folders.iter().any(|existing| existing == folder) {
-            folders.push(folder.clone());
-        }
-    }
+    let sources = load_collect_sources(db)?;
 
-    // 1. 扫描微信账号
-    if let Ok(root) = WeChat4Detector::detect_root() {
-        let detected_accounts = WeChat4Detector::find_accounts(&root).unwrap_or_default();
-        for acc in detected_accounts {
-            if let Some(selected) = target_accounts {
-                if !selected.contains(&acc.source_account_id) {
-                    continue;
-                }
+    for source in &sources {
+        let root = PathBuf::from(&source.path);
+        match source.source_type.as_str() {
+            WECHAT_WINDOWS_4_SOURCE_TYPE => scan_wechat_source(
+                db,
+                device_id,
+                &root,
+                target_accounts,
+                full_scan,
+                scan_started_ms,
+                &mut tally,
+            )?,
+            GENERIC_FOLDER_SOURCE_TYPE => {
+                scan_generic_source(db, device_id, &root, full_scan, scan_started_ms, &mut tally)?
             }
-            let files_root = acc.files_dir.to_string_lossy().to_string();
-            let since = resolve_since(db, &files_root, full_scan)?;
-            let walked =
-                WeChat4Parser::parse_account_files_since(&acc, since).map_err(|e| e.to_string())?;
-            let changed_known = if since.is_some() {
-                db.list_changed_known_files(&files_root)
-                    .map_err(|e| e.to_string())?
-            } else {
-                Vec::new()
-            };
-            let candidates = merge_candidates(
-                walked,
-                changed_known,
-                "wechat-windows-4",
-                Some(&acc.source_account_id),
-                None,
-                Some(&acc.files_dir),
-            );
-            let complete = ingest_candidates(db, device_id, candidates, &mut tally)?;
-            if complete {
-                db.mark_scan_started(
-                    &files_root,
-                    "wechat-windows-4",
-                    Some(&acc.source_account_id),
-                    scan_started_ms,
-                )
-                .map_err(|e| e.to_string())?;
-            } else {
-                tracing::warn!(
-                    "微信账号 {} 本轮存在未完成候选，保留原扫描检查点",
-                    acc.source_account_id
-                );
-            }
-        }
-    }
-
-    // 2. 扫描附加目录（设置 + 调用方追加）
-    for folder in &folders {
-        let p = PathBuf::from(folder);
-        if !p.exists() {
-            continue;
-        }
-        let root_s = p.to_string_lossy().to_string();
-        let since = resolve_since(db, &root_s, full_scan)?;
-        let walked = GenericFolderParser::parse_with_since(&p, since).map_err(|e| e.to_string())?;
-        let changed_known = if since.is_some() {
-            db.list_changed_known_files(&root_s)
-                .map_err(|e| e.to_string())?
-        } else {
-            Vec::new()
-        };
-        let candidates =
-            merge_candidates(walked, changed_known, "generic-folder", None, None, None);
-        let complete = ingest_candidates(db, device_id, candidates, &mut tally)?;
-        if complete {
-            db.mark_scan_started(&root_s, "generic-folder", None, scan_started_ms)
-                .map_err(|e| e.to_string())?;
-        } else {
-            tracing::warn!("通用目录 {} 本轮存在未完成候选，保留原扫描检查点", root_s);
+            other => tracing::warn!("跳过未知采集源类型 {}: {}", other, source.path),
         }
     }
 
@@ -242,10 +318,12 @@ pub(crate) fn execute_scan(
     })
 }
 
-/// 读取设置中的持久采集目录。
-fn load_collect_dirs(db: &chatvault_index::Database) -> std::result::Result<Vec<String>, String> {
+/// 读取设置中的持久采集源。
+fn load_collect_sources(
+    db: &chatvault_index::Database,
+) -> std::result::Result<Vec<CollectSource>, String> {
     let raw = db
-        .get_setting(setting_keys::COLLECT_DIRS)
+        .get_setting(setting_keys::COLLECT_SOURCES)
         .map_err(|e| e.to_string())?
         .unwrap_or_else(|| "[]".to_string());
     serde_json::from_str(&raw).map_err(|e| e.to_string())
@@ -254,7 +332,7 @@ fn load_collect_dirs(db: &chatvault_index::Database) -> std::result::Result<Vec<
 /// 触发针对指定微信账号与通用目录的扫描（默认增量，可选全量）
 ///
 /// # 输入
-/// - `request`: 账号列表（空则跳过微信）、额外文件夹与 full_scan 标志
+/// - `request`: 账号列表（空则跳过微信）与 full_scan 标志
 /// - `state`: 应用全局上下文
 #[tauri::command]
 pub async fn run_scan(
@@ -263,17 +341,11 @@ pub async fn run_scan(
 ) -> std::result::Result<ScanResultDto, String> {
     let mut db = state.get_db().map_err(|e| e.to_string())?;
     let device_id = state.device_id().map_err(|e| e.to_string())?;
-    // 空列表表示本次不扫微信，仅扫描目录
+    // 空列表表示本次不扫微信，仅扫描通用附件目录。
     let target = if request.target_accounts.is_empty() {
-        Some(&[] as &[String])
+        Some(&[] as &[WechatAccountTargetDto])
     } else {
         Some(request.target_accounts.as_slice())
     };
-    execute_scan(
-        &mut db,
-        &device_id,
-        target,
-        &request.custom_folders,
-        request.full_scan,
-    )
+    execute_scan(&mut db, &device_id, target, request.full_scan)
 }

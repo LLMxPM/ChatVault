@@ -4,7 +4,7 @@
 //! 生成标准 `DiscoveredFile`，提供统一的扫描归档接口。
 
 use chatvault_core::error::{ChatVaultError, Result};
-use chatvault_core::models::DiscoveredFile;
+use chatvault_core::models::{DiscoveredFile, GENERIC_FOLDER_SOURCE_TYPE};
 use chatvault_scanner::strategy::FullScanStrategy;
 use chatvault_scanner::walker::{scan_directory_with_strategy, ScanOptions};
 use chrono::{DateTime, Utc};
@@ -65,7 +65,7 @@ impl GenericFolderParser {
             let modified_time: DateTime<Utc> = modified_system.into();
 
             discovered.push(DiscoveredFile {
-                source_type: "generic-folder".to_string(),
+                source_type: GENERIC_FOLDER_SOURCE_TYPE.to_string(),
                 source_account_id: None,
                 absolute_path: path.to_string_lossy().to_string(),
                 file_name,

@@ -1,21 +1,34 @@
 // ChatVault 桌面端通用数据类型定义
 // 用于前端与 Rust Tauri 后端通过 invoke 进行交互的契约对象
 
-/**
- * 微信 4.x 账号探测信息
- */
+/** 采集源适配器类型。 */
+export type CollectSourceType = "wechat-windows-4" | "generic-folder";
+
+/** 持久化采集源配置。 */
+export interface CollectSourceDto {
+  sourceType: CollectSourceType;
+  path: string;
+}
+
+/** 微信 4.x 账号探测信息。 */
 export interface WechatAccountDto {
   sourceAccountId: string;
   sourceDir: string;
+  sourceRoot: string;
   filesCountEstimated: number;
+}
+
+/** 立即扫描时用于定位微信账号的目录与账号标识。 */
+export interface WechatAccountTargetDto {
+  sourceRoot: string;
+  sourceAccountId: string;
 }
 
 /**
  * 扫描请求参数
  */
 export interface ScanRequestDto {
-  targetAccounts: string[];
-  customFolders: string[];
+  targetAccounts: WechatAccountTargetDto[];
   /** true 时忽略检查点做全量发现；默认 false 使用增量扫描 */
   fullScan?: boolean;
 }
@@ -151,7 +164,7 @@ export interface ArchiveResultDto {
 }
 
 /**
- * 应用设置（Vault/设备/WebDAV/缓存/采集目录/调度）
+ * 应用设置（Vault/设备/WebDAV/缓存/采集源/调度）
  */
 export interface AppSettingsDto {
   vaultId: string;
@@ -163,15 +176,13 @@ export interface AppSettingsDto {
   cacheMaxMib: number;
   scanIntervalMinutes: number;
   scheduleEnabled: boolean;
-  collectDirs: string[];
+  collectSources: CollectSourceDto[];
 }
 
 /** 流水线请求：与定时任务同构。 */
 export interface PipelineRequestDto {
-  /** 未传或 null 表示扫描全部微信账号 */
-  targetAccounts?: string[] | null;
-  /** 仅本次附加的目录，不写入设置 */
-  extraFolders?: string[];
+  /** 未传或 null 表示扫描全部微信账号。数组为空表示跳过微信。 */
+  targetAccounts?: WechatAccountTargetDto[] | null;
   fullScan?: boolean;
 }
 

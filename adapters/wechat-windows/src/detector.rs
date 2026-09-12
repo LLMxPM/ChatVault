@@ -21,6 +21,34 @@ pub struct WeChatAccount {
 pub struct WeChat4Detector;
 
 impl WeChat4Detector {
+    /// 校验手动选择的微信 4.x 数据根目录。
+    ///
+    /// 职责: 确认路径是现有目录且目录名为 `xwechat_files`，避免把账号目录或
+    /// `msg/file` 附件目录误当成微信根目录。输入为用户选择的目录路径，输出为
+    /// 可继续枚举账号的规范路径。
+    pub fn validate_root<P: AsRef<Path>>(root: P) -> Result<PathBuf> {
+        let path = root.as_ref();
+        if !path.is_dir() {
+            return Err(ChatVaultError::FileNotFound {
+                path: path.display().to_string(),
+            });
+        }
+
+        let is_xwechat_root = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.eq_ignore_ascii_case("xwechat_files"))
+            .unwrap_or(false);
+        if !is_xwechat_root {
+            return Err(ChatVaultError::WeChatParse(
+                "请选择微信 4.x 的 xwechat_files 根目录，不能选择账号或 msg/file 子目录"
+                    .to_string(),
+            ));
+        }
+
+        Ok(path.to_path_buf())
+    }
+
     /// 获取默认的微信 4.x 数据根目录候选列表
     ///
     /// 职责: 返回标准 `Documents\xwechat_files` 以及跨盘符常见位置
@@ -118,5 +146,41 @@ mod tests {
     fn test_candidate_roots_not_empty() {
         let roots = WeChat4Detector::candidate_roots();
         assert!(!roots.is_empty());
+    }
+
+    #[test]
+    fn validate_root_requires_xwechat_files_directory() {
+        let base =
+            std::env::temp_dir().join(format!("chatvault-wechat-root-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("not-wechat")).unwrap();
+        std::fs::create_dir_all(base.join("xwechat_files")).unwrap();
+
+        assert!(WeChat4Detector::validate_root(base.join("missing")).is_err());
+        assert!(WeChat4Detector::validate_root(base.join("not-wechat")).is_err());
+        assert_eq!(
+            WeChat4Detector::validate_root(base.join("xwechat_files")).unwrap(),
+            base.join("xwechat_files")
+        );
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn find_accounts_requires_msg_directory() {
+        let base = std::env::temp_dir().join(format!(
+            "chatvault-wechat-accounts-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("xwechat_files");
+        std::fs::create_dir_all(root.join("wxid_without_msg")).unwrap();
+        std::fs::create_dir_all(root.join("wxid_with_msg").join("msg")).unwrap();
+
+        let accounts = WeChat4Detector::find_accounts(&root).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].source_account_id, "wxid_with_msg");
+
+        std::fs::remove_dir_all(base).unwrap();
     }
 }

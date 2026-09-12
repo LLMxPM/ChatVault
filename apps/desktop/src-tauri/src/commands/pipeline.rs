@@ -3,12 +3,11 @@ use super::scan::execute_scan;
 use super::webdav::resolve_webdav_password;
 use super::*;
 
-/// 流水线请求：None 账号表示扫全部微信；extra_folders 仅本次附加。
+/// 流水线请求：None 账号表示扫描全部已配置微信账号。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineRequestDto {
-    pub target_accounts: Option<Vec<String>>,
-    pub extra_folders: Option<Vec<String>>,
+    pub target_accounts: Option<Vec<WechatAccountTargetDto>>,
     #[serde(default)]
     pub full_scan: bool,
 }
@@ -35,10 +34,9 @@ pub async fn run_pipeline(
     let mut db = state.get_db().map_err(|e| e.to_string())?;
     let device_id = state.device_id().map_err(|e| e.to_string())?;
     let vault_id = state.vault_id().map_err(|e| e.to_string())?;
-    let extra = request.extra_folders.unwrap_or_default();
     let target = request.target_accounts.as_deref();
 
-    let scan = execute_scan(&mut db, &device_id, target, &extra, request.full_scan)?;
+    let scan = execute_scan(&mut db, &device_id, target, request.full_scan)?;
 
     let webdav_url = db
         .get_setting(setting_keys::WEBDAV_URL)
