@@ -82,54 +82,91 @@
         title="归档"
         info="扫描采集范围 → 上传 WebDAV → 自动同步元数据。定时与立即归档共用同一条流水线；未配置 WebDAV 时只做本地扫描。"
       >
-        <!-- 状态 + 主操作：通用备份卡结构 -->
-        <div class="flex flex-wrap items-start justify-between gap-3">
-          <div class="min-w-0 flex-1">
-            <p class="text-cv-body text-cv-text" :class="statusHeadlineClass">
-              {{ statusHeadline }}
-            </p>
-            <p v-if="statusDetail" class="mt-0.5 text-cv-caption text-cv-text-3">{{ statusDetail }}</p>
-          </div>
-          <UiButton
-            variant="primary"
-            :loading="running"
-            :disabled="running || !canRun"
-            @click="startPipeline"
-          >
-            {{ running ? "归档中…" : "立即归档" }}
-          </UiButton>
-        </div>
+        <div class="space-y-3">
+          <div class="rounded-cv-lg border border-cv-border bg-cv-surface-2 px-3.5 py-3">
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div class="flex items-center justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="text-cv-caption font-medium text-cv-text-2">执行间隔</p>
+                  <p class="mt-1 text-cv-caption text-cv-text-3">定时任务的自动归档频率</p>
+                </div>
+                <div class="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-cv-caption text-cv-text-2">
+                  <span>每</span>
+                  <UiInput
+                    id="scan-interval"
+                    :model-value="scanIntervalHours"
+                    type="number"
+                    class="w-16"
+                    min="0.5"
+                    max="24"
+                    step="0.5"
+                    @update:model-value="onIntervalInput"
+                  />
+                  <span>小时</span>
+                </div>
+              </div>
 
-        <label class="mt-4 flex items-center gap-2 text-cv-caption text-cv-text-3">
-          <input v-model="fullScan" type="checkbox" class="accent-[var(--cv-accent)]" />
-          强制全量扫描
-        </label>
-
-        <div class="mt-3 border-t border-cv-border pt-1">
-          <div class="flex items-center justify-between py-2">
-            <span class="text-cv-caption text-cv-text-2">自动归档</span>
-            <UiSwitch
-              :model-value="scheduleEnabled"
-              label="自动归档"
-              @update:model-value="onScheduleToggle"
-            />
+              <div class="flex items-center justify-between gap-3 sm:border-l sm:border-cv-border sm:pl-4">
+                <div class="min-w-0">
+                  <p class="text-cv-caption font-medium text-cv-text-2">自动归档</p>
+                  <p class="mt-1 text-cv-caption text-cv-text-3">按固定周期自动扫描并归档</p>
+                  <p
+                    v-if="scheduleEnabled"
+                    class="mt-1 whitespace-nowrap text-cv-caption"
+                    :class="scheduleRegistered ? 'text-cv-success' : 'text-cv-warning'"
+                  >
+                    {{ scheduleRegistered ? "计划已注册" : "注册失败" }}
+                  </p>
+                </div>
+                <UiSwitch
+                  :model-value="scheduleEnabled"
+                  label="自动归档"
+                  @update:model-value="onScheduleToggle"
+                />
+              </div>
+            </div>
           </div>
-          <div v-if="scheduleEnabled" class="flex items-center justify-between gap-3 pb-2">
-            <span class="text-cv-caption text-cv-text-3">间隔</span>
-            <div class="flex items-center gap-1.5 text-cv-caption text-cv-text-2">
-              <span>每</span>
-              <UiInput
-                :model-value="String(scanIntervalMinutes)"
-                type="number"
-                class="w-20"
-                min="5"
-                max="1440"
-                @update:model-value="onIntervalInput"
+
+          <div class="flex flex-wrap items-center justify-between gap-3 rounded-cv-lg border border-cv-border px-3.5 py-2.5">
+            <label class="flex min-w-0 cursor-pointer items-center gap-3">
+              <input
+                v-model="fullScan"
+                type="checkbox"
+                class="h-4 w-4 shrink-0 accent-[var(--cv-accent)]"
+                :disabled="running"
               />
-              <span>分钟</span>
-              <span v-if="scheduleEnabled" class="ml-2" :class="scheduleRegistered ? 'text-cv-success' : 'text-cv-warning'">
-                {{ scheduleRegistered ? "已注册" : "注册失败" }}
+              <span class="min-w-0">
+                <span class="block text-cv-caption font-medium text-cv-text-2">本次强制全量扫描</span>
+                <span class="mt-0.5 block text-cv-caption text-cv-text-3">忽略增量记录，重新检查全部附件</span>
               </span>
+            </label>
+            <UiButton
+              class="shrink-0"
+              variant="primary"
+              :loading="running"
+              :disabled="running || !canRun"
+              @click="startPipeline"
+            >
+              {{ running ? "归档中…" : "立即归档" }}
+            </UiButton>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-3 rounded-cv-lg border border-cv-border bg-cv-surface-2 px-3.5 py-3">
+            <div class="flex min-w-0 items-start gap-3">
+              <span
+                class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
+                :class="statusIndicatorClass"
+                aria-hidden="true"
+              >
+                <span class="h-2 w-2 rounded-full bg-current" :class="running ? 'animate-pulse' : ''" />
+              </span>
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <p class="text-cv-body text-cv-text" :class="statusHeadlineClass">{{ statusHeadline }}</p>
+                  <UiBadge :tone="statusBadgeTone">{{ statusBadge }}</UiBadge>
+                </div>
+                <p v-if="statusDetail" class="mt-0.5 max-w-2xl break-words text-cv-caption text-cv-text-3">{{ statusDetail }}</p>
+              </div>
             </div>
           </div>
         </div>
@@ -250,6 +287,10 @@ let pollTimer: number | undefined;
 let scheduleSaveTimer: number | undefined;
 
 const canRun = computed(() => selectedAccounts.value.length > 0 || collectDirs.value.length > 0);
+const scanIntervalHours = computed(() => {
+  const hours = scanIntervalMinutes.value / 60;
+  return Number.isFinite(hours) ? String(Number(hours.toFixed(2))) : "0.5";
+});
 
 const statusHeadline = computed(() => {
   if (running.value) return "归档中";
@@ -257,8 +298,7 @@ const statusHeadline = computed(() => {
   if (stage.value === "done" && pipelineResult.value) {
     return pipelineResult.value.webdavConfigured ? "归档完成" : "已本地扫描";
   }
-  if (!webdavReady.value) return "就绪 · 未连接 WebDAV";
-  return "就绪";
+  return "等待归档";
 });
 
 const statusDetail = computed(() => {
@@ -267,7 +307,7 @@ const statusDetail = computed(() => {
   if (stage.value === "done" && pipelineResult.value) {
     return pipelineResult.value.message + " · 耗时 " + pipelineResult.value.durationMs + " ms";
   }
-  if (!webdavReady.value) return "仅本地扫描，不会上传";
+  if (!webdavReady.value) return "未连接 WebDAV，本次只会进行本地扫描";
   return "";
 });
 
@@ -275,6 +315,30 @@ const statusHeadlineClass = computed(() => {
   if (running.value) return "font-medium text-cv-accent";
   if (stage.value === "failed") return "font-medium text-cv-danger";
   return "font-medium";
+});
+
+const statusBadge = computed(() => {
+  if (running.value) return "进行中";
+  if (stage.value === "failed") return "失败";
+  if (stage.value === "done") return "已完成";
+  if (!webdavReady.value) return "仅本地";
+  return "就绪";
+});
+
+const statusBadgeTone = computed<"neutral" | "accent" | "success" | "warning" | "danger">(() => {
+  if (running.value) return "accent";
+  if (stage.value === "failed") return "danger";
+  if (stage.value === "done") return "success";
+  if (!webdavReady.value) return "warning";
+  return "neutral";
+});
+
+const statusIndicatorClass = computed(() => {
+  if (running.value) return "bg-cv-accent-soft text-cv-accent";
+  if (stage.value === "failed") return "bg-cv-surface-2 text-cv-danger";
+  if (stage.value === "done") return "bg-cv-accent-soft text-cv-success";
+  if (!webdavReady.value) return "bg-cv-surface-2 text-cv-warning";
+  return "bg-cv-surface-2 text-cv-text-3";
 });
 
 /** 开关即时写入，无保存步骤。 */
@@ -395,8 +459,8 @@ async function persistDirs() {
 }
 
 function onIntervalInput(raw: string | number) {
-  const n = Number(raw);
-  scanIntervalMinutes.value = Number.isFinite(n) ? n : 0;
+  const hours = Number(raw);
+  scanIntervalMinutes.value = Number.isFinite(hours) ? Math.round(hours * 60) : 0;
   if (scheduleSaveTimer) window.clearTimeout(scheduleSaveTimer);
   scheduleSaveTimer = window.setTimeout(() => void saveSchedule(), 600);
 }
