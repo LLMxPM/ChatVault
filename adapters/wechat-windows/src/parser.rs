@@ -1,7 +1,8 @@
 //! # 微信 4.x 附件解析与提取模块
 //!
 //! 负责递归遍历微信 4.x 账号下的 `msg/file` 目录，提取文件大小、修改时间、
-//! 原文件名与所属账号，打包为标准的 `DiscoveredFile` 实例供后续入库与归档。
+//! 原文件名、所属账号与可验证的聊天目录标识，打包为标准的 `DiscoveredFile`
+//! 实例供后续入库与归档。
 
 use crate::detector::WeChatAccount;
 use chatvault_core::error::{ChatVaultError, Result};
@@ -35,27 +36,56 @@ impl WeChat4Parser {
         if !account.files_dir.exists() {
             tracing::info!(
                 "账号 {} 的附件目录尚未生成: {}",
-                account.account_id,
+                account.source_account_id,
                 account.files_dir.display()
             );
             return Ok(Vec::new());
         }
 
-        Self::parse_folder_since(&account.files_dir, Some(&account.account_id), since)
+        Self::parse_folder_since(&account.files_dir, Some(&account.source_account_id), since)
     }
 
     /// 从任意给定的微信 4.x 目录提取文件（全量）
     pub fn parse_folder<P: AsRef<Path>>(
         folder: P,
-        account_id: Option<&str>,
+        source_account_id: Option<&str>,
     ) -> Result<Vec<DiscoveredFile>> {
-        Self::parse_folder_since(folder, account_id, None)
+        Self::parse_folder_since(folder, source_account_id, None)
+    }
+
+    /// 从微信 4.x 文件路径中提取可验证的聊天 ID。
+    ///
+    /// 职责: 仅识别 `msg/file/YYYY-MM/<conversation_id>/<file>` 形式的稳定聊天目录，
+    ///       不把月份目录或平铺文件名误认为聊天 ID。
+    /// 输入:
+    ///   - `files_root`: 微信账号的 `msg/file` 根目录
+    ///   - `file_path`: 待解析的文件路径
+    /// 输出: 聊天目录名；标准 `msg/file/YYYY-MM/<file>` 平铺布局返回 `None`
+    pub fn conversation_id_for_path<P: AsRef<Path>, Q: AsRef<Path>>(
+        files_root: P,
+        file_path: Q,
+    ) -> Option<String> {
+        let relative = file_path.as_ref().strip_prefix(files_root.as_ref()).ok()?;
+        let mut components = relative.components();
+        let month = components.next()?.as_os_str().to_str()?;
+        if !is_month_directory(month) {
+            return None;
+        }
+
+        let conversation = components.next()?.as_os_str().to_str()?;
+        // 只有月份目录、聊天目录和文件三层时才认定第二层是聊天 ID；
+        // 更深层路径仍可保留第一层聊天目录，供未来布局扩展使用。
+        if components.next().is_none() || conversation.is_empty() {
+            return None;
+        }
+
+        Some(conversation.to_string())
     }
 
     /// 按微信 4.x 固定目录策略增量提取文件并附带上下文标签
     pub fn parse_folder_since<P: AsRef<Path>>(
         folder: P,
-        account_id: Option<&str>,
+        source_account_id: Option<&str>,
         since: Option<SystemTime>,
     ) -> Result<Vec<DiscoveredFile>> {
         let f = folder.as_ref();
@@ -87,18 +117,85 @@ impl WeChat4Parser {
             let modified_system = metadata.modified().map_err(|e| ChatVaultError::Io(e))?;
             let modified_time: DateTime<Utc> = modified_system.into();
 
-            // 月份目录不能证明会话身份；未验证来源保持未知。
+            // 只有存在明确聊天目录时才写入聊天 ID；标准月份平铺文件保持未知。
+            let source_conversation_id = Self::conversation_id_for_path(f, &path);
             discovered.push(DiscoveredFile {
                 source_type: "wechat-windows-4".to_string(),
-                account_id: account_id.map(|s| s.to_string()),
+                source_account_id: source_account_id.map(|s| s.to_string()),
                 absolute_path: path.to_string_lossy().to_string(),
                 file_name,
                 file_size: metadata.len(),
                 modified_time,
-                conversation_hint: None,
+                source_conversation_id,
             });
         }
 
         Ok(discovered)
+    }
+}
+
+/// 判断路径第一层是否为微信 4.x 文件目录使用的月份目录。
+fn is_month_directory(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    bytes.len() == 7
+        && bytes[4] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || byte.is_ascii_digit())
+        && matches!(name[5..7].parse::<u8>(), Ok(1..=12))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn extracts_conversation_id_from_nested_file_layout() {
+        let root = Path::new(r"C:\xwechat_files\wxid_test\msg\file");
+        let file = root.join("2026-09").join("wxid_friend").join("report.pdf");
+
+        assert_eq!(
+            WeChat4Parser::conversation_id_for_path(root, &file).as_deref(),
+            Some("wxid_friend")
+        );
+    }
+
+    #[test]
+    fn flat_month_layout_has_no_conversation_id() {
+        let root = Path::new(r"C:\xwechat_files\wxid_test\msg\file");
+        let file = root.join("2026-09").join("report.pdf");
+
+        assert_eq!(WeChat4Parser::conversation_id_for_path(root, &file), None);
+    }
+
+    #[test]
+    fn rejects_non_month_directory_as_conversation_context() {
+        let root = Path::new(r"C:\xwechat_files\wxid_test\msg\file");
+        let file = root.join("archive").join("wxid_friend").join("report.pdf");
+
+        assert_eq!(WeChat4Parser::conversation_id_for_path(root, &file), None);
+    }
+
+    #[test]
+    fn parser_emits_conversation_id_for_nested_layout() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("chatvault_wechat_parser_{unique}"));
+        let file = root.join("2026-09").join("wxid_friend").join("report.pdf");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"report").unwrap();
+
+        let discovered = WeChat4Parser::parse_folder(&root, Some("wxid_owner")).unwrap();
+
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(
+            discovered[0].source_conversation_id.as_deref(),
+            Some("wxid_friend")
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }

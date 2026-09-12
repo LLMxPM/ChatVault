@@ -63,6 +63,7 @@
       <TasksView v-else-if="currentTab === 'tasks'" />
       <StatsView v-else-if="currentTab === 'stats'" />
       <SyncView v-else-if="currentTab === 'sync'" />
+      <SourceManagementView v-else-if="currentTab === 'sources'" />
       <SettingsView v-else-if="currentTab === 'settings'" />
     </main>
   </div>
@@ -70,7 +71,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { FolderSearch, Search, BarChart3, Cloud, Settings, ListTodo } from "lucide-vue-next";
+import { FolderSearch, Search, BarChart3, Cloud, Settings, ListTodo, ContactRound } from "lucide-vue-next";
 import appIcon from "./assets/app-icon.png";
 import { loadRuntime, runtime } from "./api/runtime";
 import LibraryView from "./views/LibraryView.vue";
@@ -79,8 +80,9 @@ import StatsView from "./views/StatsView.vue";
 import SyncView from "./views/SyncView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import TasksView from "./views/TasksView.vue";
+import SourceManagementView from "./views/SourceManagementView.vue";
 
-const currentTab = ref<"library" | "scanner" | "tasks" | "stats" | "sync" | "settings">("library");
+const currentTab = ref<"library" | "scanner" | "sources" | "tasks" | "stats" | "sync" | "settings">("library");
 const guideDismissed = ref(false);
 
 /** 初始化运行信息；空资料库首先展示来源扫描入口。 */
@@ -92,6 +94,7 @@ onMounted(async () => {
 const navItems = [
   { id: "library", label: "文件库与检索", icon: FolderSearch },
   { id: "scanner", label: "微信来源与扫描", icon: Search },
+  { id: "sources", label: "来源管理", icon: ContactRound },
   { id: "tasks", label: "任务中心", icon: ListTodo },
   { id: "stats", label: "存储看板与去重", icon: BarChart3 },
   { id: "sync", label: "WebDAV 归档同步", icon: Cloud },

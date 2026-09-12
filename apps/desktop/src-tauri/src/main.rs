@@ -39,6 +39,10 @@ fn main() {
             commands::library::search_records,
             commands::library::get_vault_stats,
             commands::library::reveal_file_in_explorer,
+            commands::sources::list_source_accounts,
+            commands::sources::list_source_conversations,
+            commands::sources::update_source_account,
+            commands::sources::update_source_conversation,
             commands::webdav::test_webdav,
             commands::webdav::archive_to_webdav,
             commands::webdav::save_webdav_credential,
@@ -53,7 +57,6 @@ fn main() {
             commands::tasks::requeue_upload_task,
             commands::tasks::pause_upload_task,
             connection::save_webdav_config,
-            connection::list_record_accounts,
             runtime::get_runtime_info,
             runtime::open_log_directory,
         ])

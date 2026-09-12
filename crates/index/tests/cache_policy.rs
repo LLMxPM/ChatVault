@@ -7,12 +7,12 @@ use std::path::{Path, PathBuf};
 fn discovered(path: &Path) -> DiscoveredFile {
     DiscoveredFile {
         source_type: "test".into(),
-        account_id: None,
+        source_account_id: None,
         absolute_path: path.to_string_lossy().into(),
         file_name: path.file_name().unwrap().to_string_lossy().into(),
         file_size: 0,
         modified_time: chrono::Utc::now(),
-        conversation_hint: None,
+        source_conversation_id: None,
     }
 }
 

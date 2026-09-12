@@ -17,8 +17,12 @@ pub struct SearchFilter {
     pub extension: Option<String>,
     /// 文件分类，在数据库分页前筛选。
     pub category: Option<String>,
-    /// 账号过滤 (例如微信号或 wxid)
-    pub account_id: Option<String>,
+    /// 来源类型过滤
+    pub source_type: Option<String>,
+    /// 来源账号过滤 (例如微信号或 wxid)
+    pub source_account_id: Option<String>,
+    /// 来源聊天过滤
+    pub source_conversation_id: Option<String>,
     /// 时间范围起始
     pub start_time: Option<DateTime<Utc>>,
     /// 时间范围截止
@@ -37,12 +41,14 @@ pub struct SearchResultItem {
     pub original_name: String,
     pub extension: String,
     pub size: u64,
-    pub account_id: Option<String>,
-    pub conversation_id: Option<String>,
+    pub source_type: String,
+    pub source_account_id: Option<String>,
+    pub source_account_name: Option<String>,
+    pub source_conversation_id: Option<String>,
+    pub source_conversation_name: Option<String>,
     pub file_time: String,
     pub original_path: Option<String>,
     pub upload_status: Option<String>,
-    pub source: String,
     pub discovered_at: String,
 }
 
@@ -119,10 +125,18 @@ impl<'a> SearchService<'a> {
             params_vec.push(Box::new(clean_ext));
         }
 
-        // 3. 账号过滤
-        if let Some(acc) = &filter.account_id {
-            conditions.push("r.account_id = ?".to_string());
+        // 3. 来源实体过滤
+        if let Some(source_type) = &filter.source_type {
+            conditions.push("r.source_type = ?".to_string());
+            params_vec.push(Box::new(source_type.clone()));
+        }
+        if let Some(acc) = &filter.source_account_id {
+            conditions.push("r.source_account_id = ?".to_string());
             params_vec.push(Box::new(acc.clone()));
+        }
+        if let Some(conversation_id) = &filter.source_conversation_id {
+            conditions.push("r.source_conversation_id = ?".to_string());
+            params_vec.push(Box::new(conversation_id.clone()));
         }
 
         // 4. 起始时间
@@ -151,17 +165,30 @@ impl<'a> SearchService<'a> {
                 r.original_name,
                 o.extension,
                 o.size,
-                r.account_id,
-                r.conversation_id,
+                r.source_type,
+                r.source_account_id,
+                CASE WHEN r.source_account_id IS NULL THEN NULL
+                     ELSE COALESCE(NULLIF(sa.display_name, ''), NULLIF(sa.source_name, ''), r.source_account_id)
+                END AS source_account_name,
+                r.source_conversation_id,
+                CASE WHEN r.source_conversation_id IS NULL THEN NULL
+                     ELSE COALESCE(NULLIF(sc.display_name, ''), NULLIF(sc.source_name, ''), r.source_conversation_id)
+                END AS source_conversation_name,
                 r.file_time,
                 l.original_path,
                 t.status AS upload_status,
-                r.source,
                 r.discovered_at
             FROM file_records r
             JOIN file_objects o ON r.object_id = o.object_id
             LEFT JOIN local_files l ON r.record_id = l.record_id
             LEFT JOIN upload_tasks t ON r.record_id = t.record_id
+            LEFT JOIN source_accounts sa
+              ON sa.source_type = r.source_type
+             AND sa.source_account_id = r.source_account_id
+            LEFT JOIN source_conversations sc
+              ON sc.source_type = r.source_type
+             AND sc.source_account_id = r.source_account_id
+             AND sc.source_conversation_id = r.source_conversation_id
             {}
             ORDER BY r.file_time DESC, r.record_id
             LIMIT ? OFFSET ?
@@ -191,13 +218,15 @@ impl<'a> SearchService<'a> {
                     original_name: row.get(2)?,
                     extension: row.get(3)?,
                     size: row.get::<_, i64>(4)? as u64,
-                    account_id: row.get(5)?,
-                    conversation_id: row.get(6)?,
-                    file_time: row.get(7)?,
-                    original_path: row.get(8)?,
-                    upload_status: row.get(9)?,
-                    source: row.get(10)?,
-                    discovered_at: row.get(11)?,
+                    source_type: row.get(5)?,
+                    source_account_id: row.get(6)?,
+                    source_account_name: row.get(7)?,
+                    source_conversation_id: row.get(8)?,
+                    source_conversation_name: row.get(9)?,
+                    file_time: row.get(10)?,
+                    original_path: row.get(11)?,
+                    upload_status: row.get(12)?,
+                    discovered_at: row.get(13)?,
                 })
             })
             .map_err(|e| ChatVaultError::Database(format!("执行查询失败: {}", e)))?;
@@ -231,12 +260,12 @@ mod tests {
 
         let df = DiscoveredFile {
             source_type: "wechat-test".to_string(),
-            account_id: Some("wxid_test".to_string()),
+            source_account_id: Some("wxid_test".to_string()),
             absolute_path: file_path.to_str().unwrap().to_string(),
             file_name: "AI超级个体-打造不可替代的个人品牌.pdf".to_string(),
             file_size: 17,
             modified_time: Utc::now(),
-            conversation_hint: None,
+            source_conversation_id: None,
         };
 
         db.ingest_file(&df, "dev-test").unwrap();

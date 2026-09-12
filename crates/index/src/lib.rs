@@ -20,6 +20,7 @@ mod ingest;
 mod journal;
 pub mod scan_state;
 mod settings;
+mod source_mappings;
 mod task_status;
 mod tasks;
 mod upload_queue;
@@ -27,3 +28,4 @@ mod upload_queue;
 pub use scan_state::{
     chrono_ms, system_time_from_ms, system_time_to_ms, utc_from_ms, KnownLocalFile,
 };
+pub use source_mappings::{SourceAccountRow, SourceConversationRow};

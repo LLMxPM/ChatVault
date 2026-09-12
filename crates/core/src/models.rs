@@ -62,12 +62,12 @@ pub struct FileRecord {
     pub record_id: String,
     /// 关联的内容对象 ID (即 FileObject.object_id)
     pub object_id: String,
-    /// 发现来源类型（例如 wechat-windows, generic-folder）
-    pub source: String,
+    /// 发现来源类型（例如 wechat-windows-4、generic-folder）
+    pub source_type: String,
     /// 来源账号 ID（例如微信 wxid_xxx 或微信号）
-    pub account_id: Option<String>,
+    pub source_account_id: Option<String>,
     /// 会话标识（若可提取，否则为 None）
-    pub conversation_id: Option<String>,
+    pub source_conversation_id: Option<String>,
     /// 用户看到的文件原始文件名
     pub original_name: String,
     /// 文件的实际时间（通常为文件的最后修改时间 mtime）
@@ -139,7 +139,7 @@ pub struct DiscoveredFile {
     /// 来源类型标签（如 "wechat-windows", "generic-folder"）
     pub source_type: String,
     /// 归属账号（如微信账号）
-    pub account_id: Option<String>,
+    pub source_account_id: Option<String>,
     /// 文件绝对路径
     pub absolute_path: String,
     /// 原始文件名
@@ -148,8 +148,8 @@ pub struct DiscoveredFile {
     pub file_size: u64,
     /// 文件修改时间
     pub modified_time: DateTime<Utc>,
-    /// 推测或提取到的会话上下文（若无则为 None）
-    pub conversation_hint: Option<String>,
+    /// 来源系统提供的稳定会话 ID（若无法可靠提取则为 None）
+    pub source_conversation_id: Option<String>,
 }
 
 /// 同步日志事件类型
@@ -160,6 +160,10 @@ pub enum JournalEventType {
     FileRecordAdded,
     /// 删除文件来源记录（软删除 tombstone）
     FileRecordDeleted,
+    /// 用户更新来源账号名称或收藏状态
+    SourceAccountUpdated,
+    /// 用户更新来源聊天名称或收藏状态
+    SourceConversationUpdated,
 }
 
 /// 元数据日志事件

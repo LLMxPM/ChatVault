@@ -24,7 +24,7 @@ pub async fn detect_wechat_accounts() -> std::result::Result<Vec<WechatAccountDt
     for acc in accounts {
         let files = WeChat4Parser::parse_account_files(&acc).unwrap_or_default();
         dtos.push(WechatAccountDto {
-            account_id: acc.account_id,
+            source_account_id: acc.source_account_id,
             source_dir: acc.files_dir.to_string_lossy().to_string(),
             files_count_estimated: files.len(),
         });
@@ -52,8 +52,9 @@ fn merge_candidates(
     walked: Vec<chatvault_core::models::DiscoveredFile>,
     changed_known: Vec<chatvault_index::KnownLocalFile>,
     source_type: &str,
-    account_id: Option<&str>,
-    conversation_hint: Option<String>,
+    source_account_id: Option<&str>,
+    source_conversation_id: Option<String>,
+    source_root: Option<&Path>,
 ) -> Vec<chatvault_core::models::DiscoveredFile> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut merged = Vec::with_capacity(walked.len() + changed_known.len());
@@ -68,8 +69,10 @@ fn merge_candidates(
         if seen.contains(&key) {
             continue;
         }
-        if let Some(file) = known.to_discovered(source_type, account_id, conversation_hint.clone())
-        {
+        let conversation_id = source_root
+            .and_then(|root| WeChat4Parser::conversation_id_for_path(root, &known.original_path))
+            .or_else(|| source_conversation_id.clone());
+        if let Some(file) = known.to_discovered(source_type, source_account_id, conversation_id) {
             seen.insert(key);
             merged.push(file);
         }
@@ -160,7 +163,7 @@ pub async fn run_scan(
     if let Ok(root) = WeChat4Detector::detect_root() {
         let detected_accounts = WeChat4Detector::find_accounts(&root).unwrap_or_default();
         for acc in detected_accounts {
-            if !request.target_accounts.contains(&acc.account_id) {
+            if !request.target_accounts.contains(&acc.source_account_id) {
                 continue;
             }
             let files_root = acc.files_dir.to_string_lossy().to_string();
@@ -177,22 +180,23 @@ pub async fn run_scan(
                 walked,
                 changed_known,
                 "wechat-windows-4",
-                Some(&acc.account_id),
+                Some(&acc.source_account_id),
                 None,
+                Some(&acc.files_dir),
             );
             let complete = ingest_candidates(&mut db, &device_id, candidates, &mut tally)?;
             if complete {
                 db.mark_scan_started(
                     &files_root,
                     "wechat-windows-4",
-                    Some(&acc.account_id),
+                    Some(&acc.source_account_id),
                     scan_started_ms,
                 )
                 .map_err(|e| e.to_string())?;
             } else {
                 tracing::warn!(
                     "微信账号 {} 本轮存在未完成候选，保留原扫描检查点",
-                    acc.account_id
+                    acc.source_account_id
                 );
             }
         }
@@ -213,7 +217,8 @@ pub async fn run_scan(
         } else {
             Vec::new()
         };
-        let candidates = merge_candidates(walked, changed_known, "generic-folder", None, None);
+        let candidates =
+            merge_candidates(walked, changed_known, "generic-folder", None, None, None);
         let complete = ingest_candidates(&mut db, &device_id, candidates, &mut tally)?;
         if complete {
             db.mark_scan_started(&root_s, "generic-folder", None, scan_started_ms)

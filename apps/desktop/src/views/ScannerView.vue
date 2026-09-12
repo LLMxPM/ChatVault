@@ -36,25 +36,25 @@
       <div v-if="accounts.length > 0" class="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div
           v-for="acc in accounts"
-          :key="acc.accountId"
+          :key="acc.sourceAccountId"
           class="p-4 rounded-lg border transition-all cursor-pointer flex items-start space-x-3"
           :class="
-            selectedAccounts.includes(acc.accountId)
+            selectedAccounts.includes(acc.sourceAccountId)
               ? 'bg-emerald-950/20 border-emerald-600/70'
               : 'bg-slate-950/50 border-slate-800/80 hover:border-slate-700'
           "
-          @click="toggleAccount(acc.accountId)"
+          @click="toggleAccount(acc.sourceAccountId)"
         >
           <input
             type="checkbox"
-            :checked="selectedAccounts.includes(acc.accountId)"
+            :checked="selectedAccounts.includes(acc.sourceAccountId)"
             class="mt-1 rounded text-emerald-500 focus:ring-emerald-500 border-slate-700 bg-slate-800 cursor-pointer"
-            @click.stop="toggleAccount(acc.accountId)"
+            @click.stop="toggleAccount(acc.sourceAccountId)"
           />
           <div class="flex-1 min-w-0">
             <div class="flex items-center justify-between">
               <p class="font-mono text-sm font-semibold text-emerald-400 truncate">
-                {{ acc.accountId }}
+                {{ acc.sourceAccountId }}
               </p>
               <span class="text-[11px] text-slate-400">
                 约 {{ acc.filesCountEstimated }} 个待扫文件
@@ -199,7 +199,7 @@ async function loadAccounts() {
     const list = await detectWechatAccounts();
     accounts.value = list;
     // 默认全选检测到的账号
-    selectedAccounts.value = list.map((a) => a.accountId);
+    selectedAccounts.value = list.map((a) => a.sourceAccountId);
   } catch (err) {
     console.error("探测微信账号失败:", err);
   } finally {

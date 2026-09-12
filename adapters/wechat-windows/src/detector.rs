@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WeChatAccount {
     /// 微信账号标识 (例如 wxid_xxx 或微信号)
-    pub account_id: String,
+    pub source_account_id: String,
     /// 该账号数据根目录绝对路径
     pub root_dir: PathBuf,
     /// 聊天附件文件所在目录 (通常为 `root_dir/msg/file`)
@@ -99,7 +99,7 @@ impl WeChat4Detector {
             // 只要存在 msg 目录，即使当前还没有收到 file，也属于合法账号
             if msg_dir.exists() {
                 accounts.push(WeChatAccount {
-                    account_id: dir_name.to_string(),
+                    source_account_id: dir_name.to_string(),
                     root_dir: path,
                     files_dir,
                 });

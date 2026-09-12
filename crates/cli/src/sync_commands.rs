@@ -26,7 +26,7 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
     if let Ok(root) = WeChat4Detector::detect_root() {
         let accounts = WeChat4Detector::find_accounts(&root)?;
         for acc in accounts {
-            println!("[*] 扫描微信账号 [{}]", acc.account_id);
+            println!("[*] 扫描微信账号 [{}]", acc.source_account_id);
             let files_root = acc.files_dir.to_string_lossy().to_string();
             let since = resolve_since(&db, &files_root)?;
             let walked = WeChat4Parser::parse_account_files_since(&acc, since)?;
@@ -39,8 +39,9 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
                 walked,
                 changed_known,
                 "wechat-windows-4",
-                Some(&acc.account_id),
+                Some(&acc.source_account_id),
                 None,
+                Some(&acc.files_dir),
             );
             discovered += files.len();
             let complete = process_files(&mut db, &device_id, &files, &mut indexed, &mut skipped)?;
@@ -48,13 +49,13 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
                 db.mark_scan_started(
                     &files_root,
                     "wechat-windows-4",
-                    Some(&acc.account_id),
+                    Some(&acc.source_account_id),
                     scan_started_ms,
                 )?;
             } else {
                 println!(
                     "[-] 微信账号 {} 存在未完成候选，保留原扫描检查点",
-                    acc.account_id
+                    acc.source_account_id
                 );
             }
         }
@@ -74,7 +75,7 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
         } else {
             Vec::new()
         };
-        let files = merge_changed_known(walked, changed_known, "generic-folder", None, None);
+        let files = merge_changed_known(walked, changed_known, "generic-folder", None, None, None);
         discovered += files.len();
         let complete = process_files(&mut db, &device_id, &files, &mut indexed, &mut skipped)?;
         if complete {
@@ -144,8 +145,9 @@ fn merge_changed_known(
     walked: Vec<DiscoveredFile>,
     changed_known: Vec<chatvault_index::KnownLocalFile>,
     source_type: &str,
-    account_id: Option<&str>,
-    conversation_hint: Option<String>,
+    source_account_id: Option<&str>,
+    source_conversation_id: Option<String>,
+    source_root: Option<&std::path::Path>,
 ) -> Vec<DiscoveredFile> {
     use std::collections::HashSet;
     let mut seen: HashSet<String> = HashSet::new();
@@ -161,8 +163,10 @@ fn merge_changed_known(
         if seen.contains(&key) {
             continue;
         }
-        if let Some(file) = known.to_discovered(source_type, account_id, conversation_hint.clone())
-        {
+        let conversation_id = source_root
+            .and_then(|root| WeChat4Parser::conversation_id_for_path(root, &known.original_path))
+            .or_else(|| source_conversation_id.clone());
+        if let Some(file) = known.to_discovered(source_type, source_account_id, conversation_id) {
             seen.insert(key);
             merged.push(file);
         }

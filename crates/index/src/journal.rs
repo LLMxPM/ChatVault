@@ -291,6 +291,10 @@ fn event_type_str(t: chatvault_core::models::JournalEventType) -> &'static str {
     match t {
         chatvault_core::models::JournalEventType::FileRecordAdded => "file_record_added",
         chatvault_core::models::JournalEventType::FileRecordDeleted => "file_record_deleted",
+        chatvault_core::models::JournalEventType::SourceAccountUpdated => "source_account_updated",
+        chatvault_core::models::JournalEventType::SourceConversationUpdated => {
+            "source_conversation_updated"
+        }
     }
 }
 
@@ -301,8 +305,22 @@ fn row_to_journal_event(
     let payload_str: String = r.get(7)?;
     let created_at: String = r.get(8)?;
     let event_type = match event_type_str.as_str() {
+        "file_record_added" => chatvault_core::models::JournalEventType::FileRecordAdded,
         "file_record_deleted" => chatvault_core::models::JournalEventType::FileRecordDeleted,
-        _ => chatvault_core::models::JournalEventType::FileRecordAdded,
+        "source_account_updated" => chatvault_core::models::JournalEventType::SourceAccountUpdated,
+        "source_conversation_updated" => {
+            chatvault_core::models::JournalEventType::SourceConversationUpdated
+        }
+        _ => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                6,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("未知日志事件类型: {event_type_str}"),
+                )),
+            ));
+        }
     };
     Ok(chatvault_core::models::JournalEvent {
         event_id: r.get(0)?,

@@ -18,7 +18,7 @@ use tauri::State;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WechatAccountDto {
-    pub account_id: String,
+    pub source_account_id: String,
     pub source_dir: String,
     pub files_count_estimated: usize,
 }
@@ -55,7 +55,10 @@ pub struct FileRecordViewDto {
     pub formatted_size: String,
     pub hash: String,
     pub source_type: String,
-    pub account_id: Option<String>,
+    pub source_account_id: Option<String>,
+    pub source_account_name: Option<String>,
+    pub source_conversation_id: Option<String>,
+    pub source_conversation_name: Option<String>,
     pub file_time: Option<String>,
     pub discovered_at: String,
     pub original_path: String,
@@ -68,9 +71,59 @@ pub struct FileRecordViewDto {
 pub struct SearchQueryDto {
     pub keyword: Option<String>,
     pub category: Option<String>,
-    pub account_id: Option<String>,
+    pub source_type: Option<String>,
+    pub source_account_id: Option<String>,
+    pub source_conversation_id: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+}
+
+/// 来源账号映射展示对象。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceAccountDto {
+    pub source_type: String,
+    pub source_account_id: String,
+    pub source_name: Option<String>,
+    pub display_name: Option<String>,
+    pub effective_name: String,
+    pub is_favorite: bool,
+    pub record_count: usize,
+}
+
+/// 来源聊天映射展示对象。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceConversationDto {
+    pub source_type: String,
+    pub source_account_id: String,
+    pub source_conversation_id: String,
+    pub source_name: Option<String>,
+    pub display_name: Option<String>,
+    pub effective_name: String,
+    pub is_favorite: bool,
+    pub record_count: usize,
+}
+
+/// 来源账号名称/收藏更新请求；来源类型和 ID 只用于定位，不可被更新。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSourceAccountDto {
+    pub source_type: String,
+    pub source_account_id: String,
+    pub display_name: Option<String>,
+    pub is_favorite: bool,
+}
+
+/// 来源聊天名称/收藏更新请求；来源类型、账号 ID 和聊天 ID 只用于定位。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSourceConversationDto {
+    pub source_type: String,
+    pub source_account_id: String,
+    pub source_conversation_id: String,
+    pub display_name: Option<String>,
+    pub is_favorite: bool,
 }
 
 /// 存储去重统计数据
@@ -139,6 +192,7 @@ fn format_file_size(bytes: u64) -> String {
 pub mod library;
 pub mod scan;
 pub mod settings;
+pub mod sources;
 pub mod sync;
 pub mod tasks;
 pub mod webdav;

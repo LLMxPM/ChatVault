@@ -1,5 +1,6 @@
 // ChatVault 文件入库：受控暂存、增量发现、内容去重与本机事件原子写入。
 use crate::db::*;
+use crate::source_mappings::{ensure_source_account, ensure_source_conversation};
 use chatvault_core::{
     error::{ChatVaultError, Result},
     models::DiscoveredFile,
@@ -114,6 +115,36 @@ impl Database {
                 |r| r.get(0),
             )
             .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        let source_account_id = file
+            .source_account_id
+            .clone()
+            .filter(|value| !value.trim().is_empty());
+        let source_conversation_id = source_account_id.as_ref().and_then(|_| {
+            file.source_conversation_id
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+        });
+        let mapping_now = Utc::now().to_rfc3339();
+        if let Some(account_id) = source_account_id.as_deref() {
+            // 扫描入库只创建映射占位，不改变已有的自定义名称和收藏状态。
+            ensure_source_account(
+                &tx,
+                &file.source_type,
+                account_id,
+                Some(account_id),
+                &mapping_now,
+            )?;
+            if let Some(conversation_id) = source_conversation_id.as_deref() {
+                ensure_source_conversation(
+                    &tx,
+                    &file.source_type,
+                    account_id,
+                    conversation_id,
+                    Some(conversation_id),
+                    &mapping_now,
+                )?;
+            }
+        }
         // 重新检查发现键，处理等待写锁期间另一个扫描进程已入库的情况。
         let indexed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM local_files l JOIN file_records r ON l.record_id=r.record_id WHERE l.original_path=?1 AND l.mtime_ms=?2 AND l.size=?3 AND r.object_id=?4)",
             params![abs_path, mtime_ms, file.file_size as i64, object_id], |r| r.get(0))
@@ -158,15 +189,15 @@ impl Database {
         let record_id = Uuid::new_v4().to_string();
         tx.execute(
             "INSERT INTO file_records (
-                record_id, object_id, source, account_id, conversation_id,
+                record_id, object_id, source_type, source_account_id, source_conversation_id,
                 original_name, file_time, time_source, discovered_at, device_id
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 record_id,
                 object_id,
                 file.source_type,
-                file.account_id,
-                file.conversation_hint,
+                source_account_id,
+                source_conversation_id,
                 file.file_name,
                 file.modified_time.to_rfc3339(),
                 "mtime",
@@ -225,9 +256,9 @@ impl Database {
             "mime": mime,
             "extension": extension,
             "object_created_at": Utc::now().to_rfc3339(),
-            "source": file.source_type,
-            "account_id": file.account_id,
-            "conversation_id": file.conversation_hint,
+            "source_type": file.source_type,
+            "source_account_id": source_account_id,
+            "source_conversation_id": source_conversation_id,
             "original_name": file.file_name,
             "file_time": file.modified_time.to_rfc3339(),
             "time_source": "mtime",

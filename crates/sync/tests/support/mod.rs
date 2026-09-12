@@ -221,6 +221,7 @@ pub fn event(seq: u64) -> JournalEvent {
         event_type: JournalEventType::FileRecordAdded,
         created_at: time,
         payload: serde_json::json!({"object_id":format!("blake3:{}",hash()),"hash":hash(),"record_id":format!("r{seq}"),"size":7,
+            "source_type":"wechat-windows-4","source_account_id":"wxid_test","source_conversation_id":null,
             "original_name":"中文测试文件.pdf","file_time":time.to_rfc3339(),"discovered_at":time.to_rfc3339(),"extension":"pdf"}),
     }
 }

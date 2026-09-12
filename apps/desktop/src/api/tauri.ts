@@ -15,6 +15,10 @@ import type {
   AppSettingsDto,
   UploadTaskDto,
   SyncResultDto,
+  SourceAccountDto,
+  SourceConversationDto,
+  UpdateSourceAccountDto,
+  UpdateSourceConversationDto,
 } from "../types";
 
 /**
@@ -159,7 +163,28 @@ export async function saveWebdavConfig(config: WebdavConfigDto): Promise<void> {
   return invoke<void>("save_webdav_config", { config });
 }
 
-/** 读取完整索引中的来源账号，独立于列表分页。 */
-export async function listRecordAccounts(): Promise<string[]> {
-  return invoke<string[]>("list_record_accounts");
+/** 读取完整索引中的来源账号映射，独立于文件列表分页。 */
+export async function listSourceAccounts(): Promise<SourceAccountDto[]> {
+  return invoke<SourceAccountDto[]>("list_source_accounts");
+}
+
+/** 按来源类型和账号读取来源聊天映射。 */
+export async function listSourceConversations(
+  sourceType?: string,
+  sourceAccountId?: string,
+): Promise<SourceConversationDto[]> {
+  return invoke<SourceConversationDto[]>("list_source_conversations", {
+    sourceType,
+    sourceAccountId,
+  });
+}
+
+/** 更新来源账号的自定义名称和收藏状态。 */
+export async function updateSourceAccount(request: UpdateSourceAccountDto): Promise<void> {
+  return invoke<void>("update_source_account", { request });
+}
+
+/** 更新来源聊天的自定义名称和收藏状态。 */
+export async function updateSourceConversation(request: UpdateSourceConversationDto): Promise<void> {
+  return invoke<void>("update_source_conversation", { request });
 }

@@ -64,20 +64,15 @@ impl GenericFolderParser {
             let modified_system = metadata.modified().map_err(|e| ChatVaultError::Io(e))?;
             let modified_time: DateTime<Utc> = modified_system.into();
 
-            let parent_name = path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string());
-
             discovered.push(DiscoveredFile {
                 source_type: "generic-folder".to_string(),
-                account_id: None,
+                source_account_id: None,
                 absolute_path: path.to_string_lossy().to_string(),
                 file_name,
                 file_size: metadata.len(),
                 modified_time,
-                conversation_hint: parent_name,
+                // 普通目录名不是来源系统提供的稳定聊天 ID，不能伪装成聊天映射键。
+                source_conversation_id: None,
             });
         }
 

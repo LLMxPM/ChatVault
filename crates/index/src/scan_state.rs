@@ -23,8 +23,8 @@ impl KnownLocalFile {
     pub fn to_discovered(
         &self,
         source_type: &str,
-        account_id: Option<&str>,
-        conversation_hint: Option<String>,
+        source_account_id: Option<&str>,
+        source_conversation_id: Option<String>,
     ) -> Option<DiscoveredFile> {
         let path = Path::new(&self.original_path);
         let file_name = path.file_name()?.to_str()?.to_string();
@@ -32,12 +32,12 @@ impl KnownLocalFile {
         let modified_time: DateTime<Utc> = meta.modified().ok()?.into();
         Some(DiscoveredFile {
             source_type: source_type.to_string(),
-            account_id: account_id.map(|s| s.to_string()),
+            source_account_id: source_account_id.map(|s| s.to_string()),
             absolute_path: self.original_path.clone(),
             file_name,
             file_size: meta.len(),
             modified_time,
-            conversation_hint,
+            source_conversation_id,
         })
     }
 }
@@ -76,19 +76,19 @@ impl Database {
         &mut self,
         root_path: &str,
         source_kind: &str,
-        account_id: Option<&str>,
+        source_account_id: Option<&str>,
         started_ms: i64,
     ) -> Result<()> {
         let key = normalize_root_path(root_path);
         self.conn
             .execute(
-                "INSERT INTO scan_roots (root_path, source_kind, account_id, last_scan_started_ms)
+                "INSERT INTO scan_roots (root_path, source_kind, source_account_id, last_scan_started_ms)
                  VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(root_path) DO UPDATE SET
                    source_kind = excluded.source_kind,
-                   account_id = excluded.account_id,
+                   source_account_id = excluded.source_account_id,
                    last_scan_started_ms = excluded.last_scan_started_ms",
-                params![key, source_kind, account_id, started_ms],
+                params![key, source_kind, source_account_id, started_ms],
             )
             .map_err(|e| ChatVaultError::Database(e.to_string()))?;
         Ok(())
@@ -297,12 +297,12 @@ mod tests {
         let path = write_file(&dir, "a.txt", b"hello");
         let df = DiscoveredFile {
             source_type: "generic-folder".into(),
-            account_id: None,
+            source_account_id: None,
             absolute_path: path.to_string_lossy().to_string(),
             file_name: "a.txt".into(),
             file_size: 5,
             modified_time: Utc::now(),
-            conversation_hint: None,
+            source_conversation_id: None,
         };
         db.ingest_file(&df, "dev-test").unwrap();
         let abs = path.to_string_lossy().to_string();

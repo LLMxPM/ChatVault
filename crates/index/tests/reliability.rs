@@ -7,12 +7,12 @@ use chrono::Utc;
 fn discovered(path: &std::path::Path) -> DiscoveredFile {
     DiscoveredFile {
         source_type: "test".into(),
-        account_id: None,
+        source_account_id: None,
         absolute_path: path.to_string_lossy().into(),
         file_name: path.file_name().unwrap().to_string_lossy().into(),
         file_size: 0,
         modified_time: Utc::now(),
-        conversation_hint: None,
+        source_conversation_id: None,
     }
 }
 
@@ -258,6 +258,7 @@ fn event(seq: u64, name: &str) -> JournalEvent {
         created_at: Utc::now(),
         payload: serde_json::json!({
             "object_id":"blake3:test","hash":"test","size":7,"record_id":format!("r{seq}"),"original_name":name,
+            "source_type":"test","source_account_id":null,"source_conversation_id":null,
             "file_time":if seq<501 {"2026-09-11T00:00:00Z"}else{"2020-01-01T00:00:00Z"}}),
     }
 }

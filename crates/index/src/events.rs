@@ -1,5 +1,6 @@
 // ChatVault 索引子模块：封装持久化操作与事务边界。
 use crate::db::*;
+use crate::source_mappings::{ensure_source_account, ensure_source_conversation};
 use chatvault_core::error::{ChatVaultError, Result};
 
 use rusqlite::params;
@@ -61,17 +62,18 @@ impl Database {
         )
         .map_err(|e| ChatVaultError::Database(e.to_string()))?;
 
-        let source = p
-            .get("source")
+        let source_type = p
+            .get("source_type")
             .and_then(|v| v.as_str())
-            .unwrap_or("sync")
-            .to_string();
-        let account_id = p
-            .get("account_id")
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| ChatVaultError::Internal("FileRecordAdded 缺少 source_type".into()))
+            .map(str::to_string)?;
+        let source_account_id = p
+            .get("source_account_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let conversation_id = p
-            .get("conversation_id")
+        let source_conversation_id = p
+            .get("source_conversation_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let original_name = p
@@ -100,16 +102,41 @@ impl Database {
             .unwrap_or(&ev.device_id)
             .to_string();
 
+        let mapping_now = ev.created_at.to_rfc3339();
+        if let Some(account_id) = source_account_id.as_deref().filter(|id| !id.is_empty()) {
+            // 文件事件可能先于映射事件到达，恢复时先建立不覆盖用户字段的占位映射。
+            ensure_source_account(
+                &tx,
+                &source_type,
+                account_id,
+                Some(account_id),
+                &mapping_now,
+            )?;
+            if let Some(conversation_id) = source_conversation_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+            {
+                ensure_source_conversation(
+                    &tx,
+                    &source_type,
+                    account_id,
+                    conversation_id,
+                    Some(conversation_id),
+                    &mapping_now,
+                )?;
+            }
+        }
+
         tx.execute(
             "INSERT OR IGNORE INTO file_records
-             (record_id, object_id, source, account_id, conversation_id, original_name, file_time, time_source, discovered_at, device_id)
+             (record_id, object_id, source_type, source_account_id, source_conversation_id, original_name, file_time, time_source, discovered_at, device_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 record_id,
                 object_id,
-                source,
-                account_id,
-                conversation_id,
+                source_type,
+                source_account_id,
+                source_conversation_id,
                 original_name,
                 file_time,
                 time_source,

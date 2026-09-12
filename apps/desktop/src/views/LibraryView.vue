@@ -33,7 +33,9 @@
           @change="fetchRecords()"
         >
           <option value="">全部微信账号与来源</option>
-          <option v-for="acc in accountList" :key="acc" :value="acc">{{ acc }}</option>
+          <option v-for="acc in accountList" :key="`${acc.sourceType}:${acc.sourceAccountId}`" :value="`${acc.sourceType}\t${acc.sourceAccountId}`">
+            {{ acc.effectiveName }}（{{ acc.sourceType }}）
+          </option>
         </select>
 
         <button
@@ -97,11 +99,12 @@
               <!-- 账号徽标 -->
               <td class="py-3 px-3">
                 <span
-                  v-if="item.accountId"
+                  v-if="item.sourceAccountId"
                   class="inline-block px-2 py-0.5 rounded text-[11px] bg-emerald-950/60 text-emerald-400 border border-emerald-800/60 font-mono truncate max-w-[130px]"
-                  :title="item.accountId"
+                  :title="`${item.sourceAccountName || item.sourceAccountId}（${item.sourceType}）\n${item.sourceAccountId}`"
                 >
-                  {{ item.accountId }}
+                  {{ item.sourceAccountName || item.sourceAccountId }}
+                  <span v-if="item.sourceConversationName" class="text-sky-400"> · {{ item.sourceConversationName }}</span>
                 </span>
                 <span v-else class="text-slate-500">通用文件</span>
               </td>
@@ -164,8 +167,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { Search, RefreshCw, FolderOpen, FileQuestion } from "lucide-vue-next";
-import { searchRecords, revealFileInExplorer, listRecordAccounts } from "../api/tauri";
-import type { FileRecordViewDto } from "../types";
+import { searchRecords, revealFileInExplorer, listSourceAccounts } from "../api/tauri";
+import type { FileRecordViewDto, SourceAccountDto } from "../types";
 
 // 搜索输入与过滤状态
 const keyword = ref("");
@@ -173,7 +176,7 @@ const selectedAccount = ref("");
 const currentCategory = ref("all");
 const loading = ref(false);
 const records = ref<FileRecordViewDto[]>([]);
-const accountList = ref<string[]>([]);
+const accountList = ref<SourceAccountDto[]>([]);
 const page = ref(0);
 const pageSize = 100;
 const hasNext = ref(false);
@@ -225,7 +228,12 @@ async function fetchRecords(reset = true) {
     const list = await searchRecords({
       keyword: keyword.value.trim() || undefined,
       category: currentCategory.value !== "all" ? currentCategory.value : undefined,
-      accountId: selectedAccount.value || undefined,
+      ...(selectedAccount.value
+        ? {
+            sourceType: selectedAccount.value.split("\t")[0],
+            sourceAccountId: selectedAccount.value.split("\t")[1],
+          }
+        : {}),
       limit: pageSize + 1,
       offset: page.value * pageSize,
     });
@@ -294,7 +302,7 @@ function changePage(delta: number) {
 
 onMounted(async () => {
   fetchRecords();
-  try { accountList.value = await listRecordAccounts(); }
+  try { accountList.value = await listSourceAccounts(); }
   catch (err) { error.value = "读取账号失败：" + err; }
 });
 </script>

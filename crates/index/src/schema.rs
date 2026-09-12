@@ -39,9 +39,9 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS file_records (
             record_id TEXT PRIMARY KEY,
             object_id TEXT NOT NULL REFERENCES file_objects(object_id) ON DELETE CASCADE,
-            source TEXT NOT NULL,
-            account_id TEXT,
-            conversation_id TEXT,
+            source_type TEXT NOT NULL,
+            source_account_id TEXT,
+            source_conversation_id TEXT,
             original_name TEXT NOT NULL,
             file_time TEXT NOT NULL,
             time_source TEXT NOT NULL,
@@ -49,10 +49,44 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             device_id TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_records_object_id ON file_records(object_id);
-        CREATE INDEX IF NOT EXISTS idx_records_account_id ON file_records(account_id);
+        CREATE INDEX IF NOT EXISTS idx_records_source_account_id ON file_records(source_type, source_account_id);
+        CREATE INDEX IF NOT EXISTS idx_records_source_conversation_id ON file_records(source_type, source_account_id, source_conversation_id);
         CREATE INDEX IF NOT EXISTS idx_records_file_time ON file_records(file_time);
 
-        -- 3. 本机文件路径与缓存映射表
+        -- 3. 来源账号映射：原始 ID 是稳定匹配键，用户只维护 display_name 与收藏状态
+        CREATE TABLE IF NOT EXISTS source_accounts (
+            source_type TEXT NOT NULL,
+            source_account_id TEXT NOT NULL,
+            source_name TEXT,
+            display_name TEXT,
+            is_favorite INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            updated_logical_clock INTEGER NOT NULL DEFAULT 0,
+            updated_device_id TEXT NOT NULL DEFAULT '',
+            updated_event_id TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (source_type, source_account_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_source_accounts_favorite ON source_accounts(is_favorite, source_type, source_account_id);
+
+        -- 4. 来源聊天映射：按来源类型、账号和聊天 ID 联合隔离
+        CREATE TABLE IF NOT EXISTS source_conversations (
+            source_type TEXT NOT NULL,
+            source_account_id TEXT NOT NULL,
+            source_conversation_id TEXT NOT NULL,
+            source_name TEXT,
+            display_name TEXT,
+            is_favorite INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            updated_logical_clock INTEGER NOT NULL DEFAULT 0,
+            updated_device_id TEXT NOT NULL DEFAULT '',
+            updated_event_id TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (source_type, source_account_id, source_conversation_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_source_conversations_favorite ON source_conversations(is_favorite, source_type, source_account_id, source_conversation_id);
+
+        -- 5. 本机文件路径与缓存映射表
         CREATE TABLE IF NOT EXISTS local_files (
             record_id TEXT PRIMARY KEY REFERENCES file_records(record_id) ON DELETE CASCADE,
             original_path TEXT NOT NULL,
@@ -63,14 +97,14 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_local_path ON local_files(original_path);
 
-        -- 4. FTS5 中文全文检索虚表 (使用 trigram 分词器)
+        -- 6. FTS5 中文全文检索虚表 (使用 trigram 分词器)
         CREATE VIRTUAL TABLE IF NOT EXISTS file_search_fts USING fts5(
             record_id UNINDEXED,
             original_name,
             tokenize='trigram'
         );
 
-        -- 5. 上传归档任务表
+        -- 7. 上传归档任务表
         CREATE TABLE IF NOT EXISTS upload_tasks (
             task_id TEXT PRIMARY KEY,
             record_id TEXT NOT NULL REFERENCES file_records(record_id) ON DELETE CASCADE,
@@ -82,14 +116,14 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON upload_tasks(status);
 
-        -- 6. 应用设置键值表（Vault/设备/WebDAV/定时/采集目录）
+        -- 8. 应用设置键值表（Vault/设备/WebDAV/定时/采集目录）
         CREATE TABLE IF NOT EXISTS app_settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
 
-        -- 7. 本机已生成的元数据日志事件
+        -- 9. 本机已生成的元数据日志事件
         CREATE TABLE IF NOT EXISTS journal_events (
             event_id TEXT PRIMARY KEY,
             device_id TEXT NOT NULL,
@@ -103,13 +137,13 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             UNIQUE(device_id, epoch, seq)
         );
 
-        -- 8. 已应用的远端事件（幂等重放）
+        -- 10. 已应用的远端事件（幂等重放）
         CREATE TABLE IF NOT EXISTS applied_events (
             event_id TEXT PRIMARY KEY,
             applied_at TEXT NOT NULL
         );
 
-        -- 9. 各设备同步游标
+        -- 11. 各设备同步游标
         CREATE TABLE IF NOT EXISTS sync_cursors (
             device_id TEXT NOT NULL,
             epoch INTEGER NOT NULL,
@@ -123,7 +157,7 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             event_id TEXT NOT NULL
         );
 
-        -- 10. 远端已知设备注册表
+        -- 12. 远端已知设备注册表
         CREATE TABLE IF NOT EXISTS known_devices (
             device_id TEXT PRIMARY KEY,
             display_name TEXT,
@@ -132,11 +166,11 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             updated_at TEXT NOT NULL
         );
 
-        -- 11. 扫描根检查点：last_scan_started_ms 为本次开始时刻，避免漏扫扫描期间新建文件
+        -- 13. 扫描根检查点：last_scan_started_ms 为本次开始时刻，避免漏扫扫描期间新建文件
         CREATE TABLE IF NOT EXISTS scan_roots (
             root_path TEXT PRIMARY KEY,
             source_kind TEXT NOT NULL,
-            account_id TEXT,
+            source_account_id TEXT,
             last_scan_started_ms INTEGER NOT NULL
         );
         "#,

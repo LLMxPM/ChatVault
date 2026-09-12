@@ -218,12 +218,12 @@ async fn existing_corruption_never_counts_as_verified() {
     let mut db = Database::open_in_memory().unwrap();
     let file = chatvault_core::models::DiscoveredFile {
         source_type: "test".into(),
-        account_id: None,
+        source_account_id: None,
         absolute_path: path.to_string_lossy().into(),
         file_name: "file.txt".into(),
         file_size: 7,
         modified_time: chrono::Utc::now(),
-        conversation_hint: None,
+        source_conversation_id: None,
     };
     db.ingest_file(&file, "a").unwrap();
     let task = db.pending_uploads().unwrap()[0].task_id.clone();
@@ -277,12 +277,12 @@ async fn archive_uses_snapshot_after_source_deletion() {
     db.ingest_file(
         &chatvault_core::models::DiscoveredFile {
             source_type: "test".into(),
-            account_id: None,
+            source_account_id: None,
             absolute_path: path.to_string_lossy().into(),
             file_name: "file.txt".into(),
             file_size: 7,
             modified_time: chrono::Utc::now(),
-            conversation_hint: None,
+            source_conversation_id: None,
         },
         "a",
     )
@@ -391,12 +391,12 @@ async fn archive_direct_source_and_publish() {
     db.ingest_file(
         &chatvault_core::models::DiscoveredFile {
             source_type: "test".into(),
-            account_id: None,
+            source_account_id: None,
             absolute_path: path.to_string_lossy().into(),
             file_name: "file.txt".into(),
             file_size: 7,
             modified_time: chrono::Utc::now(),
-            conversation_hint: None,
+            source_conversation_id: None,
         },
         "a",
     )

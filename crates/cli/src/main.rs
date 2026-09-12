@@ -108,7 +108,7 @@ fn handle_detect() -> Result<()> {
 
     println!("[+] 共发现 {} 个微信账号:", accounts.len());
     for (i, acc) in accounts.iter().enumerate() {
-        println!("    {}. 账号标识: {}", i + 1, acc.account_id);
+        println!("    {}. 账号标识: {}", i + 1, acc.source_account_id);
         println!("       根目录:   {}", acc.root_dir.display());
         println!("       附件目录: {}", acc.files_dir.display());
 
@@ -148,7 +148,7 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
             return Ok(());
         }
         for acc in accounts {
-            println!("[*] 正在扫描微信账号 [{}] 的附件...", acc.account_id);
+            println!("[*] 正在扫描微信账号 [{}] 的附件...", acc.source_account_id);
             let files_root = acc.files_dir.to_string_lossy().to_string();
             let since = resolve_scan_since(&db, &files_root, full)?;
             let walked = WeChat4Parser::parse_account_files_since(&acc, since)?;
@@ -161,8 +161,9 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
                 walked,
                 changed_known,
                 "wechat-windows-4",
-                Some(&acc.account_id),
+                Some(&acc.source_account_id),
                 None,
+                Some(&acc.files_dir),
             );
             println!("    本次候选 {} 个文件", files.len());
             discovered_count += files.len();
@@ -178,13 +179,13 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
                 db.mark_scan_started(
                     &files_root,
                     "wechat-windows-4",
-                    Some(&acc.account_id),
+                    Some(&acc.source_account_id),
                     scan_started_ms,
                 )?;
             } else {
                 println!(
                     "[-] 微信账号 {} 存在未完成候选，保留原扫描检查点",
-                    acc.account_id
+                    acc.source_account_id
                 );
             }
         }
@@ -197,7 +198,7 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
         } else {
             Vec::new()
         };
-        let files = merge_changed_known(walked, changed_known, "generic-folder", None, None);
+        let files = merge_changed_known(walked, changed_known, "generic-folder", None, None, None);
         println!("    本次候选 {} 个文件", files.len());
         discovered_count += files.len();
         let complete = process_scan_files(
@@ -250,8 +251,9 @@ fn merge_changed_known(
     walked: Vec<DiscoveredFile>,
     changed_known: Vec<chatvault_index::KnownLocalFile>,
     source_type: &str,
-    account_id: Option<&str>,
-    conversation_hint: Option<String>,
+    source_account_id: Option<&str>,
+    source_conversation_id: Option<String>,
+    source_root: Option<&std::path::Path>,
 ) -> Vec<DiscoveredFile> {
     use std::collections::HashSet;
     let mut seen: HashSet<String> = HashSet::new();
@@ -267,8 +269,10 @@ fn merge_changed_known(
         if seen.contains(&key) {
             continue;
         }
-        if let Some(file) = known.to_discovered(source_type, account_id, conversation_hint.clone())
-        {
+        let conversation_id = source_root
+            .and_then(|root| WeChat4Parser::conversation_id_for_path(root, &known.original_path))
+            .or_else(|| source_conversation_id.clone());
+        if let Some(file) = known.to_discovered(source_type, source_account_id, conversation_id) {
             seen.insert(key);
             merged.push(file);
         }
@@ -341,7 +345,9 @@ fn handle_search(
         keyword: keyword.clone(),
         extension: ext.clone(),
         category: None,
-        account_id: account.clone(),
+        source_type: None,
+        source_account_id: account.clone(),
+        source_conversation_id: None,
         start_time: None,
         end_time: None,
         limit,

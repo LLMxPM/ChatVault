@@ -184,22 +184,22 @@ mod tests {
 
         let df1 = DiscoveredFile {
             source_type: "test".to_string(),
-            account_id: Some("user1".to_string()),
+            source_account_id: Some("user1".to_string()),
             absolute_path: file1.to_str().unwrap().to_string(),
             file_name: "test_ingest_1.txt".to_string(),
             file_size: 22,
             modified_time: Utc::now(),
-            conversation_hint: None,
+            source_conversation_id: None,
         };
 
         let df2 = DiscoveredFile {
             source_type: "test".to_string(),
-            account_id: Some("user2".to_string()),
+            source_account_id: Some("user2".to_string()),
             absolute_path: file2.to_str().unwrap().to_string(),
             file_name: "test_ingest_2.txt".to_string(),
             file_size: 22,
             modified_time: Utc::now(),
-            conversation_hint: None,
+            source_conversation_id: None,
         };
 
         // 第一次入库
@@ -229,6 +229,7 @@ mod tests {
         let stats = db.get_stats().unwrap();
         assert_eq!(stats.total_objects, 1); // 内容去重为 1
         assert_eq!(stats.total_records, 2); // 来源记录为 2
+        assert_eq!(db.list_source_accounts().unwrap().len(), 2); // 来源账号按联合键去重
 
         let _ = std::fs::remove_file(file1);
         let _ = std::fs::remove_file(file2);

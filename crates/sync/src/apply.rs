@@ -233,6 +233,10 @@ pub fn apply_event(db: &mut Database, ev: &JournalEvent) -> Result<bool> {
         match ev.event_type {
             JournalEventType::FileRecordAdded => db.apply_file_record_added_event(ev)?,
             JournalEventType::FileRecordDeleted => db.apply_file_record_deleted_event(ev)?,
+            JournalEventType::SourceAccountUpdated => db.apply_source_account_updated_event(ev)?,
+            JournalEventType::SourceConversationUpdated => {
+                db.apply_source_conversation_updated_event(ev)?
+            }
         }
         db.mark_event_applied(&ev.event_id)?;
         Ok(true)
@@ -323,9 +327,9 @@ mod tests {
                 "mime": "application/pdf",
                 "extension": "pdf",
                 "object_created_at": Utc::now().to_rfc3339(),
-                "source": "wechat-windows",
-                "account_id": "wxid_x",
-                "conversation_id": null,
+                "source_type": "wechat-windows",
+                "source_account_id": "wxid_x",
+                "source_conversation_id": null,
                 "original_name": "测试文档.pdf",
                 "file_time": Utc::now().to_rfc3339(),
                 "time_source": "mtime",
@@ -379,5 +383,68 @@ mod tests {
         let hash = blake3::hash(data).to_hex().to_string();
         assert!(verify_segment_bytes(data, &format!("blake3:{}", hash)).is_ok());
         assert!(verify_segment_bytes(data, "deadbeef").is_err());
+    }
+
+    #[test]
+    fn test_source_mapping_events_are_idempotent_and_lww() {
+        use chatvault_core::models::{JournalEvent, JournalEventType};
+        use chrono::Utc;
+
+        let mut db = Database::open_in_memory().unwrap();
+        let newer = JournalEvent {
+            event_id: "mapping-new".into(),
+            device_id: "device-b".into(),
+            epoch: 1,
+            seq: 1,
+            logical_clock: 2,
+            schema_version: 1,
+            event_type: JournalEventType::SourceAccountUpdated,
+            payload: serde_json::json!({
+                "source_type": "wechat-windows-4",
+                "source_account_id": "wxid_test",
+                "display_name": "新名称",
+                "is_favorite": true,
+            }),
+            created_at: Utc::now(),
+        };
+        let older = JournalEvent {
+            event_id: "mapping-old".into(),
+            device_id: "device-a".into(),
+            seq: 1,
+            logical_clock: 1,
+            ..newer.clone()
+        };
+
+        assert!(apply_event(&mut db, &newer).unwrap());
+        assert!(!apply_event(&mut db, &newer).unwrap());
+        assert!(apply_event(&mut db, &older).unwrap());
+        let account = &db.list_source_accounts().unwrap()[0];
+        assert_eq!(account.display_name.as_deref(), Some("新名称"));
+        assert!(account.is_favorite);
+
+        let conversation = JournalEvent {
+            event_id: "conversation-1".into(),
+            device_id: "device-a".into(),
+            epoch: 1,
+            seq: 2,
+            logical_clock: 3,
+            schema_version: 1,
+            event_type: JournalEventType::SourceConversationUpdated,
+            payload: serde_json::json!({
+                "source_type": "wechat-windows-4",
+                "source_account_id": "wxid_test",
+                "source_conversation_id": "chat-123",
+                "display_name": null,
+                "is_favorite": false,
+            }),
+            created_at: Utc::now(),
+        };
+        assert!(apply_event(&mut db, &conversation).unwrap());
+        assert_eq!(
+            db.list_source_conversations(Some("wechat-windows-4"), Some("wxid_test"))
+                .unwrap()[0]
+                .effective_name,
+            "chat-123"
+        );
     }
 }

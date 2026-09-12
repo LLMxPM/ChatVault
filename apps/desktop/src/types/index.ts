@@ -5,7 +5,7 @@
  * 微信 4.x 账号探测信息
  */
 export interface WechatAccountDto {
-  accountId: string;
+  sourceAccountId: string;
   sourceDir: string;
   filesCountEstimated: number;
 }
@@ -41,7 +41,10 @@ export interface FileRecordViewDto {
   formattedSize: string;
   hash: string;
   sourceType: string;
-  accountId?: string | null;
+  sourceAccountId?: string | null;
+  sourceAccountName?: string | null;
+  sourceConversationId?: string | null;
+  sourceConversationName?: string | null;
   fileTime?: string | null;
   discoveredAt: string;
   originalPath: string;
@@ -54,9 +57,51 @@ export interface FileRecordViewDto {
 export interface SearchQueryDto {
   keyword?: string;
   category?: string;
-  accountId?: string;
+  sourceType?: string;
+  sourceAccountId?: string;
+  sourceConversationId?: string;
   limit?: number;
   offset?: number;
+}
+
+/** 来源账号映射。 */
+export interface SourceAccountDto {
+  sourceType: string;
+  sourceAccountId: string;
+  sourceName?: string | null;
+  displayName?: string | null;
+  effectiveName: string;
+  isFavorite: boolean;
+  recordCount: number;
+}
+
+/** 来源聊天映射。 */
+export interface SourceConversationDto {
+  sourceType: string;
+  sourceAccountId: string;
+  sourceConversationId: string;
+  sourceName?: string | null;
+  displayName?: string | null;
+  effectiveName: string;
+  isFavorite: boolean;
+  recordCount: number;
+}
+
+/** 来源账号名称/收藏更新请求。 */
+export interface UpdateSourceAccountDto {
+  sourceType: string;
+  sourceAccountId: string;
+  displayName?: string | null;
+  isFavorite: boolean;
+}
+
+/** 来源聊天名称/收藏更新请求。 */
+export interface UpdateSourceConversationDto {
+  sourceType: string;
+  sourceAccountId: string;
+  sourceConversationId: string;
+  displayName?: string | null;
+  isFavorite: boolean;
 }
 
 /**

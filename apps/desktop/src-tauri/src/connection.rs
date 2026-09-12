@@ -39,14 +39,3 @@ pub async fn save_webdav_config(
     })
     .map_err(|e| e.to_string())
 }
-
-/// 从完整索引读取账号选项，不受当前分页或关键词限制。
-#[tauri::command]
-pub async fn list_record_accounts(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    let db = state.get_db().map_err(|e| e.to_string())?;
-    let mut stmt = db.connection().prepare("SELECT DISTINCT account_id FROM file_records r WHERE account_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM record_tombstones d WHERE d.record_id=r.record_id) ORDER BY account_id").map_err(|e|e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
-    rows.map(|r| r.map_err(|e| e.to_string())).collect()
-}
