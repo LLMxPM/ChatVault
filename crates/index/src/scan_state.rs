@@ -102,7 +102,11 @@ impl Database {
         let root_key = normalize_root_path(root_path);
         let mut stmt = self
             .conn
-            .prepare("SELECT original_path, size, mtime_ms, cache_path FROM local_files")
+            .prepare(
+                "SELECT original_path, size, mtime_ms, cache_path
+                 FROM local_files
+                 ORDER BY rowid DESC",
+            )
             .map_err(|e| ChatVaultError::Database(e.to_string()))?;
         let rows = stmt
             .query_map([], |row| {
@@ -119,7 +123,9 @@ impl Database {
         for row in rows {
             let known = row.map_err(|e| ChatVaultError::Database(e.to_string()))?;
             if is_under_root(&known.original_path, &root_key) {
-                map.insert(normalize_scan_key(&known.original_path), known);
+                // 同一路径可能因文件内容变化产生多条历史记录，只保留最新插入的记录。
+                map.entry(normalize_scan_key(&known.original_path))
+                    .or_insert(known);
             }
         }
         Ok(map)
@@ -151,7 +157,8 @@ impl Database {
                 .conn
                 .prepare(
                     "SELECT original_path, size, mtime_ms, cache_path FROM local_files
-                     WHERE original_path = ?1",
+                     WHERE original_path = ?1
+                     ORDER BY rowid DESC",
                 )
                 .map_err(|e| ChatVaultError::Database(e.to_string()))?;
             let rows = stmt

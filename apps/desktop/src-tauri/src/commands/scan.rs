@@ -1,5 +1,5 @@
 // ChatVault 桌面命令：scan 职责实现与前端错误映射。
-// 默认增量：按目录 mtime 剪枝 + 已知文件复检；首次或指定 full_scan 时全量发现。
+// 默认增量：由来源策略发现候选 + 已知文件复检；首次或指定 full_scan 时全量发现。
 use super::*;
 use chatvault_index::scan_state::system_time_from_ms;
 use chatvault_scanner::check_file_stability_sync;
@@ -94,22 +94,29 @@ impl ScanTally {
     }
 }
 
-/// 入库候选：未变更直接跳过；变更文件先做 50ms 稳定性检测再 ingest
+/// 入库候选：未变更直接跳过；变更文件先做稳定性检测再 ingest。
+///
+/// 返回值表示本轮候选是否全部完成处理；false 时调用方不得推进该来源检查点。
 fn ingest_candidates(
     db: &mut chatvault_index::Database,
     device_id: &str,
     files: Vec<chatvault_core::models::DiscoveredFile>,
     tally: &mut ScanTally,
-) {
+) -> Result<bool, String> {
+    let mut complete = true;
     tally.discovered += files.len();
     for file in files {
-        if db.path_is_current(&file.absolute_path).unwrap_or(false) {
+        if db
+            .path_is_current(&file.absolute_path)
+            .map_err(|e| e.to_string())?
+        {
             tally.skipped += 1;
             continue;
         }
         let stable = check_file_stability_sync(&file.absolute_path, Duration::from_millis(50))
             .unwrap_or(false);
         if !stable {
+            complete = false;
             continue;
         }
         match db.ingest_file(&file, device_id) {
@@ -124,10 +131,12 @@ fn ingest_candidates(
                 tally.skipped += 1;
             }
             Err(e) => {
+                complete = false;
                 tracing::warn!("入库失败 {}: {}", file.absolute_path, e);
             }
         }
     }
+    Ok(complete)
 }
 
 /// 触发针对指定微信账号与通用目录的扫描（默认增量，可选全量）
@@ -171,14 +180,21 @@ pub async fn run_scan(
                 Some(&acc.account_id),
                 None,
             );
-            ingest_candidates(&mut db, &device_id, candidates, &mut tally);
-            db.mark_scan_started(
-                &files_root,
-                "wechat-windows-4",
-                Some(&acc.account_id),
-                scan_started_ms,
-            )
-            .map_err(|e| e.to_string())?;
+            let complete = ingest_candidates(&mut db, &device_id, candidates, &mut tally)?;
+            if complete {
+                db.mark_scan_started(
+                    &files_root,
+                    "wechat-windows-4",
+                    Some(&acc.account_id),
+                    scan_started_ms,
+                )
+                .map_err(|e| e.to_string())?;
+            } else {
+                tracing::warn!(
+                    "微信账号 {} 本轮存在未完成候选，保留原扫描检查点",
+                    acc.account_id
+                );
+            }
         }
     }
 
@@ -198,9 +214,13 @@ pub async fn run_scan(
             Vec::new()
         };
         let candidates = merge_candidates(walked, changed_known, "generic-folder", None, None);
-        ingest_candidates(&mut db, &device_id, candidates, &mut tally);
-        db.mark_scan_started(&root_s, "generic-folder", None, scan_started_ms)
-            .map_err(|e| e.to_string())?;
+        let complete = ingest_candidates(&mut db, &device_id, candidates, &mut tally)?;
+        if complete {
+            db.mark_scan_started(&root_s, "generic-folder", None, scan_started_ms)
+                .map_err(|e| e.to_string())?;
+        } else {
+            tracing::warn!("通用目录 {} 本轮存在未完成候选，保留原扫描检查点", root_s);
+        }
     }
 
     Ok(ScanResultDto {

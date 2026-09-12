@@ -43,13 +43,20 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
                 None,
             );
             discovered += files.len();
-            process_files(&mut db, &device_id, &files, &mut indexed, &mut skipped)?;
-            db.mark_scan_started(
-                &files_root,
-                "wechat-windows-4",
-                Some(&acc.account_id),
-                scan_started_ms,
-            )?;
+            let complete = process_files(&mut db, &device_id, &files, &mut indexed, &mut skipped)?;
+            if complete {
+                db.mark_scan_started(
+                    &files_root,
+                    "wechat-windows-4",
+                    Some(&acc.account_id),
+                    scan_started_ms,
+                )?;
+            } else {
+                println!(
+                    "[-] 微信账号 {} 存在未完成候选，保留原扫描检查点",
+                    acc.account_id
+                );
+            }
         }
     }
 
@@ -69,8 +76,12 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
         };
         let files = merge_changed_known(walked, changed_known, "generic-folder", None, None);
         discovered += files.len();
-        process_files(&mut db, &device_id, &files, &mut indexed, &mut skipped)?;
-        db.mark_scan_started(dir, "generic-folder", None, scan_started_ms)?;
+        let complete = process_files(&mut db, &device_id, &files, &mut indexed, &mut skipped)?;
+        if complete {
+            db.mark_scan_started(dir, "generic-folder", None, scan_started_ms)?;
+        } else {
+            println!("[-] 通用目录存在未完成候选，保留原扫描检查点");
+        }
     }
 
     println!(
@@ -159,14 +170,17 @@ fn merge_changed_known(
     merged
 }
 
-/// 仅对需要处理的文件做稳定性检测并入库
+/// 仅对需要处理的文件做稳定性检测并入库，返回是否全部完成。
+///
+/// 未稳定或入库失败的文件会使本轮检查点保持不变，等待下次扫描重试。
 fn process_files(
     db: &mut Database,
     device_id: &str,
     files: &[DiscoveredFile],
     indexed: &mut usize,
     skipped: &mut usize,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut complete = true;
     for file in files {
         if db.path_is_current(&file.absolute_path)? {
             *skipped += 1;
@@ -175,15 +189,19 @@ fn process_files(
         let stable = check_file_stability_sync(&file.absolute_path, Duration::from_millis(50))
             .unwrap_or(false);
         if !stable {
+            complete = false;
             continue;
         }
         match db.ingest_file(file, device_id) {
             Ok(IngestResult::Indexed { .. }) => *indexed += 1,
             Ok(IngestResult::Skipped { .. }) => *skipped += 1,
-            Err(e) => eprintln!("[-] 入库异常 {}: {}", file.file_name, e),
+            Err(e) => {
+                complete = false;
+                eprintln!("[-] 入库异常 {}: {}", file.file_name, e);
+            }
         }
     }
-    Ok(())
+    Ok(complete)
 }
 
 /// 发布本机元数据日志

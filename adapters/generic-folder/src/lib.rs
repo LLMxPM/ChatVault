@@ -5,7 +5,8 @@
 
 use chatvault_core::error::{ChatVaultError, Result};
 use chatvault_core::models::DiscoveredFile;
-use chatvault_scanner::walker::{scan_directory, ScanOptions};
+use chatvault_scanner::strategy::FullScanStrategy;
+use chatvault_scanner::walker::{scan_directory_with_strategy, ScanOptions};
 use chrono::{DateTime, Utc};
 use std::path::Path;
 use std::time::SystemTime;
@@ -19,12 +20,12 @@ impl GenericFolderParser {
         Self::parse_with_since(folder, None)
     }
 
-    /// 按目录 mtime 增量发现：仅进入 mtime 晚于 `since` 的子树；None 为全量
+    /// 增量发现：完整遍历目录，再由编排层用已知文件状态过滤未变更文件；None 为全量
     ///
     /// 职责: 递归遍历用户指定的任意本地文件夹，生成候选待处理文件清单
     /// 输入:
     ///   - `folder`: 目标目录路径
-    ///   - `since`: 增量起点；目录 mtime 不晚于该时刻时跳过子树
+    ///   - `since`: 增量起点；由扫描策略接收，通用目录策略不会据此裁剪目录
     /// 输出: `Result<Vec<DiscoveredFile>>`
     pub fn parse_with_since<P: AsRef<Path>>(
         folder: P,
@@ -41,10 +42,9 @@ impl GenericFolderParser {
             max_depth: None,
             skip_hidden: true,
             min_size: 1,
-            since,
         };
 
-        let paths = scan_directory(f, &options)?;
+        let paths = scan_directory_with_strategy(f, &options, since, &FullScanStrategy)?;
         let mut discovered = Vec::with_capacity(paths.len());
 
         for path in paths {

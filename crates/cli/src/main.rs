@@ -124,7 +124,7 @@ fn handle_detect() -> Result<()> {
 /// 执行扫描并入库 SQLite
 ///
 /// 职责: 收集文件、检查稳定性、计算 BLAKE3、增量去重并建立 FTS5 索引
-/// 默认增量（按目录 mtime 剪枝 + 已知文件复检）；`full` 时忽略检查点全量发现
+/// 默认增量（由来源策略发现候选 + 已知文件复检）；`full` 时忽略检查点全量发现
 fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> Result<()> {
     println!(
         "=== 开始执行文件扫描与入库（{}） ===",
@@ -166,7 +166,7 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
             );
             println!("    本次候选 {} 个文件", files.len());
             discovered_count += files.len();
-            process_scan_files(
+            let complete = process_scan_files(
                 &mut db,
                 &device_id,
                 &files,
@@ -174,12 +174,19 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
                 &mut skipped_count,
                 &mut new_object_count,
             )?;
-            db.mark_scan_started(
-                &files_root,
-                "wechat-windows-4",
-                Some(&acc.account_id),
-                scan_started_ms,
-            )?;
+            if complete {
+                db.mark_scan_started(
+                    &files_root,
+                    "wechat-windows-4",
+                    Some(&acc.account_id),
+                    scan_started_ms,
+                )?;
+            } else {
+                println!(
+                    "[-] 微信账号 {} 存在未完成候选，保留原扫描检查点",
+                    acc.account_id
+                );
+            }
         }
     } else {
         println!("[*] 正在扫描通用目录: {}", target);
@@ -193,7 +200,7 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
         let files = merge_changed_known(walked, changed_known, "generic-folder", None, None);
         println!("    本次候选 {} 个文件", files.len());
         discovered_count += files.len();
-        process_scan_files(
+        let complete = process_scan_files(
             &mut db,
             &device_id,
             &files,
@@ -201,7 +208,11 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
             &mut skipped_count,
             &mut new_object_count,
         )?;
-        db.mark_scan_started(target, "generic-folder", None, scan_started_ms)?;
+        if complete {
+            db.mark_scan_started(target, "generic-folder", None, scan_started_ms)?;
+        } else {
+            println!("[-] 通用目录存在未完成候选，保留原扫描检查点");
+        }
     }
 
     if discovered_count == 0 {
@@ -265,7 +276,9 @@ fn merge_changed_known(
     merged
 }
 
-/// 仅对需要处理的文件做稳定性检测并入库
+/// 仅对需要处理的文件做稳定性检测并入库，返回是否全部完成。
+///
+/// 未稳定或入库失败的文件会使本轮检查点保持不变，等待下次扫描重试。
 fn process_scan_files(
     db: &mut Database,
     device_id: &str,
@@ -273,7 +286,8 @@ fn process_scan_files(
     indexed_count: &mut usize,
     skipped_count: &mut usize,
     new_object_count: &mut usize,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut complete = true;
     for file in files {
         if db.path_is_current(&file.absolute_path)? {
             *skipped_count += 1;
@@ -282,6 +296,7 @@ fn process_scan_files(
         let is_stable = check_file_stability_sync(&file.absolute_path, Duration::from_millis(50))
             .unwrap_or(false);
         if !is_stable {
+            complete = false;
             println!("[-] 跳过处于写入变动中的不稳定文件: {}", file.file_name);
             continue;
         }
@@ -296,11 +311,12 @@ fn process_scan_files(
                 *skipped_count += 1;
             }
             Err(e) => {
+                complete = false;
                 eprintln!("[-] 文件入库异常 {}: {}", file.file_name, e);
             }
         }
     }
-    Ok(())
+    Ok(complete)
 }
 
 /// 执行多维检索

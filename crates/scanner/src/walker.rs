@@ -3,6 +3,7 @@
 //! 提供基于 walkdir 的受控目录遍历引擎，自动过滤临时文件、隐藏系统目录，
 //! 并产出候选文件列表供上层做稳定性检测与入库。
 
+use crate::strategy::{FullScanStrategy, IncrementalScanStrategy};
 use chatvault_core::error::{ChatVaultError, Result};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -17,8 +18,6 @@ pub struct ScanOptions {
     pub skip_hidden: bool,
     /// 最小文件字节数（过滤 0 字节空文件）
     pub min_size: u64,
-    /// 增量扫描起点：子目录 mtime 不晚于该时刻时整棵子树跳过；None 为全量发现
-    pub since: Option<SystemTime>,
 }
 
 impl Default for ScanOptions {
@@ -27,12 +26,11 @@ impl Default for ScanOptions {
             max_depth: None,
             skip_hidden: true,
             min_size: 1,
-            since: None,
         }
     }
 }
 
-/// 扫描指定目录并收集符合条件的常规文件路径
+/// 使用完整遍历策略扫描指定目录并收集符合条件的常规文件路径。
 ///
 /// 职责: 递归遍历指定目录，过滤常见临时垃圾文件、隐藏文件与空文件
 /// 输入:
@@ -40,6 +38,24 @@ impl Default for ScanOptions {
 ///   - `options`: 过滤选项
 /// 输出: 路径列表 `Result<Vec<PathBuf>>`
 pub fn scan_directory<P: AsRef<Path>>(root: P, options: &ScanOptions) -> Result<Vec<PathBuf>> {
+    scan_directory_with_strategy(root, options, None, &FullScanStrategy)
+}
+
+/// 按指定增量策略扫描目录，并收集符合条件的常规文件路径。
+///
+/// 职责: 执行通用目录遍历与文件过滤，将“是否裁剪目录”的决定委托给来源策略
+/// 输入:
+///   - `root`: 根目录路径
+///   - `options`: 文件过滤选项
+///   - `since`: 增量扫描起点；None 表示全量发现
+///   - `strategy`: 当前来源使用的目录遍历策略
+/// 输出: 路径列表 `Result<Vec<PathBuf>>`
+pub fn scan_directory_with_strategy<S: IncrementalScanStrategy + ?Sized, P: AsRef<Path>>(
+    root: P,
+    options: &ScanOptions,
+    since: Option<SystemTime>,
+    strategy: &S,
+) -> Result<Vec<PathBuf>> {
     let r = root.as_ref();
     if !r.exists() {
         return Err(ChatVaultError::FileNotFound {
@@ -52,23 +68,9 @@ pub fn scan_directory<P: AsRef<Path>>(root: P, options: &ScanOptions) -> Result<
         builder = builder.max_depth(depth);
     }
 
-    // 增量模式：仅进入 mtime 晚于 since 的子目录；根目录始终进入
-    let since = options.since;
-    let walker = builder.into_iter().filter_entry(move |entry| {
-        let Some(since) = since else {
-            return true;
-        };
-        if !entry.file_type().is_dir() || entry.depth() == 0 {
-            return true;
-        }
-        match entry.metadata() {
-            Ok(meta) => match meta.modified() {
-                Ok(mtime) => mtime > since,
-                Err(_) => true,
-            },
-            Err(_) => true,
-        }
-    });
+    let walker = builder
+        .into_iter()
+        .filter_entry(|entry| strategy.should_descend(entry, since));
 
     let mut files = Vec::new();
 
@@ -119,14 +121,19 @@ pub fn scan_directory<P: AsRef<Path>>(root: P, options: &ScanOptions) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::strategy::MtimeAtDepthStrategy;
     use std::fs::File;
     use std::io::Write;
     use std::time::Duration;
 
     #[test]
     fn test_walker() {
-        let temp_dir = std::env::temp_dir().join("chatvault_walker_test");
-        let _ = std::fs::create_dir_all(&temp_dir);
+        let unique = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间应晚于 Unix epoch")
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("chatvault_walker_test_{unique}"));
+        std::fs::create_dir_all(&temp_dir).unwrap();
 
         let valid_file = temp_dir.join("test_doc.pdf");
         let tmp_file = temp_dir.join("~$temp.docx");
@@ -149,7 +156,7 @@ mod tests {
         assert_eq!(res.len(), 1);
         assert_eq!(res[0], valid_file);
 
-        // 增量：进入尚未过期的子目录；对 mtime <= since 的子树整棵剪枝
+        // 固定层级策略：根下文件仍在；深度 1 子树因 mtime 不晚于 since 被剪掉。
         let sub = temp_dir.join("subdir");
         std::fs::create_dir_all(&sub).unwrap();
         let mut f4 = File::create(sub.join("nested.pdf")).unwrap();
@@ -159,14 +166,25 @@ mod tests {
         let res_full = scan_directory(&temp_dir, &ScanOptions::default()).unwrap();
         assert_eq!(res_full.len(), 2);
 
-        let options_inc = ScanOptions {
-            since: Some(SystemTime::now() + Duration::from_secs(60)),
-            ..Default::default()
-        };
-        let res_inc = scan_directory(&temp_dir, &options_inc).unwrap();
-        // 根下文件仍在；子树因 mtime 不晚于 since 被剪掉
+        let res_inc = scan_directory_with_strategy(
+            &temp_dir,
+            &ScanOptions::default(),
+            Some(SystemTime::now() + Duration::from_secs(60)),
+            &MtimeAtDepthStrategy::new(1),
+        )
+        .unwrap();
         assert_eq!(res_inc.len(), 1);
         assert_eq!(res_inc[0], valid_file);
+
+        // 通用目录策略不依赖父目录 mtime，增量时仍能发现深层新增文件。
+        let res_full_walk = scan_directory_with_strategy(
+            &temp_dir,
+            &ScanOptions::default(),
+            Some(SystemTime::now() + Duration::from_secs(60)),
+            &FullScanStrategy,
+        )
+        .unwrap();
+        assert_eq!(res_full_walk.len(), 2);
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }
