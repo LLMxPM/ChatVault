@@ -276,6 +276,7 @@ import { useCollectSources } from "../composables/useCollectSources";
 import { pushToast } from "../composables/useToast";
 import { confirmAction } from "../composables/useConfirm";
 import { navigateTo } from "../composables/useNav";
+import { formatDurationMs } from "../utils/format";
 import type {
   PipelineResultDto,
   UploadTaskDto,
@@ -342,7 +343,7 @@ const statusDetail = computed(() => {
   if (running.value) return "扫描 → 归档 → 同步";
   if (stage.value === "failed") return pipelineError.value || "请检查网络与 WebDAV 配置后重试";
   if (stage.value === "done" && pipelineResult.value) {
-    return pipelineResult.value.message + " · 耗时 " + pipelineResult.value.durationMs + " ms";
+    return pipelineResult.value.message + " · 耗时 " + formatDurationMs(pipelineResult.value.durationMs);
   }
   if (!webdavReady.value) return "未连接 WebDAV，本次只会进行本地扫描";
   return "";

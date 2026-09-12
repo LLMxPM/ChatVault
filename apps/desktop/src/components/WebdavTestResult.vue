@@ -4,7 +4,7 @@
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex items-center gap-2">
         <UiBadge :tone="passed ? 'success' : 'danger'">{{ passed ? "探测通过" : "探测失败" }}</UiBadge>
-        <span class="text-cv-caption text-cv-text-3">耗时 {{ capability.durationMs }} ms</span>
+        <span class="text-cv-caption text-cv-text-3">耗时 {{ formatDurationMs(capability.durationMs) }}</span>
       </div>
     </div>
     <p class="mt-2 text-cv-body" :class="passed ? 'text-cv-success' : 'text-cv-danger'">
@@ -27,6 +27,7 @@
 import { computed } from "vue";
 import { CheckCircle2, XCircle } from "lucide-vue-next";
 import UiBadge from "./ui/UiBadge.vue";
+import { formatDurationMs } from "../utils/format";
 import type { WebdavCapabilityDto } from "../types";
 
 const props = defineProps<{ capability: WebdavCapabilityDto }>();

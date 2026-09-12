@@ -94,7 +94,6 @@
                 class="cursor-pointer border-b border-cv-border/60 transition-colors last:border-0 hover:bg-cv-surface-2"
                 :class="expandedId === item.objectId ? 'bg-cv-surface-2' : ''"
                 @click="toggleExpand(item)"
-                @dblclick.stop="handleOpen(item)"
               >
                 <td class="max-w-[280px] px-4 py-2.5">
                   <div class="flex items-center gap-2">
@@ -123,7 +122,7 @@
                   {{ item.sourceCount > 1 ? `${item.sourceCount} 条` : "1 条" }}
                 </td>
                 <td class="px-3 py-2.5 font-mono text-cv-caption text-cv-text-2">
-                  {{ item.fileTime || "未知" }}
+                  {{ formatDateTime(item.fileTime, { fallback: "未知" }) }}
                 </td>
                 <td class="px-3 py-2.5 font-mono text-cv-caption text-cv-text-2">{{ item.formattedSize }}</td>
                 <td class="px-4 py-2.5 text-right" @click.stop>
@@ -192,7 +191,9 @@
                       <span class="font-mono text-cv-text-3" :title="src.deviceId">
                         设备 {{ src.deviceId }}
                       </span>
-                      <span class="font-mono text-cv-text-3">{{ src.fileTime || "—" }}</span>
+                      <span class="font-mono text-cv-text-3">
+                        {{ formatDateTime(src.fileTime, { fallback: "—" }) }}
+                      </span>
                       <UiButton
                         v-if="src.hasLocalPath && src.originalPath"
                         size="sm"
@@ -274,6 +275,7 @@ import {
 } from "../api/tauri";
 import { pushToast } from "../composables/useToast";
 import { navigateTo } from "../composables/useNav";
+import { formatDateTime } from "../utils/format";
 import type {
   FileObjectViewDto,
   FileSourceDto,
