@@ -1,15 +1,15 @@
 <#
 .SYNOPSIS
-ChatVault Windows x64 Rust 与桌面端构建入口。
+ChatVault Windows x64 Rust 与桌面端开发、构建入口。
 
 .DESCRIPTION
 统一初始化标准 Visual Studio、Windows SDK、Rust MSVC、Node/pnpm 和仓库 SQLite
-环境，再执行检查、格式、测试、Lint、桌面编译或 Tauri 开发命令。
+环境，再执行检查、测试、Lint、桌面编译或 Tauri 开发命令。
 #>
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('check', 'lint', 'test', 'desktop-build')]
+    [ValidateSet('check', 'lint', 'test', 'desktop-build', 'desktop-dev')]
     [string]$Action = 'check',
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$RemainingArgs
@@ -28,7 +28,7 @@ function Invoke-CheckedCommand {
     # 执行外部命令并显式传递退出码，避免 PowerShell 忽略 Cargo/pnpm 失败。
     & $FilePath @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "$Description失败，退出码：$LASTEXITCODE"
+        throw "${Description}失败，退出码：$LASTEXITCODE"
     }
 }
 
@@ -50,6 +50,11 @@ try {
             Invoke-CheckedCommand 'pnpm' @('--filter', 'chatvault-desktop', 'build') '桌面端前端构建'
             $arguments = @('build', '-p', 'chatvault-desktop', '--locked') + @($RemainingArgs)
             Invoke-CheckedCommand 'cargo' $arguments '桌面端 Rust 编译'
+        }
+        'desktop-dev' {
+            # 让 Tauri 及其 Vite/Cargo 子进程继承已校验的 MSVC、SDK 和 SQLite 环境。
+            $arguments = @('--filter', 'chatvault-desktop', 'tauri', 'dev') + @($RemainingArgs)
+            Invoke-CheckedCommand 'pnpm' $arguments '桌面端开发服务'
         }
     }
 }

@@ -14,7 +14,15 @@ use tauri::Manager;
 
 /// 初始化用户资料库与桌面服务；数据路径不依赖快捷方式的工作目录。
 fn main() {
-    let result = tauri::Builder::default()
+    if let Err(error) = run() {
+        runtime::report_startup_error(&error.to_string());
+        std::process::exit(1);
+    }
+}
+
+/// 在进入事件循环前完成资料库初始化，让启动错误返回主入口统一报告。
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -22,17 +30,6 @@ fn main() {
                 let _ = window.set_focus();
             }
         }))
-        .setup(|app| {
-            let data_dir = app.path().app_local_data_dir()?;
-            std::fs::create_dir_all(&data_dir)?;
-            runtime::init_logging(&data_dir)?;
-            let state = AppState::new(data_dir.join("chatvault.db"), "default-vault".into())?;
-            if let Err(error) = runtime::restore_schedule(&state) {
-                tracing::warn!("恢复定时任务失败，请在设置中重新启用：{error}");
-            }
-            app.manage(state);
-            Ok(())
-        })
         .invoke_handler(tauri::generate_handler![
             commands::scan::detect_wechat_accounts,
             commands::scan::run_scan,
@@ -60,9 +57,15 @@ fn main() {
             runtime::get_runtime_info,
             runtime::open_log_directory,
         ])
-        .run(tauri::generate_context!());
-    if let Err(error) = result {
-        runtime::report_startup_error(&error.to_string());
-        std::process::exit(1);
+        .build(tauri::generate_context!())?;
+    let data_dir = app.path().app_local_data_dir()?;
+    std::fs::create_dir_all(&data_dir)?;
+    runtime::init_logging(&data_dir)?;
+    let state = AppState::new(data_dir.join("chatvault.db"), "default-vault".into())?;
+    if let Err(error) = runtime::restore_schedule(&state) {
+        tracing::warn!("恢复定时任务失败，请在设置中重新启用：{error}");
     }
+    app.manage(state);
+    app.run(|_, _| {});
+    Ok(())
 }

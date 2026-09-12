@@ -18,7 +18,7 @@ function Invoke-CheckedCommand {
     # 执行发行阶段外部命令并统一检查退出码，保证失败时不会继续打包旧产物。
     & $FilePath @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "$Description失败，退出码：$LASTEXITCODE"
+        throw "${Description}失败，退出码：$LASTEXITCODE"
     }
 }
 

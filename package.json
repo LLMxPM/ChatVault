@@ -11,7 +11,7 @@
   },
   "scripts": {
     "dev:web": "pnpm --filter chatvault-desktop dev",
-    "dev:desktop": "pnpm --filter chatvault-desktop tauri dev",
+    "dev:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 desktop-dev",
     "check:frontend": "pnpm --filter chatvault-desktop typecheck",
     "build:frontend": "pnpm --filter chatvault-desktop build",
     "check:rust": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 check",

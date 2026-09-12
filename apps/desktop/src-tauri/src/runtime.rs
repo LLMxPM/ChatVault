@@ -28,6 +28,7 @@ pub fn restore_schedule(state: &AppState) -> Result<(), String> {
 
 /// 无控制台的 Windows 发行程序也必须显示初始化失败原因。
 pub fn report_startup_error(error: &str) {
+    eprintln!("拾文启动失败：{error}");
     tracing::error!("启动失败：{error}");
     #[cfg(windows)]
     {
@@ -36,7 +37,7 @@ pub fn report_startup_error(error: &str) {
             fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
         }
         let text: Vec<u16> =
-            format!("拾文启动失败：{error}\n请检查用户数据目录权限，并查看其中 logs 目录的日志。")
+            format!("拾文启动失败：{error}\n请查看用户数据目录中 logs 目录的日志。")
                 .encode_utf16()
                 .chain(Some(0))
                 .collect();
@@ -46,8 +47,6 @@ pub fn report_startup_error(error: &str) {
             MessageBoxW(0, text.as_ptr(), caption.as_ptr(), 0x10);
         }
     }
-    #[cfg(not(windows))]
-    eprintln!("拾文启动失败：{error}");
 }
 
 /// 初始化按启动轮换的文件日志；仅保留本次和上次启动日志。
@@ -67,8 +66,14 @@ pub fn init_logging(data_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .with_ansi(false)
         .with_max_level(tracing::Level::INFO)
         .with_writer(std::sync::Mutex::new(file))
-        .init();
-    std::panic::set_hook(Box::new(|info| tracing::error!("桌面程序异常：{info}")));
+        .try_init()
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("桌面程序异常：{info}");
+        // 保留默认输出，让开发终端和 RUST_BACKTRACE 仍能显示异常及调用栈。
+        default_hook(info);
+    }));
     tracing::info!("拾文桌面服务启动");
     Ok(())
 }

@@ -5,10 +5,6 @@ param()
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
-# 清除旧版本脚本可能留下的自定义资源编译器变量，强制使用 Windows SDK 工具链。
-Remove-Item Env:CHATVAULT_RESOURCE_COMPILER -ErrorAction SilentlyContinue
-Remove-Item Env:RC -ErrorAction SilentlyContinue
-
 function Require-Command {
     param([string]$Name)
 
@@ -32,7 +28,8 @@ function Import-VisualStudioEnvironment {
         throw '未找到 vswhere.exe。请安装 Visual Studio Build Tools，并勾选 C++ 构建工具。'
     }
 
-    $installations = @(& $vswhere -all -products '*' -requires 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' -format json | ConvertFrom-Json)
+    # 先接收 JSON 数组，再逐项筛选；外层 @() 会在 Windows PowerShell 中产生嵌套数组，拼接多套安装路径。
+    $installations = & $vswhere -all -products '*' -requires 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' -format json | ConvertFrom-Json
     $visualStudio = $installations | Where-Object {
         $_.isComplete -eq $true -and $_.installationPath
     } | Select-Object -First 1
@@ -47,7 +44,7 @@ function Import-VisualStudioEnvironment {
 
     $envDump = cmd.exe /d /c "call `"$vcvars`" >nul && set"
     if ($LASTEXITCODE -ne 0) {
-        throw '加载 Visual Studio x64 编译环境失败'
+        throw "加载 Visual Studio x64 编译环境失败（退出码 $LASTEXITCODE）：$vcvars"
     }
     foreach ($line in $envDump) {
         if ($line -match '^([^=]+)=(.*)$') {
