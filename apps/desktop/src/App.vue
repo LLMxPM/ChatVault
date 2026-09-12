@@ -1,103 +1,123 @@
 <!--
   ChatVault 桌面端根组件
-  职责：实现左侧主导航栏、状态指示条及多视图切换（文件检索、微信扫描、存储看板、云端同步）。
+  职责：五项主导航、主题初始化、全局 Toast/Confirm 挂载与运行状态条。
 -->
 <template>
-  <div class="flex h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
-    <!-- 左侧 Sidebar -->
-    <aside class="w-60 bg-slate-900/90 border-r border-slate-800/80 flex flex-col justify-between select-none">
-      <!-- 顶部 Logo 与品牌 -->
+  <div class="flex h-screen w-screen overflow-hidden bg-cv-bg font-sans text-cv-text">
+    <aside class="flex w-56 shrink-0 flex-col border-r border-cv-border bg-cv-surface select-none">
       <div>
-        <div class="p-5 flex items-center space-x-3 border-b border-slate-800/60">
-          <img :src="appIcon" alt="拾文" class="w-10 h-10 shrink-0" />
-          <div>
-            <h1 class="text-sm font-bold tracking-tight text-white flex flex-wrap items-center gap-x-1.5">
-              <span>拾文 <span class="text-xs text-slate-400">ChatVault</span></span>
-              <span v-if="runtime.version" class="text-[10px] px-1.5 py-0.2 rounded bg-emerald-900/60 text-emerald-400 font-mono">v{{ runtime.version }}</span>
-            </h1>
-            <p class="text-[10px] text-slate-400">聊天附件归档与检索</p>
+        <div class="flex items-center gap-2.5 border-b border-cv-border px-4 py-4">
+          <img :src="appIcon" alt="拾文" class="h-8 w-8 shrink-0" />
+          <div class="min-w-0">
+            <div class="flex items-center gap-1.5">
+              <h1 class="truncate text-cv-section text-cv-text">拾文</h1>
+              <span
+                v-if="runtime.version"
+                class="rounded-cv bg-cv-surface-2 px-1 font-mono text-[10px] text-cv-text-3"
+              >
+                v{{ runtime.version }}
+              </span>
+            </div>
+            <p class="text-cv-caption text-cv-text-3">聊天附件归档与检索</p>
           </div>
         </div>
 
-        <!-- 导航菜单项 -->
-        <nav class="p-3 space-y-1">
+        <nav class="space-y-0.5 p-2">
           <button
             v-for="item in navItems"
             :key="item.id"
-            class="w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-lg text-xs font-medium transition-all"
+            class="flex w-full items-center gap-2.5 rounded-cv px-3 py-2 text-cv-body transition-colors"
             :class="
               currentTab === item.id
-                ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950 font-semibold'
-                : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/60'
+                ? 'bg-cv-accent-soft font-medium text-cv-accent'
+                : 'text-cv-text-2 hover:bg-cv-surface-2 hover:text-cv-text'
             "
-            @click="currentTab = item.id"
+            @click="navigateTo(item.id)"
           >
-            <component :is="item.icon" class="w-4 h-4" />
+            <component :is="item.icon" class="h-4 w-4 shrink-0" />
             <span>{{ item.label }}</span>
           </button>
         </nav>
-        <div v-if="runtime.firstRun && !guideDismissed" class="mx-3 p-3 rounded-lg bg-emerald-950/50 border border-emerald-900 text-xs space-y-2">
-          <p class="font-medium text-emerald-300">开始建立你的资料库</p>
-          <button class="block text-slate-300 hover:text-white" @click="currentTab = 'scanner'">1. 识别微信来源并扫描文件</button>
-          <button class="block text-slate-300 hover:text-white" @click="currentTab = 'sync'">2. 按需连接 WebDAV 归档</button>
-          <button class="block text-slate-300 hover:text-white" @click="currentTab = 'settings'">3. 设置定时采集目录</button>
-          <p class="text-[11px] text-slate-400">未连接云端也可以本地检索。</p>
-          <button class="text-[11px] text-slate-500 hover:text-slate-300" @click="guideDismissed = true">收起引导</button>
+
+        <div
+          v-if="runtime.firstRun && !guideDismissed"
+          class="mx-2 mt-1 space-y-1.5 rounded-cv-lg border border-cv-border bg-cv-surface-2 p-3"
+        >
+          <p class="text-cv-caption font-medium text-cv-text">开始建立资料库</p>
+          <button class="block text-cv-caption text-cv-text-2 hover:text-cv-accent" @click="navigateTo('collect')">
+            1. 识别微信来源并扫描
+          </button>
+          <button class="block text-cv-caption text-cv-text-2 hover:text-cv-accent" @click="navigateTo('settings')">
+            2. 在设置中连接 WebDAV
+          </button>
+          <button class="block text-cv-caption text-cv-text-2 hover:text-cv-accent" @click="navigateTo('settings')">
+            3. 配置定时与缓存
+          </button>
+          <button class="text-cv-caption text-cv-text-3 hover:text-cv-text-2" @click="guideDismissed = true">
+            收起引导
+          </button>
         </div>
       </div>
 
-      <!-- 底部状态指示条 -->
-      <div class="p-4 border-t border-slate-800/60 text-[11px] text-slate-500 space-y-1">
-        <div class="flex items-center space-x-1.5 text-emerald-400">
-          <span class="w-2 h-2 rounded-full" :class="runtime.ready ? 'bg-emerald-500' : 'bg-amber-500'"></span>
-          <span class="font-medium text-slate-300">{{ runtime.ready ? "本地引擎就绪" : "未连接桌面服务" }}</span>
+      <div class="mt-auto space-y-1 border-t border-cv-border p-4">
+        <div class="flex items-center gap-1.5">
+          <span
+            class="h-1.5 w-1.5 rounded-full"
+            :class="runtime.ready ? 'bg-cv-success' : 'bg-cv-warning'"
+          />
+          <span class="text-cv-caption text-cv-text-2">
+            {{ runtime.ready ? "本地引擎就绪" : "未连接桌面服务" }}
+          </span>
         </div>
-        <p class="text-[10px] text-slate-500 font-mono">SQLite FTS5 + BLAKE3</p>
+        <p class="text-cv-caption text-cv-text-3">SQLite FTS5 · BLAKE3</p>
       </div>
     </aside>
 
-    <!-- 右侧主内容区域 -->
-    <main class="flex-1 h-full bg-slate-950 overflow-hidden">
+    <main class="h-full min-w-0 flex-1 overflow-hidden">
       <LibraryView v-if="currentTab === 'library'" />
-      <ScannerView v-else-if="currentTab === 'scanner'" />
+      <CollectView v-else-if="currentTab === 'collect'" />
+      <ArchiveView v-else-if="currentTab === 'archive'" />
       <TasksView v-else-if="currentTab === 'tasks'" />
-      <StatsView v-else-if="currentTab === 'stats'" />
-      <SyncView v-else-if="currentTab === 'sync'" />
-      <SourceManagementView v-else-if="currentTab === 'sources'" />
       <SettingsView v-else-if="currentTab === 'settings'" />
     </main>
+
+    <UiToast />
+    <UiConfirm />
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { FolderSearch, Search, BarChart3, Cloud, Settings, ListTodo, ContactRound } from "lucide-vue-next";
+import { onMounted, onBeforeUnmount, ref } from "vue";
+import { FolderSearch, FolderInput, Cloud, ListTodo, Settings } from "lucide-vue-next";
 import appIcon from "./assets/app-icon.png";
 import { loadRuntime, runtime } from "./api/runtime";
+import { initTheme, disposeTheme } from "./composables/useTheme";
+import { currentTab, navigateTo, type AppTab } from "./composables/useNav";
 import LibraryView from "./views/LibraryView.vue";
-import ScannerView from "./views/ScannerView.vue";
-import StatsView from "./views/StatsView.vue";
-import SyncView from "./views/SyncView.vue";
-import SettingsView from "./views/SettingsView.vue";
+import CollectView from "./views/CollectView.vue";
+import ArchiveView from "./views/ArchiveView.vue";
 import TasksView from "./views/TasksView.vue";
-import SourceManagementView from "./views/SourceManagementView.vue";
+import SettingsView from "./views/SettingsView.vue";
+import UiToast from "./components/ui/UiToast.vue";
+import UiConfirm from "./components/ui/UiConfirm.vue";
 
-const currentTab = ref<"library" | "scanner" | "sources" | "tasks" | "stats" | "sync" | "settings">("library");
 const guideDismissed = ref(false);
 
-/** 初始化运行信息；空资料库首先展示来源扫描入口。 */
+const navItems: { id: AppTab; label: string; icon: typeof FolderSearch }[] = [
+  { id: "library", label: "文件库", icon: FolderSearch },
+  { id: "collect", label: "采集", icon: FolderInput },
+  { id: "archive", label: "归档", icon: Cloud },
+  { id: "tasks", label: "任务", icon: ListTodo },
+  { id: "settings", label: "设置", icon: Settings },
+];
+
 onMounted(async () => {
+  initTheme();
   await loadRuntime();
-  if (runtime.firstRun) currentTab.value = "scanner";
+  if (runtime.firstRun) navigateTo("collect");
 });
 
-const navItems = [
-  { id: "library", label: "文件库与检索", icon: FolderSearch },
-  { id: "scanner", label: "微信来源与扫描", icon: Search },
-  { id: "sources", label: "来源管理", icon: ContactRound },
-  { id: "tasks", label: "任务中心", icon: ListTodo },
-  { id: "stats", label: "存储看板与去重", icon: BarChart3 },
-  { id: "sync", label: "WebDAV 归档同步", icon: Cloud },
-  { id: "settings", label: "设置", icon: Settings },
-] as const;
+onBeforeUnmount(() => {
+  disposeTheme();
+});
 </script>

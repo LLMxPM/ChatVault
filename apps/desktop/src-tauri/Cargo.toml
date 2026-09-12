@@ -21,6 +21,7 @@ keyring = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tauri-plugin-single-instance = "2"
+rfd = "0.15"
 
 # ChatVault 核心库与适配器
 chatvault-core = { workspace = true }

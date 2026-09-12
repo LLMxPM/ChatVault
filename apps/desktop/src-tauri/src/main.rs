@@ -47,6 +47,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::settings::get_app_settings,
             commands::settings::set_app_settings,
             commands::settings::get_schedule_status,
+            commands::settings::pick_directory,
             commands::sync::sync_publish,
             commands::sync::sync_pull,
             commands::sync::sync_restore,

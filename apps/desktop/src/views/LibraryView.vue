@@ -1,224 +1,238 @@
 <!--
   ChatVault 文件库与全文检索视图
-  职责：提供基于 SQLite FTS5 的中文即输即搜、按文件类型和来源账号的多维筛选、文件在 Windows Explorer 中的定位。
+  职责：中文即输即搜、多维筛选、分页列表与资源管理器定位。
 -->
 <template>
-  <div class="h-full flex flex-col p-6 space-y-4">
-    <!-- 顶部检索与多维筛选栏 -->
-    <div class="flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
-      <!-- 搜索框 -->
-      <div class="relative flex-1">
-        <Search class="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-        <input
+  <div class="flex h-full flex-col gap-4 p-6">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 class="text-cv-page text-cv-text">文件库</h2>
+        <p class="mt-0.5 text-cv-caption text-cv-text-2">按文件名、类型、来源检索已入库附件</p>
+      </div>
+      <div class="flex items-center gap-2 text-cv-caption text-cv-text-2">
+        <template v-if="stats">
+          <span>记录 {{ stats.totalRecords }}</span>
+          <span class="text-cv-text-3">·</span>
+          <span>对象 {{ stats.uniqueObjects }}</span>
+          <span class="text-cv-text-3">·</span>
+          <span>去重节省 {{ stats.formattedSavedBytes }}</span>
+        </template>
+      </div>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2">
+      <div class="relative min-w-[220px] flex-1">
+        <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-cv-text-3" />
+        <UiInput
           v-model="keyword"
-          type="text"
-          placeholder="搜索文件名、关键词（支持中文单字、双字、拼音/英文）..."
-          class="w-full bg-slate-900 border border-slate-800 rounded-lg pl-9 pr-4 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+          class="pl-9"
+          placeholder="搜索文件名、关键词…"
           @input="onSearchInput"
         />
         <button
           v-if="keyword"
-          class="absolute right-3 top-2.5 text-xs text-slate-400 hover:text-slate-200"
+          class="absolute right-2.5 top-1/2 -translate-y-1/2 text-cv-text-3 hover:text-cv-text"
+          aria-label="清除"
           @click="clearKeyword"
         >
-          ✕
+          <X class="h-3.5 w-3.5" />
         </button>
       </div>
-
-      <!-- 来源账号筛选 -->
-      <div class="flex items-center space-x-2">
-        <select
-          v-model="selectedAccount"
-          class="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
-          @change="fetchRecords()"
-        >
-          <option value="">全部微信账号与来源</option>
-          <option v-for="acc in accountList" :key="`${acc.sourceType}:${acc.sourceAccountId}`" :value="`${acc.sourceType}\t${acc.sourceAccountId}`">
-            {{ acc.effectiveName }}（{{ acc.sourceType }}）
+      <div class="w-48 shrink-0">
+        <UiSelect v-model="selectedAccount" @change="fetchRecords()">
+          <option value="">全部来源</option>
+          <option
+            v-for="acc in accountList"
+            :key="acc.sourceType + ':' + acc.sourceAccountId"
+            :value="acc.sourceType + '\t' + acc.sourceAccountId"
+          >
+            {{ acc.effectiveName }}
           </option>
-        </select>
-
-        <button
-          class="flex items-center space-x-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium transition-colors"
-          title="刷新列表"
-          @click="fetchRecords()"
-        >
-          <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': loading }" />
-          <span>刷新</span>
-        </button>
+        </UiSelect>
       </div>
+      <UiButton variant="secondary" size="md" :loading="loading" @click="fetchRecords()">
+        <template #icon><RefreshCw class="h-4 w-4" /></template>
+        刷新
+      </UiButton>
     </div>
 
-    <!-- 分类快捷标签 -->
-    <div class="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
+    <div class="flex flex-wrap items-center gap-1.5">
       <button
         v-for="cat in categories"
         :key="cat.id"
-        class="px-3 py-1.5 rounded-md font-medium transition-all flex items-center space-x-1"
+        class="rounded-cv px-2.5 py-1 text-cv-caption transition-colors"
         :class="
           currentCategory === cat.id
-            ? 'bg-emerald-600 text-white shadow-sm'
-            : 'bg-slate-900 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+            ? 'bg-cv-accent-soft font-medium text-cv-accent'
+            : 'text-cv-text-2 hover:bg-cv-surface-2 hover:text-cv-text'
         "
         @click="selectCategory(cat.id)"
       >
-        <span>{{ cat.icon }}</span>
-        <span>{{ cat.label }}</span>
+        {{ cat.label }}
       </button>
-      <div class="ml-auto text-xs text-slate-400">
-        本页 <span class="font-semibold text-emerald-400">{{ records.length }}</span> 条附件记录
-      </div>
+      <span class="ml-auto text-cv-caption text-cv-text-3">
+        第 {{ page + 1 }} 页 · 本页 {{ records.length }} 条
+      </span>
     </div>
 
-    <!-- 数据列表区域 -->
-    <div class="flex-1 bg-slate-900/60 border border-slate-800/80 rounded-xl overflow-hidden flex flex-col">
-      <div class="overflow-x-auto flex-1">
-        <table class="w-full text-left text-xs text-slate-300">
-          <thead class="bg-slate-900 text-slate-400 uppercase tracking-wider border-b border-slate-800 font-semibold sticky top-0 z-10">
+    <div class="min-h-0 flex-1 overflow-hidden rounded-cv-lg border border-cv-border bg-cv-surface">
+      <div class="h-full overflow-auto">
+        <table class="w-full text-left text-cv-body">
+          <thead class="sticky top-0 z-10 border-b border-cv-border bg-cv-surface-2 text-cv-caption text-cv-text-2">
             <tr>
-              <th scope="col" class="py-3 px-4">文件名</th>
-              <th scope="col" class="py-3 px-3 w-36">来源账号</th>
-              <th scope="col" class="py-3 px-3 w-28">月份 / 时间</th>
-              <th scope="col" class="py-3 px-3 w-24">文件大小</th>
-              <th scope="col" class="py-3 px-3 w-28">BLAKE3 哈希</th>
-              <th scope="col" class="py-3 px-4 w-28 text-right">操作</th>
+              <th class="px-4 py-2.5 font-medium">文件名</th>
+              <th class="w-36 px-3 py-2.5 font-medium">来源</th>
+              <th class="w-32 px-3 py-2.5 font-medium">时间</th>
+              <th class="w-24 px-3 py-2.5 font-medium">大小</th>
+              <th class="w-28 px-3 py-2.5 font-medium">哈希</th>
+              <th class="w-24 px-4 py-2.5 text-right font-medium">操作</th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-slate-800/60">
+          <tbody>
             <tr
               v-for="item in records"
               :key="item.recordId"
-              class="hover:bg-slate-800/40 transition-colors group"
+              class="border-b border-cv-border/60 transition-colors last:border-0 hover:bg-cv-surface-2"
             >
-              <!-- 文件名与类型图标 -->
-              <td class="py-3 px-4 font-medium text-slate-100 flex items-center space-x-2">
-                <span class="text-base select-none">{{ getCategoryEmoji(item.category) }}</span>
-                <span class="truncate max-w-xs md:max-w-md" :title="item.originalName">{{ item.originalName }}</span>
+              <td class="max-w-[280px] px-4 py-2.5">
+                <div class="flex items-center gap-2">
+                  <component :is="categoryIcon(item.category)" class="h-4 w-4 shrink-0 text-cv-text-3" />
+                  <span class="truncate font-medium text-cv-text" :title="item.originalName">
+                    {{ item.originalName }}
+                  </span>
+                </div>
               </td>
-
-              <!-- 账号徽标 -->
-              <td class="py-3 px-3">
+              <td class="px-3 py-2.5">
                 <span
                   v-if="item.sourceAccountId"
-                  class="inline-block px-2 py-0.5 rounded text-[11px] bg-emerald-950/60 text-emerald-400 border border-emerald-800/60 font-mono truncate max-w-[130px]"
-                  :title="`${item.sourceAccountName || item.sourceAccountId}（${item.sourceType}）\n${item.sourceAccountId}`"
+                  class="inline-block max-w-[130px] truncate rounded-cv bg-cv-surface-2 px-1.5 py-0.5 text-cv-caption text-cv-text-2"
+                  :title="`${item.sourceAccountName || item.sourceAccountId}${item.sourceConversationName ? ' · ' + item.sourceConversationName : ''}`"
                 >
                   {{ item.sourceAccountName || item.sourceAccountId }}
-                  <span v-if="item.sourceConversationName" class="text-sky-400"> · {{ item.sourceConversationName }}</span>
+                  <span v-if="item.sourceConversationName" class="text-cv-accent"> · {{ item.sourceConversationName }}</span>
                 </span>
-                <span v-else class="text-slate-500">通用文件</span>
+                <span v-else class="text-cv-text-3">通用文件</span>
               </td>
-
-              <!-- 时间 / 月份 -->
-              <td class="py-3 px-3 text-slate-400 font-mono">
+              <td class="px-3 py-2.5 font-mono text-cv-caption text-cv-text-2">
                 {{ item.fileTime || "未知" }}
               </td>
-
-              <!-- 大小 -->
-              <td class="py-3 px-3 text-slate-400 font-mono">
-                {{ item.formattedSize }}
-              </td>
-
-              <!-- 哈希 -->
-              <td class="py-3 px-3 font-mono text-slate-400">
+              <td class="px-3 py-2.5 font-mono text-cv-caption text-cv-text-2">{{ item.formattedSize }}</td>
+              <td class="px-3 py-2.5 font-mono text-cv-caption">
                 <button
-                  class="hover:text-emerald-400 transition-colors"
-                  :title="'完整哈希: ' + item.hash + ' (点击复制)'"
+                  class="text-cv-text-2 hover:text-cv-accent"
+                  :title="item.hash"
                   @click="copyText(item.hash)"
                 >
-                  {{ item.hash.substring(0, 8) }}...
+                  {{ item.hash.substring(0, 8) }}…
                 </button>
               </td>
-
-              <!-- 操作 -->
-              <td class="py-3 px-4 text-right">
-                <button
-                  class="px-2.5 py-1 rounded bg-slate-800 hover:bg-emerald-600 hover:text-white text-slate-300 font-medium transition-colors text-[11px] inline-flex items-center space-x-1"
-                  title="在 Windows 文件资源管理器中高亮选中"
-                  @click="revealFile(item.originalPath)"
-                >
-                  <FolderOpen class="w-3.5 h-3.5" />
-                  <span>定位</span>
-                </button>
+              <td class="px-4 py-2.5 text-right">
+                <UiButton size="sm" variant="ghost" @click="revealFile(item.originalPath)">
+                  <template #icon><FolderOpen class="h-3.5 w-3.5" /></template>
+                  定位
+                </UiButton>
               </td>
             </tr>
-
-            <!-- 空状态提示 -->
             <tr v-if="!loading && records.length === 0">
-              <td colspan="6" class="py-16 text-center text-slate-500">
-                <FileQuestion class="w-10 h-10 mx-auto mb-2 text-slate-600" />
-                <p class="text-sm font-medium">未找到符合条件的文件记录</p>
-                <p class="text-xs text-slate-600 mt-1">可在左侧“微信数据源与扫描”中进行微信 4.x 附件入库</p>
+              <td colspan="6" class="py-16 text-center">
+                <FileQuestion class="mx-auto mb-2 h-10 w-10 text-cv-text-3" />
+                <p class="text-cv-body font-medium text-cv-text">未找到符合条件的文件</p>
+                <p class="mt-1 text-cv-caption text-cv-text-2">可先到「采集」扫描微信附件入库</p>
+                <UiButton class="mt-3" variant="primary" size="sm" @click="navigateTo('collect')">
+                  去采集
+                </UiButton>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
-    <div class="flex items-center justify-end gap-3 text-xs text-slate-300">
-      <span v-if="error" class="text-red-400 mr-auto">{{ error }}</span>
-      <button :disabled="loading || page === 0" class="disabled:opacity-30" @click="changePage(-1)">上一页</button>
-      <span>第 {{ page + 1 }} 页</span>
-      <button :disabled="loading || !hasNext" class="disabled:opacity-30" @click="changePage(1)">下一页</button>
+
+    <div class="flex items-center justify-between gap-3">
+      <span v-if="error" class="text-cv-caption text-cv-danger">{{ error }}</span>
+      <div v-else />
+      <div class="flex items-center gap-2">
+        <UiButton size="sm" variant="secondary" :disabled="loading || page === 0" @click="changePage(-1)">
+          上一页
+        </UiButton>
+        <span class="text-cv-caption text-cv-text-2">第 {{ page + 1 }} 页</span>
+        <UiButton size="sm" variant="secondary" :disabled="loading || !hasNext" @click="changePage(1)">
+          下一页
+        </UiButton>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
-import { Search, RefreshCw, FolderOpen, FileQuestion } from "lucide-vue-next";
-import { searchRecords, revealFileInExplorer, listSourceAccounts } from "../api/tauri";
-import type { FileRecordViewDto, SourceAccountDto } from "../types";
+import { ref, onMounted, onBeforeUnmount, type Component } from "vue";
+import {
+  Search,
+  RefreshCw,
+  FolderOpen,
+  FileQuestion,
+  X,
+  FileText,
+  Image,
+  Film,
+  Music,
+  Archive,
+  Paperclip,
+  Folder,
+} from "lucide-vue-next";
+import UiInput from "../components/ui/UiInput.vue";
+import UiSelect from "../components/ui/UiSelect.vue";
+import UiButton from "../components/ui/UiButton.vue";
+import { searchRecords, revealFileInExplorer, listSourceAccounts, getVaultStats } from "../api/tauri";
+import { pushToast } from "../composables/useToast";
+import { navigateTo } from "../composables/useNav";
+import type { FileRecordViewDto, SourceAccountDto, VaultStatsDto } from "../types";
 
-// 搜索输入与过滤状态
 const keyword = ref("");
 const selectedAccount = ref("");
 const currentCategory = ref("all");
 const loading = ref(false);
 const records = ref<FileRecordViewDto[]>([]);
 const accountList = ref<SourceAccountDto[]>([]);
+const stats = ref<VaultStatsDto | null>(null);
 const page = ref(0);
 const pageSize = 100;
 const hasNext = ref(false);
 const error = ref("");
 let requestId = 0;
+let debounceTimer: number | undefined;
 
-let debounceTimer: any = null;
-
-// 分类快捷标签定义
 const categories = [
-  { id: "all", label: "全部格式", icon: "📁" },
-  { id: "doc", label: "文档", icon: "📄" },
-  { id: "image", label: "图片", icon: "🖼️" },
-  { id: "video", label: "视频", icon: "🎬" },
-  { id: "audio", label: "音频", icon: "🎵" },
-  { id: "archive", label: "压缩包", icon: "📦" },
-  { id: "other", label: "其他", icon: "📎" },
+  { id: "all", label: "全部" },
+  { id: "doc", label: "文档" },
+  { id: "image", label: "图片" },
+  { id: "video", label: "视频" },
+  { id: "audio", label: "音频" },
+  { id: "archive", label: "压缩包" },
+  { id: "other", label: "其他" },
 ];
 
-/**
- * 根据类别获取对应的展示 Emoji
- */
-function getCategoryEmoji(category: string): string {
+/** 按类别返回 lucide 图标组件。 */
+function categoryIcon(category: string): Component {
   switch (category) {
     case "doc":
-      return "📄";
+      return FileText;
     case "image":
-      return "🖼️";
+      return Image;
     case "video":
-      return "🎬";
+      return Film;
     case "audio":
-      return "🎵";
+      return Music;
     case "archive":
-      return "📦";
+      return Archive;
+    case "other":
+      return Paperclip;
     default:
-      return "📎";
+      return Folder;
   }
 }
 
-/**
- * 获取文件列表
- */
+/** 查询文件列表；reset 为 true 时回到第一页。 */
 async function fetchRecords(reset = true) {
   if (reset) page.value = 0;
   const currentRequest = ++requestId;
@@ -241,68 +255,81 @@ async function fetchRecords(reset = true) {
     hasNext.value = list.length > pageSize;
     records.value = list.slice(0, pageSize);
   } catch (err) {
-    if (currentRequest === requestId) { error.value = "查询失败：" + err; records.value = []; hasNext.value = false; }
+    if (currentRequest === requestId) {
+      pushToast({ tone: "danger", title: "查询失败", description: String(err) });
+      records.value = [];
+      hasNext.value = false;
+    }
   } finally {
     if (currentRequest === requestId) loading.value = false;
   }
 }
 
-/**
- * 搜索框防抖处理
- */
+/** 搜索防抖。 */
 function onSearchInput() {
-  if (debounceTimer) {
-    clearTimeout(debounceTimer);
-  }
-  debounceTimer = setTimeout(() => {
-    fetchRecords();
-  }, 150);
+  if (debounceTimer) window.clearTimeout(debounceTimer);
+  debounceTimer = window.setTimeout(() => fetchRecords(), 150);
 }
 
-/**
- * 清除搜索关键词
- */
+/** 清空关键词并重新查询。 */
 function clearKeyword() {
   keyword.value = "";
   fetchRecords();
 }
 
-/**
- * 切换分类
- */
+/** 切换分类筛选。 */
 function selectCategory(catId: string) {
   currentCategory.value = catId;
   fetchRecords();
 }
 
-/**
- * 在 Windows 资源管理器中定位文件
- */
+/** 在资源管理器中定位文件。 */
 async function revealFile(path: string) {
   try {
     await revealFileInExplorer(path);
   } catch (err) {
-    alert("无法定位文件：" + err);
+    pushToast({ tone: "danger", title: "无法定位文件", description: String(err) });
   }
 }
 
-/**
- * 复制哈希至剪贴板
- */
-function copyText(text: string) {
-  navigator.clipboard.writeText(text);
-  alert("已复制 BLAKE3 哈希:\n" + text);
+/** 复制哈希到剪贴板。 */
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    pushToast({ tone: "success", title: "已复制哈希", description: text.substring(0, 16) + "…" });
+  } catch (err) {
+    pushToast({ tone: "danger", title: "复制失败", description: String(err) });
+  }
 }
 
-/** 切换页码并保持当前过滤条件。 */
+/** 翻页。 */
 function changePage(delta: number) {
   page.value += delta;
   fetchRecords(false);
 }
 
-onMounted(async () => {
+/** 刷新账号下拉与库摘要。 */
+async function loadMeta() {
+  try {
+    accountList.value = await listSourceAccounts();
+  } catch (err) {
+    pushToast({ tone: "danger", title: "读取来源账号失败", description: String(err) });
+  }
+  try {
+    stats.value = await getVaultStats();
+  } catch {
+    stats.value = null;
+  }
+}
+
+onMounted(() => {
   fetchRecords();
-  try { accountList.value = await listSourceAccounts(); }
-  catch (err) { error.value = "读取账号失败：" + err; }
+  loadMeta();
 });
+
+onBeforeUnmount(() => {
+  if (debounceTimer) window.clearTimeout(debounceTimer);
+});
+
 </script>
+

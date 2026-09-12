@@ -1,13 +1,29 @@
-<!-- 拾文桌面应用 HTML 入口与品牌元信息。 -->
+<!-- 拾文桌面应用 HTML 入口：主题 class 由 useTheme 在启动时写入。 -->
 <!doctype html>
-<html lang="zh-CN" class="dark">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>拾文 ChatVault</title>
     <link rel="icon" type="image/png" href="/src/assets/app-icon.png" />
+    <script>
+      // 首帧前应用主题，避免闪烁；默认浅色
+      (function () {
+        try {
+          var pref = localStorage.getItem("chatvault.theme") || "light";
+          var dark =
+            pref === "dark" ||
+            (pref === "system" &&
+              window.matchMedia &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.add(dark ? "dark" : "light");
+        } catch (e) {
+          document.documentElement.classList.add("light");
+        }
+      })();
+    </script>
   </head>
-  <body class="bg-slate-950 text-slate-100 antialiased selection:bg-emerald-500 selection:text-white select-none overflow-hidden">
+  <body class="bg-cv-bg text-cv-text antialiased select-none overflow-hidden">
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

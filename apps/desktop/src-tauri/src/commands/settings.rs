@@ -137,3 +137,13 @@ pub async fn set_app_settings(
 pub async fn get_schedule_status() -> bool {
     crate::schedule::scheduled_task_exists()
 }
+
+/// 打开系统目录选择对话框；用户取消时返回 None
+#[tauri::command]
+pub async fn pick_directory() -> std::result::Result<Option<String>, String> {
+    let folder = rfd::AsyncFileDialog::new()
+        .set_title("选择采集目录")
+        .pick_folder()
+        .await;
+    Ok(folder.map(|handle| handle.path().to_string_lossy().into_owned()))
+}

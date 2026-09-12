@@ -116,6 +116,11 @@ export async function getScheduleStatus(): Promise<boolean> {
   return await invoke<boolean>("get_schedule_status");
 }
 
+/** 打开系统目录选择对话框；用户取消时返回 null。 */
+export async function pickDirectory(): Promise<string | null> {
+  return await invoke<string | null>("pick_directory");
+}
+
 /**
  * 列出上传归档任务
  */
