@@ -1,0 +1,3 @@
+# WXGF 诊断额外依赖；普通 JPEG/PNG 抽样不需要该库。
+-r requirements.txt
+av==18.1.0
