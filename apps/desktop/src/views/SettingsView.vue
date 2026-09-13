@@ -8,20 +8,122 @@
       <div>
         <h2 class="text-cv-page text-cv-text">设置</h2>
       </div>
-      <UiButton variant="primary" :loading="saving" @click="save">保存设置</UiButton>
+      <UiButton variant="primary" :loading="saving" :disabled="identityConflict" @click="save">
+        {{ anyDirty ? "保存更改" : "保存设置" }}
+      </UiButton>
     </div>
 
     <div class="min-h-0 flex-1 space-y-4 overflow-y-auto pb-4">
-      <UiCard title="身份与资料库" info="Vault ID 标识资料库；设备 ID 由系统生成，不可修改。">
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <label class="block">
-            <span class="text-cv-caption text-cv-text-2">Vault ID</span>
-            <UiInput v-model="form.vaultId" class="mt-1 font-mono" />
-          </label>
-          <label class="block">
-            <span class="text-cv-caption text-cv-text-2">设备 ID</span>
-            <UiInput v-model="form.deviceId" class="mt-1 font-mono" disabled />
-          </label>
+      <UiCard
+        title="身份与资料库"
+        info="已关联区显示当前网盘绑定；下方可改设备名称和 Vault 后缀。换 Vault 需先清空关联。"
+      >
+        <template #headerExtra>
+          <div class="flex shrink-0 items-center gap-2">
+            <span
+              class="inline-flex items-center rounded-cv px-2 py-0.5 text-cv-caption font-medium"
+              :class="
+                isBound
+                  ? 'bg-cv-accent-soft text-cv-accent'
+                  : 'bg-cv-surface-2 text-cv-text-2'
+              "
+            >
+              {{ isBound ? "已关联" : "未关联" }}
+            </span>
+            <UiButton
+              variant="danger"
+              size="sm"
+              :disabled="!isBound"
+              :loading="resettingVault"
+              @click="onResetVaultBinding"
+            >
+              清空关联
+            </UiButton>
+          </div>
+        </template>
+
+        <div
+          class="rounded-cv border px-3 py-2.5"
+          :class="isBound ? 'border-cv-border bg-cv-surface-2' : 'border-dashed border-cv-border bg-cv-surface'"
+        >
+          <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <p class="text-cv-caption font-medium text-cv-text-2">
+              {{ isBound ? "当前关联的网盘资料库" : "尚未关联网盘" }}
+            </p>
+            <p v-if="isBound" class="font-mono text-cv-caption text-cv-text-3">
+              {{ form.boundWebdavUrl }}
+            </p>
+          </div>
+          <p v-if="isBound" class="mt-1 font-mono text-cv-body text-cv-text" :title="form.boundVaultId || undefined">
+            {{ form.boundVaultId }}
+          </p>
+          <p v-else class="mt-1 text-cv-caption text-cv-text-3">
+            填好 Vault ID 与 WebDAV 并保存后，首次归档会自动建立关联。
+          </p>
+        </div>
+
+        <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4">
+          <div class="min-w-0">
+            <div class="flex items-baseline justify-between gap-2">
+              <label class="text-cv-caption text-cv-text-2" for="vault-suffix">Vault ID</label>
+              <span v-if="identityDirty" class="text-cv-caption text-cv-warning">未保存</span>
+            </div>
+            <div class="mt-1 flex items-stretch">
+              <span
+                class="inline-flex shrink-0 items-center rounded-l-cv border border-r-0 border-cv-border bg-cv-surface-2 px-2.5 font-mono text-cv-caption text-cv-text-2"
+              >
+                chatvault-
+              </span>
+              <input
+                id="vault-suffix"
+                v-model="vaultSuffix"
+                type="text"
+                maxlength="64"
+                placeholder="home"
+                class="w-full min-w-0 rounded-r-cv border bg-cv-surface px-3 py-2 font-mono text-cv-body text-cv-text placeholder:text-cv-text-3 focus:outline-none focus:ring-2 focus:ring-cv-accent/30"
+                :class="
+                  identityConflict
+                    ? 'border-cv-danger focus:border-cv-danger'
+                    : 'border-cv-border focus:border-cv-accent'
+                "
+              />
+            </div>
+            <p
+              class="mt-1 truncate font-mono text-cv-caption"
+              :class="identityConflict ? 'text-cv-danger' : 'text-cv-text-3'"
+              :title="fullVaultId"
+            >
+              {{ identityConflict ? "与已关联 Vault 不一致，请先清空关联" : fullVaultId }}
+            </p>
+          </div>
+          <div class="min-w-0">
+            <div class="flex items-baseline justify-between gap-2">
+              <label class="text-cv-caption text-cv-text-2" for="device-name">设备名称</label>
+              <span v-if="deviceNameDirty" class="text-cv-caption text-cv-warning">未保存</span>
+            </div>
+            <UiInput
+              id="device-name"
+              v-model="form.deviceName"
+              class="mt-1"
+              placeholder="例如 台式机"
+              maxlength="64"
+            />
+            <p class="mt-1 truncate text-cv-caption text-cv-text-3" :title="form.deviceName">
+              {{ form.deviceName || "将写入设备注册供其他设备显示" }}
+            </p>
+          </div>
+          <div class="min-w-0 sm:col-span-2">
+            <div class="flex items-baseline justify-between gap-2">
+              <span class="text-cv-caption text-cv-text-2">设备 ID</span>
+              <span class="text-cv-caption text-cv-text-3">系统生成，不可修改</span>
+            </div>
+            <p
+              class="mt-1 break-all rounded-cv border border-cv-border bg-cv-surface-2 px-3 py-1.5 font-mono text-cv-caption text-cv-text-2"
+              :title="form.deviceId"
+            >
+              {{ form.deviceId || "—" }}
+            </p>
+          </div>
         </div>
       </UiCard>
 
@@ -29,6 +131,9 @@
         title="WebDAV 连接"
         info="任务流水线与换机恢复共用。密码保存在 Windows 凭据管理器；测试用当前表单与已存凭据。"
       >
+        <template #headerExtra>
+          <span v-if="webdavDirty" class="shrink-0 text-cv-caption text-cv-warning">未保存</span>
+        </template>
         <div class="space-y-3">
           <label class="block">
             <span class="text-cv-caption text-cv-text-2">服务器地址</span>
@@ -62,12 +167,15 @@
         </div>
       </UiCard>
 
-      <CacheSettings v-model="form" />
+      <CacheSettings v-model="form" :dirty="cacheDirty" />
 
       <UiCard
         title="下载目录"
         info="仅远程文件「下载」的落点。留空则使用系统「下载\\ChatVault」。"
       >
+        <template #headerExtra>
+          <span v-if="downloadDirDirty" class="shrink-0 text-cv-caption text-cv-warning">未保存</span>
+        </template>
         <div class="flex flex-wrap items-end gap-2">
           <label class="min-w-[220px] flex-1">
             <span class="text-cv-caption text-cv-text-2">目录路径</span>
@@ -128,7 +236,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import UiButton from "../components/ui/UiButton.vue";
 import UiCard from "../components/ui/UiCard.vue";
 import UiInput from "../components/ui/UiInput.vue";
@@ -143,11 +251,14 @@ import {
   getVaultStats,
   testWebdav,
   pickDirectory,
+  resetVaultBinding,
 } from "../api/tauri";
 import { pushToast } from "../composables/useToast";
 import { confirmAction } from "../composables/useConfirm";
 import { useTheme, type ThemePreference } from "../composables/useTheme";
 import type { AppSettingsDto, VaultStatsDto, WebdavCapabilityDto, WebdavConfigDto } from "../types";
+
+const VAULT_ID_PREFIX = "chatvault-";
 
 const { preference, setThemePreference } = useTheme();
 
@@ -158,10 +269,13 @@ const themeOptions: { value: ThemePreference; label: string }[] = [
 ];
 
 const form = ref<AppSettingsDto>({
-  vaultId: "default-vault",
+  vaultId: `${VAULT_ID_PREFIX}default`,
   deviceId: "",
+  deviceName: "",
   webdavUrl: "",
   webdavUsername: "",
+  boundVaultId: null,
+  boundWebdavUrl: null,
   copyThresholdMib: 100,
   cacheRetentionDays: 7,
   cacheMaxMib: 1024,
@@ -171,12 +285,116 @@ const form = ref<AppSettingsDto>({
   collectSources: [],
 });
 
+/** 用户可配置的 Vault ID 后缀 */
+const vaultSuffix = ref("default");
+const fullVaultId = computed(() => `${VAULT_ID_PREFIX}${vaultSuffix.value.trim()}`);
+
+/** 从完整 Vault ID 提取可编辑后缀 */
+function extractVaultSuffix(vaultId: string): string {
+  return vaultId.startsWith(VAULT_ID_PREFIX) ? vaultId.slice(VAULT_ID_PREFIX.length) : vaultId;
+}
+
+/** 已保存快照，用于判断编辑态 */
+const savedSnapshot = ref({
+  vaultId: "",
+  deviceName: "",
+  webdavUrl: "",
+  webdavUsername: "",
+  copyThresholdMib: 0,
+  cacheRetentionDays: 0,
+  cacheMaxMib: 0,
+  downloadDir: "",
+});
+
+const isBound = computed(() => Boolean(form.value.boundVaultId));
+const identityDirty = computed(() => fullVaultId.value !== savedSnapshot.value.vaultId);
+const deviceNameDirty = computed(
+  () => form.value.deviceName.trim() !== savedSnapshot.value.deviceName,
+);
+const webdavDirty = computed(
+  () =>
+    form.value.webdavUrl !== savedSnapshot.value.webdavUrl ||
+    form.value.webdavUsername !== savedSnapshot.value.webdavUsername ||
+    webdavPassword.value.length > 0,
+);
+const cacheDirty = computed(
+  () =>
+    form.value.copyThresholdMib !== savedSnapshot.value.copyThresholdMib ||
+    form.value.cacheRetentionDays !== savedSnapshot.value.cacheRetentionDays ||
+    form.value.cacheMaxMib !== savedSnapshot.value.cacheMaxMib,
+);
+const downloadDirDirty = computed(
+  () => form.value.downloadDir !== savedSnapshot.value.downloadDir,
+);
+const anyDirty = computed(
+  () =>
+    identityDirty.value ||
+    deviceNameDirty.value ||
+    webdavDirty.value ||
+    cacheDirty.value ||
+    downloadDirDirty.value,
+);
+/** 已关联但改成了别的 Vault：必须先清空 */
+const identityConflict = computed(
+  () => isBound.value && form.value.boundVaultId !== fullVaultId.value,
+);
+
 const webdavPassword = ref("");
 const saving = ref(false);
+const resettingVault = ref(false);
 const testingWebdav = ref(false);
 const clearingCredential = ref(false);
 const webdavTestResult = ref<WebdavCapabilityDto | null>(null);
 const stats = ref<VaultStatsDto | null>(null);
+
+/** 用后端设置刷新表单与关联回显。 */
+async function reloadSettings() {
+  const s = await getAppSettings();
+  form.value = s;
+  vaultSuffix.value = extractVaultSuffix(s.vaultId) || "default";
+  savedSnapshot.value = {
+    vaultId: s.vaultId,
+    deviceName: s.deviceName.trim(),
+    webdavUrl: s.webdavUrl,
+    webdavUsername: s.webdavUsername,
+    copyThresholdMib: s.copyThresholdMib,
+    cacheRetentionDays: s.cacheRetentionDays,
+    cacheMaxMib: s.cacheMaxMib,
+    downloadDir: s.downloadDir,
+  };
+  webdavPassword.value = "";
+}
+
+/** 强制确认后清空旧 Vault 绑定与同步状态。 */
+async function onResetVaultBinding() {
+  const boundVault = form.value.boundVaultId || fullVaultId.value;
+  const ok = await confirmAction({
+    title: "确定清空当前关联吗？",
+    description:
+      `将断开与「${boundVault}」的关联，之后可以换用新的 Vault ID。\n\n会丢掉：\n· 和网盘的连接记录\n· 备份进度（文件会重新备份）\n· 其他设备的同步信息\n\n会保留：\n· 本机已扫描的文件列表\n· 来源名称和备注\n· 采集目录、定时任务等设置\n\n网盘上已备份的文件不会被删除，只是这台电脑不再认它。`,
+    confirmLabel: "我已了解，继续清空",
+    danger: true,
+    requirePhrase: boundVault,
+    requirePhraseLabel: "请输入当前 Vault ID 确认",
+  });
+  if (!ok) return;
+  resettingVault.value = true;
+  try {
+    const report = await resetVaultBinding();
+    await reloadSettings();
+    pushToast({
+      tone: "success",
+      title: "已清空关联",
+      description: report.requeuedUploads
+        ? `有 ${report.requeuedUploads} 个文件会重新备份到新 Vault`
+        : "现在可以改用新的 Vault ID 了",
+    });
+  } catch (err) {
+    pushToast({ tone: "danger", title: "清空失败", description: String(err) });
+  } finally {
+    resettingVault.value = false;
+  }
+}
 
 /** 选择下载目录。 */
 async function pickDownloadDir() {
@@ -223,7 +441,7 @@ async function testWebdavConnection() {
       url: form.value.webdavUrl,
       username: form.value.webdavUsername,
       password: webdavPassword.value || undefined,
-      vaultId: form.value.vaultId,
+      vaultId: fullVaultId.value,
     };
     webdavTestResult.value = await testWebdav(config);
   } catch (err) {
@@ -244,6 +462,19 @@ async function testWebdavConnection() {
 async function save() {
   saving.value = true;
   try {
+    const suffix = vaultSuffix.value.trim();
+    if (!suffix) {
+      throw new Error("Vault ID 后缀不能为空");
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(suffix) || suffix.length > 64) {
+      throw new Error("Vault ID 后缀只能包含字母、数字、下划线和连字符，最长 64 个字符");
+    }
+    if (!form.value.deviceName.trim()) {
+      throw new Error("设备名称不能为空");
+    }
+    if (identityConflict.value) {
+      throw new Error("当前已关联网盘，改 Vault ID 前请先点「清空关联」");
+    }
     for (const value of [
       form.value.copyThresholdMib,
       form.value.cacheRetentionDays,
@@ -253,11 +484,14 @@ async function save() {
         throw new Error("缓存设置必须是 0 到 4294967295 之间的整数");
       }
     }
+    form.value.vaultId = fullVaultId.value;
+    form.value.deviceName = form.value.deviceName.trim();
     await setAppSettings(form.value);
     if (webdavPassword.value && form.value.webdavUrl && form.value.webdavUsername) {
       await saveWebdavCredential(form.value.webdavUrl, form.value.webdavUsername, webdavPassword.value);
       webdavPassword.value = "";
     }
+    await reloadSettings();
     pushToast({ tone: "success", title: "设置已保存" });
   } catch (err) {
     pushToast({ tone: "danger", title: "保存失败", description: String(err) });
@@ -268,7 +502,7 @@ async function save() {
 
 onMounted(async () => {
   try {
-    form.value = await getAppSettings();
+    await reloadSettings();
   } catch (err) {
     pushToast({ tone: "danger", title: "读取设置失败", description: String(err) });
   }

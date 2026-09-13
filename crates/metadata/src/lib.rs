@@ -6,7 +6,10 @@ pub mod format;
 pub mod hasher;
 pub mod staging;
 pub mod validation;
-pub use validation::{validate_hash, validate_id};
+pub use validation::{
+    format_vault_id, validate_hash, validate_id, validate_vault_id, vault_id_suffix,
+    VAULT_ID_PREFIX,
+};
 
 pub use format::*;
 pub use hasher::*;

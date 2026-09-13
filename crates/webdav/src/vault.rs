@@ -45,7 +45,7 @@ pub async fn ensure_vault_config(client: &WebDavClient, config: &VaultConfig) ->
 ///   - `vault_id`: 资料库标识
 /// 输出: `Result<VaultConfig>`
 pub async fn load_vault_config(client: &WebDavClient, vault_id: &str) -> Result<VaultConfig> {
-    chatvault_metadata::validate_id(vault_id)?;
+    chatvault_metadata::validate_vault_id(vault_id)?;
     let path = get_config_path(vault_id);
     let resp = client.get_stream(&path).await?;
     let bytes = resp
@@ -59,7 +59,7 @@ pub async fn load_vault_config(client: &WebDavClient, vault_id: &str) -> Result<
 
 /// 已有 Vault 只有身份、格式版本和算法都一致时才允许读写。
 fn validate_config(config: &VaultConfig, vault_id: &str) -> Result<()> {
-    chatvault_metadata::validate_id(vault_id)?;
+    chatvault_metadata::validate_vault_id(vault_id)?;
     if config.vault_id != vault_id
         || config.format_version != 1
         || config.hash_algorithm != "blake3"

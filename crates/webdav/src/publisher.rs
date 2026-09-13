@@ -69,7 +69,7 @@ impl<'a> ObjectPublisher<'a> {
         }
 
         let clean_hash = expected_hash.trim_start_matches("blake3:");
-        chatvault_metadata::validate_id(vault_id)?;
+        chatvault_metadata::validate_vault_id(vault_id)?;
         chatvault_metadata::validate_id(device_id)?;
         chatvault_metadata::validate_hash(clean_hash)?;
         let final_path = get_object_path(vault_id, clean_hash);

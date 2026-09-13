@@ -13,14 +13,16 @@ async fn failed_segment_rolls_back_and_retries() {
     for seq in 1..=3 {
         add_source(&mut source, &event(seq), true);
     }
-    publish_pending_events(&server.client, &mut source, "v", "a")
+    publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
         .await
         .unwrap();
     let mut target = Database::open_in_memory().unwrap();
     target.connection().execute_batch("CREATE TRIGGER reject_record BEFORE INSERT ON file_records WHEN NEW.record_id='r2' BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
-    assert!(pull_and_apply(&server.client, &mut target, "v", "b")
-        .await
-        .is_err());
+    assert!(
+        pull_and_apply(&server.client, &mut target, "chatvault-v", "b")
+            .await
+            .is_err()
+    );
     assert_eq!(target.get_stats().unwrap().total_records, 0);
     assert_eq!(target.cursor_seq("a", 1).unwrap(), 0);
     assert!(!target.event_already_applied("e1").unwrap());
@@ -29,13 +31,13 @@ async fn failed_segment_rolls_back_and_retries() {
         .execute_batch("DROP TRIGGER reject_record")
         .unwrap();
     assert_eq!(
-        pull_and_apply(&server.client, &mut target, "v", "b")
+        pull_and_apply(&server.client, &mut target, "chatvault-v", "b")
             .await
             .unwrap(),
         3
     );
     assert_eq!(
-        pull_and_apply(&server.client, &mut target, "v", "b")
+        pull_and_apply(&server.client, &mut target, "chatvault-v", "b")
             .await
             .unwrap(),
         0
@@ -50,7 +52,7 @@ async fn unready_or_missing_objects_cannot_publish() {
     let mut source = Database::open_in_memory().unwrap();
     add_source(&mut source, &event(1), false);
     assert_eq!(
-        publish_pending_events(&server.client, &mut source, "v", "a")
+        publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
             .await
             .unwrap(),
         0
@@ -64,7 +66,7 @@ async fn unready_or_missing_objects_cannot_publish() {
         .any(|p| p.contains("/commits/")));
     source.update_task_status("te1", "backed_up", None).unwrap();
     assert!(
-        publish_pending_events(&server.client, &mut source, "v", "a")
+        publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
             .await
             .is_err()
     );
@@ -78,10 +80,13 @@ async fn pull_requires_readable_objects() {
     server.seed_object();
     let mut source = Database::open_in_memory().unwrap();
     add_source(&mut source, &event(1), true);
-    publish_pending_events(&server.client, &mut source, "v", "a")
+    publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
         .await
         .unwrap();
-    let path = format!("/{}", chatvault_metadata::get_object_path("v", &hash()));
+    let path = format!(
+        "/{}",
+        chatvault_metadata::get_object_path("chatvault-v", &hash())
+    );
     server
         .state
         .lock()
@@ -89,13 +94,15 @@ async fn pull_requires_readable_objects() {
         .files
         .insert(path, b"wrong".to_vec());
     let mut target = Database::open_in_memory().unwrap();
-    assert!(pull_and_apply(&server.client, &mut target, "v", "b")
-        .await
-        .is_err());
+    assert!(
+        pull_and_apply(&server.client, &mut target, "chatvault-v", "b")
+            .await
+            .is_err()
+    );
     assert_eq!(target.cursor_seq("a", 1).unwrap(), 0);
     server.seed_object();
     assert_eq!(
-        pull_and_apply(&server.client, &mut target, "v", "b")
+        pull_and_apply(&server.client, &mut target, "chatvault-v", "b")
             .await
             .unwrap(),
         1
@@ -109,27 +116,27 @@ async fn uncertain_commit_is_retried_without_rewriting() {
     server.seed_object();
     let mut source = Database::open_in_memory().unwrap();
     add_source(&mut source, &event(1), true);
-    server.fail("PUT", "ChatVault/v/commits/a/1/1.json", 1, true);
+    server.fail("PUT", "chatvault-v/commits/a/1/1.json", 1, true);
     assert!(
-        publish_pending_events(&server.client, &mut source, "v", "a")
+        publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
             .await
             .is_err()
     );
-    let original = server.state.lock().unwrap().files["/ChatVault/v/commits/a/1/1.json"].clone();
+    let original = server.state.lock().unwrap().files["/chatvault-v/commits/a/1/1.json"].clone();
     add_source(&mut source, &event(2), true);
     assert_eq!(
-        publish_pending_events(&server.client, &mut source, "v", "a")
+        publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
             .await
             .unwrap(),
         2
     );
     assert_eq!(
-        server.state.lock().unwrap().files["/ChatVault/v/commits/a/1/1.json"],
+        server.state.lock().unwrap().files["/chatvault-v/commits/a/1/1.json"],
         original
     );
     let mut target = Database::open_in_memory().unwrap();
     assert_eq!(
-        pull_and_apply(&server.client, &mut target, "v", "b")
+        pull_and_apply(&server.client, &mut target, "chatvault-v", "b")
             .await
             .unwrap(),
         2
@@ -143,21 +150,21 @@ async fn registration_failure_is_repaired_without_new_events() {
     server.seed_object();
     let mut source = Database::open_in_memory().unwrap();
     add_source(&mut source, &event(1), true);
-    server.fail("PUT", "ChatVault/v/devices/a.json", 2, false);
+    server.fail("PUT", "chatvault-v/devices/a.json", 2, false);
     assert!(
-        publish_pending_events(&server.client, &mut source, "v", "a")
+        publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
             .await
             .is_err()
     );
     assert_eq!(source.cursor_seq("a", 1).unwrap(), 1);
     assert_eq!(
-        publish_pending_events(&server.client, &mut source, "v", "a")
+        publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
             .await
             .unwrap(),
         1
     );
     let value: serde_json::Value =
-        serde_json::from_slice(&server.state.lock().unwrap().files["/ChatVault/v/devices/a.json"])
+        serde_json::from_slice(&server.state.lock().unwrap().files["/chatvault-v/devices/a.json"])
             .unwrap();
     assert_eq!(value["last_seq"], 1);
 }
@@ -169,7 +176,7 @@ async fn restore_includes_all_epochs() {
     server.seed_object();
     let mut source = Database::open_in_memory().unwrap();
     add_source(&mut source, &event(1), true);
-    publish_pending_events(&server.client, &mut source, "v", "a")
+    publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
         .await
         .unwrap();
     let mut next = event(2);
@@ -177,12 +184,12 @@ async fn restore_includes_all_epochs() {
     next.seq = 1;
     add_source(&mut source, &next, true);
     JournalPublisher::save_epoch(&mut source, "a", 2).unwrap();
-    publish_pending_events(&server.client, &mut source, "v", "a")
+    publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
         .await
         .unwrap();
     let mut target = Database::open_in_memory().unwrap();
     assert_eq!(
-        pull_and_apply(&server.client, &mut target, "v", "b")
+        pull_and_apply(&server.client, &mut target, "chatvault-v", "b")
             .await
             .unwrap(),
         2
@@ -198,14 +205,16 @@ async fn list_failure_is_reported() {
     server.seed_object();
     let mut source = Database::open_in_memory().unwrap();
     add_source(&mut source, &event(1), true);
-    publish_pending_events(&server.client, &mut source, "v", "a")
+    publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
         .await
         .unwrap();
-    server.fail("PROPFIND", "ChatVault/v/devices", 1, false);
+    server.fail("PROPFIND", "chatvault-v/devices", 1, false);
     let mut target = Database::open_in_memory().unwrap();
-    assert!(pull_and_apply(&server.client, &mut target, "v", "b")
-        .await
-        .is_err());
+    assert!(
+        pull_and_apply(&server.client, &mut target, "chatvault-v", "b")
+            .await
+            .is_err()
+    );
 }
 
 /// 已存在但错误的远端对象不能使任务进入 backed_up，手动重试也不能绕过校验。
@@ -227,7 +236,10 @@ async fn existing_corruption_never_counts_as_verified() {
     };
     db.ingest_file(&file, "a").unwrap();
     let task = db.pending_uploads().unwrap()[0].task_id.clone();
-    let remote = format!("/{}", chatvault_metadata::get_object_path("v", &hash()));
+    let remote = format!(
+        "/{}",
+        chatvault_metadata::get_object_path("chatvault-v", &hash())
+    );
     server
         .state
         .lock()
@@ -235,9 +247,15 @@ async fn existing_corruption_never_counts_as_verified() {
         .files
         .insert(remote, b"bad".to_vec());
     for _ in 0..2 {
-        let report = chatvault_sync::archive::archive_pending(&server.client, &mut db, "v", "a", 0)
-            .await
-            .unwrap();
+        let report = chatvault_sync::archive::archive_pending(
+            &server.client,
+            &mut db,
+            "chatvault-v",
+            "a",
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(report.failed, 1);
         assert_eq!(report.verified, 0);
         assert_eq!(
@@ -248,17 +266,18 @@ async fn existing_corruption_never_counts_as_verified() {
     }
     server.seed_object();
     std::fs::remove_file(path).unwrap();
-    let report = chatvault_sync::archive::archive_pending(&server.client, &mut db, "v", "a", 0)
-        .await
-        .unwrap();
+    let report =
+        chatvault_sync::archive::archive_pending(&server.client, &mut db, "chatvault-v", "a", 0)
+            .await
+            .unwrap();
     assert_eq!(report.verified, 1);
     assert_eq!(report.failed, 0);
-    publish_pending_events(&server.client, &mut db, "v", "a")
+    publish_pending_events(&server.client, &mut db, "chatvault-v", "a")
         .await
         .unwrap();
     let mut target = Database::open_in_memory().unwrap();
     assert_eq!(
-        pull_and_apply(&server.client, &mut target, "v", "b")
+        pull_and_apply(&server.client, &mut target, "chatvault-v", "b")
             .await
             .unwrap(),
         1
@@ -290,9 +309,10 @@ async fn archive_uses_snapshot_after_source_deletion() {
     let task = db.pending_uploads().unwrap().remove(0);
     let cache = db.upload_source(&task.task_id).unwrap();
     std::fs::remove_file(path).unwrap();
-    let report = chatvault_sync::archive::archive_pending(&server.client, &mut db, "v", "a", 0)
-        .await
-        .unwrap();
+    let report =
+        chatvault_sync::archive::archive_pending(&server.client, &mut db, "chatvault-v", "a", 0)
+            .await
+            .unwrap();
     assert_eq!(report.uploaded, 1);
     assert_eq!(report.verified, 1);
     assert_eq!(
@@ -300,13 +320,13 @@ async fn archive_uses_snapshot_after_source_deletion() {
         "backed_up"
     );
     assert!(cache.exists());
-    publish_pending_events(&server.client, &mut db, "v", "a")
+    publish_pending_events(&server.client, &mut db, "chatvault-v", "a")
         .await
         .unwrap();
     assert!(!cache.exists());
     let mut target = Database::open_in_memory().unwrap();
     assert_eq!(
-        pull_and_apply(&server.client, &mut target, "v", "b")
+        pull_and_apply(&server.client, &mut target, "chatvault-v", "b")
             .await
             .unwrap(),
         1
@@ -317,12 +337,14 @@ async fn archive_uses_snapshot_after_source_deletion() {
 #[tokio::test]
 async fn incompatible_vault_does_not_bind_local_index() {
     let server = Server::new("D").await;
-    server.state.lock().unwrap().files.insert("/ChatVault/v/config/vault.json".into(),serde_json::to_vec(&serde_json::json!({
-        "vault_id":"v","format_version":99,"hash_algorithm":"blake3","created_at":"2026-09-11T00:00:00Z"})).unwrap());
+    server.state.lock().unwrap().files.insert("/chatvault-v/config/vault.json".into(),serde_json::to_vec(&serde_json::json!({
+        "vault_id":"chatvault-v","format_version":99,"hash_algorithm":"blake3","created_at":"2026-09-11T00:00:00Z"})).unwrap());
     let mut db = Database::open_in_memory().unwrap();
-    assert!(publish_pending_events(&server.client, &mut db, "v", "a")
-        .await
-        .is_err());
+    assert!(
+        publish_pending_events(&server.client, &mut db, "chatvault-v", "a")
+            .await
+            .is_err()
+    );
     assert!(db.get_setting("remote_binding").unwrap().is_none());
     assert_eq!(server.state.lock().unwrap().files.len(), 1);
 }
@@ -334,23 +356,25 @@ async fn inconsistent_commit_does_not_advance_cursor() {
     server.seed_object();
     let mut source = Database::open_in_memory().unwrap();
     add_source(&mut source, &event(1), true);
-    publish_pending_events(&server.client, &mut source, "v", "a")
+    publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
         .await
         .unwrap();
     {
         let mut store = server.state.lock().unwrap();
         let marker = store
             .files
-            .get_mut("/ChatVault/v/commits/a/1/1.json")
+            .get_mut("/chatvault-v/commits/a/1/1.json")
             .unwrap();
         let mut value: serde_json::Value = serde_json::from_slice(marker).unwrap();
         value["event_count"] = serde_json::json!(2);
         *marker = serde_json::to_vec(&value).unwrap();
     }
     let mut target = Database::open_in_memory().unwrap();
-    assert!(pull_and_apply(&server.client, &mut target, "v", "b")
-        .await
-        .is_err());
+    assert!(
+        pull_and_apply(&server.client, &mut target, "chatvault-v", "b")
+            .await
+            .is_err()
+    );
     assert_eq!(target.get_stats().unwrap().total_records, 0);
     assert_eq!(target.cursor_seq("a", 1).unwrap(), 0);
 }
@@ -365,14 +389,14 @@ async fn publish_drains_multiple_segments() {
         add_source(&mut source, &event(seq), true);
     }
     assert_eq!(
-        publish_pending_events(&server.client, &mut source, "v", "a")
+        publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
             .await
             .unwrap(),
         501
     );
     let mut target = Database::open_in_memory().unwrap();
     assert_eq!(
-        pull_and_apply(&server.client, &mut target, "v", "b")
+        pull_and_apply(&server.client, &mut target, "chatvault-v", "b")
             .await
             .unwrap(),
         501
@@ -406,9 +430,10 @@ async fn archive_direct_source_and_publish() {
         std::fs::read(db.upload_source(&task.task_id).unwrap()).unwrap(),
         b"content"
     );
-    let report = chatvault_sync::archive::archive_pending(&server.client, &mut db, "v", "a", 0)
-        .await
-        .unwrap();
+    let report =
+        chatvault_sync::archive::archive_pending(&server.client, &mut db, "chatvault-v", "a", 0)
+            .await
+            .unwrap();
     assert_eq!(report.uploaded, 1);
     assert_eq!(report.verified, 1);
     assert_eq!(
@@ -416,13 +441,13 @@ async fn archive_direct_source_and_publish() {
         "backed_up"
     );
     assert!(path.exists());
-    publish_pending_events(&server.client, &mut db, "v", "a")
+    publish_pending_events(&server.client, &mut db, "chatvault-v", "a")
         .await
         .unwrap();
     assert!(path.exists());
     let mut target = Database::open_in_memory().unwrap();
     assert_eq!(
-        pull_and_apply(&server.client, &mut target, "v", "b")
+        pull_and_apply(&server.client, &mut target, "chatvault-v", "b")
             .await
             .unwrap(),
         1

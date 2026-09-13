@@ -63,10 +63,10 @@ impl Default for VaultConfig {
     /// 创建默认配置的 VaultConfig
     ///
     /// 职责: 初始化默认的 Vault 配置实例
-    /// 输出: 具有随机 UUID 和 blake3 算法的 VaultConfig
+    /// 输出: 具有 `chatvault-` 前缀随机后缀与 blake3 算法的 VaultConfig
     fn default() -> Self {
         Self {
-            vault_id: uuid::Uuid::new_v4().to_string(),
+            vault_id: format!("chatvault-{}", uuid::Uuid::new_v4().simple()),
             format_version: 1,
             hash_algorithm: "blake3".to_string(),
             created_at: Utc::now(),

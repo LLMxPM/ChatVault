@@ -3,18 +3,39 @@
 
 use chatvault_core::error::Result;
 use chatvault_index::Database;
+use chatvault_metadata::VAULT_ID_PREFIX;
 use std::path::PathBuf;
 
 /// 设置键名常量
 pub mod setting_keys {
     pub const VAULT_ID: &str = "vault_id";
     pub const DEVICE_ID: &str = "device_id";
+    pub const DEVICE_NAME: &str = "device_name";
     pub const WEBDAV_URL: &str = "webdav_url";
     pub const WEBDAV_USERNAME: &str = "webdav_username";
     pub const SCAN_INTERVAL_MINUTES: &str = "scan_interval_minutes";
     pub const SCHEDULE_ENABLED: &str = "schedule_enabled";
     pub const COLLECT_SOURCES: &str = "collect_sources";
     pub const DOWNLOAD_DIR: &str = "download_dir";
+}
+
+/// 默认 Vault ID：`chatvault-default`
+pub fn default_vault_id() -> String {
+    format!("{VAULT_ID_PREFIX}default")
+}
+
+/// 默认设备名称：优先 Windows 计算机名，否则回退「本机」
+pub fn default_device_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("HOSTNAME")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "本机".to_string())
 }
 
 /// 桌面端全局应用上下文状态
@@ -33,6 +54,9 @@ impl AppState {
             db.set_setting(setting_keys::VAULT_ID, &default_vault_id)?;
         }
         db.ensure_device_identity()?;
+        if db.get_setting(setting_keys::DEVICE_NAME)?.is_none() {
+            db.set_setting(setting_keys::DEVICE_NAME, &default_device_name())?;
+        }
         if db
             .get_setting(setting_keys::SCAN_INTERVAL_MINUTES)?
             .is_none()
@@ -60,11 +84,21 @@ impl AppState {
         self.get_db()?.ensure_device_identity()
     }
 
+    /// 读取当前设备名称；空值时回退默认名称
+    pub fn device_name(&self) -> Result<String> {
+        let db = self.get_db()?;
+        Ok(db
+            .get_setting(setting_keys::DEVICE_NAME)?
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(default_device_name))
+    }
+
     /// 读取当前 Vault 标识
     pub fn vault_id(&self) -> Result<String> {
         let db = self.get_db()?;
         Ok(db
             .get_setting(setting_keys::VAULT_ID)?
-            .unwrap_or_else(|| "default-vault".to_string()))
+            .unwrap_or_else(default_vault_id))
     }
 }

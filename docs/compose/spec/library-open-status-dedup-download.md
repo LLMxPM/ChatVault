@@ -70,7 +70,7 @@ commits: a7ac239..WORKTREE
 - 设置页提供目录选择（`pick_directory` 带标题参数）。
 - 命令 `download_object(object_id, original_name)`：
   1. 读取 WebDAV 配置与凭据（无 URL/密码则明确报错）；
-  2. `GET ChatVault/<vault>/objects/blake3/xx/yy/<hash>`；
+  2. `GET chatvault-xxxx/objects/blake3/xx/yy/<hash>`；
   3. 流式写入下载目录 `.part` 临时文件并计算 BLAKE3，与 object hash 校验；
   4. 原子 rename 为安全文件名（重名则 `name (1).ext`）；
   5. 返回最终绝对路径；失败删除临时文件。

@@ -108,6 +108,8 @@ pub struct ObjectSourceItem {
     pub file_time: String,
     pub discovered_at: String,
     pub device_id: String,
+    /// 远端设备注册名；本机设备可能尚未发布
+    pub device_name: Option<String>,
     pub has_local_path: bool,
 }
 
@@ -454,6 +456,7 @@ impl<'a> SearchService<'a> {
                 r.file_time,
                 r.discovered_at,
                 r.device_id,
+                NULLIF(kd.display_name, '') AS device_name,
                 l.original_path,
                 l.cache_path
             FROM file_records r
@@ -465,6 +468,7 @@ impl<'a> SearchService<'a> {
               ON sc.source_type = r.source_type
              AND sc.source_account_id = r.source_account_id
              AND sc.source_conversation_id = r.source_conversation_id
+            LEFT JOIN known_devices kd ON kd.device_id = r.device_id
             WHERE r.object_id = ?1
               AND NOT EXISTS(SELECT 1 FROM record_tombstones d WHERE d.record_id = r.record_id)
             ORDER BY r.file_time DESC, r.record_id
@@ -488,6 +492,7 @@ impl<'a> SearchService<'a> {
                     row.get::<_, String>(9)?,
                     row.get::<_, Option<String>>(10)?,
                     row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
                 ))
             })
             .map_err(|e| ChatVaultError::Database(format!("执行来源展开失败: {}", e)))?;
@@ -505,6 +510,7 @@ impl<'a> SearchService<'a> {
                 file_time,
                 discovered_at,
                 device_id,
+                device_name,
                 original_path,
                 cache_path,
             ) = row.map_err(|e| ChatVaultError::Database(e.to_string()))?;
@@ -523,6 +529,7 @@ impl<'a> SearchService<'a> {
                 file_time,
                 discovered_at,
                 device_id,
+                device_name,
                 has_local_path,
             });
         }

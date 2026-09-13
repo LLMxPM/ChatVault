@@ -112,7 +112,7 @@ impl Server {
 
     /// 预置真实哈希对应的对象内容。
     pub fn seed_object(&self) {
-        let path = chatvault_metadata::get_object_path("v", &hash());
+        let path = chatvault_metadata::get_object_path("chatvault-v", &hash());
         self.state
             .lock()
             .unwrap()

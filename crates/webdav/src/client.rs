@@ -63,7 +63,7 @@ impl WebDavClient {
     /// 拼接完整的远端资源 URL
     ///
     /// 职责: 将相对路径安全拼接到 base_url 之后
-    /// 输入: `relative_path`: 例如 `ChatVault/vault-1/config/vault.json`
+    /// 输入: `relative_path`: 例如 `chatvault-home/config/vault.json`
     /// 输出: 完整 URL 字符串
     pub fn get_full_url(&self, relative_path: &str) -> Result<String> {
         let base = self.config.base_url.trim_end_matches('/');

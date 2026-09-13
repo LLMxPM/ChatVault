@@ -12,7 +12,7 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
     let device_id = db.ensure_device_identity()?;
     let vault_id = db
         .get_setting("vault_id")?
-        .unwrap_or_else(|| "default-vault".to_string());
+        .unwrap_or_else(|| "chatvault-default".to_string());
     let webdav_url = db.get_setting("webdav_url")?.unwrap_or_default();
     let webdav_user = db.get_setting("webdav_username")?.unwrap_or_default();
     let collect_sources_raw = db

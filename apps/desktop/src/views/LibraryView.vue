@@ -77,7 +77,7 @@
 
     <div class="min-h-0 flex-1 overflow-hidden rounded-cv-lg border border-cv-border bg-cv-surface">
       <div class="h-full overflow-auto">
-        <table class="w-full text-left text-cv-body">
+        <table class="w-full table-fixed text-left text-cv-body">
           <thead class="sticky top-0 z-10 border-b border-cv-border bg-cv-surface-2 text-cv-caption text-cv-text-2">
             <tr>
               <th class="px-4 py-2.5 font-medium">文件名</th>
@@ -163,45 +163,60 @@
                 </td>
               </tr>
               <tr v-if="expandedId === item.objectId">
-                <td colspan="6" class="border-b border-cv-border/60 bg-cv-surface-2/80 px-4 py-2">
+                <td colspan="6" class="max-w-0 border-b border-cv-border/60 bg-cv-surface-2/80 px-4 py-2">
                   <div v-if="sourcesLoading" class="py-2 text-cv-caption text-cv-text-3">加载来源…</div>
                   <div v-else-if="expandedSources.length === 0" class="py-2 text-cv-caption text-cv-text-3">
                     暂无来源明细
                   </div>
-                  <div v-else class="space-y-1.5 py-1">
+                  <div v-else class="max-w-full space-y-2 overflow-hidden py-1.5">
                     <div
                       v-for="src in expandedSources"
                       :key="src.recordId"
-                      class="flex flex-wrap items-center gap-2 text-cv-caption"
+                      class="max-w-full overflow-hidden rounded-cv border border-cv-border/60 bg-cv-surface px-3 py-2"
                     >
-                      <span
-                        class="inline-block max-w-[140px] truncate rounded-cv bg-cv-surface px-1.5 py-0.5 text-cv-text-2"
-                      >
-                        {{ src.sourceAccountName || src.sourceAccountId || "通用文件" }}
-                        <span v-if="src.sourceConversationName" class="text-cv-accent">
-                          · {{ src.sourceConversationName }}
+                      <div class="flex min-w-0 flex-wrap items-center gap-2">
+                        <span
+                          class="max-w-[160px] shrink-0 truncate rounded-cv bg-cv-surface-2 px-1.5 py-0.5 text-cv-caption text-cv-text-2"
+                          :title="src.sourceAccountName || src.sourceAccountId || '通用文件'"
+                        >
+                          {{ src.sourceAccountName || src.sourceAccountId || "通用文件" }}
+                          <span v-if="src.sourceConversationName" class="text-cv-accent">
+                            · {{ src.sourceConversationName }}
+                          </span>
                         </span>
-                      </span>
-                      <span class="max-w-[220px] truncate text-cv-text-2" :title="src.originalName">
-                        {{ src.originalName }}
-                      </span>
-                      <span class="font-mono text-cv-text-3" :title="src.originalPath">
-                        {{ src.hasLocalPath ? src.originalPath || "本地可用" : "本机无路径" }}
-                      </span>
-                      <span class="font-mono text-cv-text-3" :title="src.deviceId">
-                        设备 {{ src.deviceId }}
-                      </span>
-                      <span class="font-mono text-cv-text-3">
-                        {{ formatDateTime(src.fileTime, { fallback: "—" }) }}
-                      </span>
-                      <UiButton
-                        v-if="src.hasLocalPath && src.originalPath"
-                        size="sm"
-                        variant="ghost"
-                        @click="revealFile(src.originalPath)"
+                        <span class="min-w-0 flex-1 truncate text-cv-body font-medium text-cv-text" :title="src.originalName">
+                          {{ src.originalName }}
+                        </span>
+                        <span class="shrink-0 text-cv-caption text-cv-text-3">
+                          {{ formatDateTime(src.fileTime, { fallback: "—" }) }}
+                        </span>
+                        <UiButton
+                          v-if="src.hasLocalPath && src.originalPath"
+                          size="sm"
+                          variant="ghost"
+                          class="shrink-0"
+                          @click="revealFile(src.originalPath)"
+                        >
+                          定位
+                        </UiButton>
+                      </div>
+                      <div
+                        class="mt-1.5 flex min-w-0 items-center gap-2 text-cv-caption text-cv-text-3"
+                        :title="deviceTitle(src)"
                       >
-                        定位
-                      </UiButton>
+                        <span class="min-w-0 flex-1 truncate font-mono" :title="pathTitle(src)">
+                          {{ pathLabel(src) }}
+                        </span>
+                        <span class="max-w-[140px] shrink-0 truncate">
+                          {{ src.deviceName || shortDeviceId(src.deviceId) }}
+                        </span>
+                        <span
+                          v-if="src.isLocal"
+                          class="shrink-0 rounded-cv bg-cv-accent-soft px-1.5 py-0.5 font-medium text-cv-accent"
+                        >
+                          本机
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </td>
@@ -381,6 +396,30 @@ function locationTitle(loc: FileLocation): string {
 function canDownload(item: FileObjectViewDto): boolean {
   // 仅有远端时提供下载；本地可打开时不展示下载
   return item.location === "remote" || (item.location === "both" && !item.openPath);
+}
+
+/** 无名称时展示设备 ID 前缀，完整值放 title。 */
+function shortDeviceId(id: string): string {
+  if (!id) return "—";
+  return id.length > 12 ? `${id.slice(0, 8)}…` : id;
+}
+
+/** 来源路径展示：区分无路径 / 本地可用 / 具体路径 */
+function pathLabel(src: FileSourceDto): string {
+  if (!src.hasLocalPath) return "本机无路径";
+  const path = (src.originalPath || "").trim();
+  return path || "本地可用";
+}
+
+function pathTitle(src: FileSourceDto): string {
+  if (!src.hasLocalPath) return "";
+  return (src.originalPath || "").trim();
+}
+
+function deviceTitle(src: FileSourceDto): string {
+  if (src.isLocal) return `本机 · ${src.deviceId}`;
+  if (src.deviceName) return `${src.deviceName} · ${src.deviceId}`;
+  return src.deviceId;
 }
 
 /** 查询对象列表；reset 为 true 时回到第一页。 */

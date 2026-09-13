@@ -12,8 +12,14 @@ use chatvault_index::cache_policy::{CACHE_MAX_MIB, CACHE_RETENTION_DAYS, COPY_TH
 pub struct AppSettingsDto {
     pub vault_id: String,
     pub device_id: String,
+    /// 可配置设备名称；用于设置页展示与远端设备注册 display_name
+    pub device_name: String,
     pub webdav_url: String,
     pub webdav_username: String,
+    /// 已关联网盘的 Vault ID；未关联时为 null
+    pub bound_vault_id: Option<String>,
+    /// 已关联网盘的存储地址；未关联时为 null
+    pub bound_webdav_url: Option<String>,
     pub scan_interval_minutes: u32,
     pub schedule_enabled: bool,
     pub copy_threshold_mib: u32,
@@ -33,6 +39,11 @@ pub async fn get_app_settings(
     let get = |k: &str| db.get_setting(k).map_err(|e| e.to_string()).ok().flatten();
     let vault_id = state.vault_id().map_err(|e| e.to_string())?;
     let device_id = state.device_id().map_err(|e| e.to_string())?;
+    let device_name = state.device_name().map_err(|e| e.to_string())?;
+    let (bound_webdav_url, bound_vault_id) = match db.get_remote_binding().map_err(|e| e.to_string())? {
+        Some((url, vault)) => (Some(url), Some(vault)),
+        None => (None, None),
+    };
 
     let collect_sources_raw =
         get(setting_keys::COLLECT_SOURCES).unwrap_or_else(|| "[]".to_string());
@@ -47,6 +58,9 @@ pub async fn get_app_settings(
         download_dir: get(setting_keys::DOWNLOAD_DIR).unwrap_or_default(),
         vault_id,
         device_id,
+        device_name,
+        bound_vault_id,
+        bound_webdav_url,
         webdav_url: get(setting_keys::WEBDAV_URL).unwrap_or_default(),
         webdav_username: get(setting_keys::WEBDAV_USERNAME).unwrap_or_default(),
         scan_interval_minutes: get(setting_keys::SCAN_INTERVAL_MINUTES)
@@ -67,10 +81,17 @@ pub async fn set_app_settings(
 ) -> std::result::Result<(), String> {
     let mut db = state.get_db().map_err(|e| e.to_string())?;
 
-    chatvault_metadata::validate_id(&settings.vault_id).map_err(|e| e.to_string())?;
+    chatvault_metadata::validate_vault_id(&settings.vault_id).map_err(|e| e.to_string())?;
     let current_device = db.ensure_device_identity().map_err(|e| e.to_string())?;
     if current_device != settings.device_id {
         return Err("设备身份由系统生成，不能修改".into());
+    }
+    let device_name = settings.device_name.trim();
+    if device_name.is_empty() {
+        return Err("设备名称不能为空".into());
+    }
+    if device_name.len() > 64 {
+        return Err("设备名称最长 64 个字符".into());
     }
     let normalized_url = if settings.webdav_url.trim().is_empty() {
         String::new()
@@ -96,6 +117,7 @@ pub async fn set_app_settings(
         db.check_remote_binding(&normalized_url, &settings.vault_id)?;
         db.set_setting(setting_keys::VAULT_ID, &settings.vault_id)?;
         db.set_setting(setting_keys::DEVICE_ID, &settings.device_id)?;
+        db.set_setting(setting_keys::DEVICE_NAME, device_name)?;
         db.set_setting(setting_keys::WEBDAV_URL, &normalized_url)?;
         db.set_setting(setting_keys::WEBDAV_USERNAME, &settings.webdav_username)?;
 
@@ -114,6 +136,18 @@ pub async fn set_app_settings(
     db.reclaim_cache()
         .map_err(|e| format!("设置已保存，但缓存回收失败：{e}"))?;
     Ok(())
+}
+
+/// 清空旧 Vault 绑定与同步状态，允许改绑新 Vault。
+///
+/// 保留本地文件索引与来源映射；清除远端绑定、同步游标、日志事件、
+/// 已应用事件与设备注册，并将归档任务重新排队。
+#[tauri::command]
+pub async fn reset_vault_binding(
+    state: State<'_, AppState>,
+) -> std::result::Result<chatvault_index::VaultResetReport, String> {
+    let mut db = state.get_db().map_err(|e| e.to_string())?;
+    db.reset_vault_binding().map_err(|e| e.to_string())
 }
 
 /// 规范化采集源路径；存在的目录使用系统解析后的绝对路径，失效目录保留原路径。

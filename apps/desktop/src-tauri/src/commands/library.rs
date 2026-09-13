@@ -35,6 +35,10 @@ pub struct FileSourceDto {
     pub file_time: Option<String>,
     pub discovered_at: String,
     pub device_id: String,
+    /// 设备展示名称；本机优先用设置中的设备名称
+    pub device_name: Option<String>,
+    /// 是否本机设备
+    pub is_local: bool,
     pub has_local_path: bool,
 }
 
@@ -101,21 +105,32 @@ pub async fn list_object_sources(
     let items = search_service
         .list_object_sources(&object_id)
         .map_err(|e| e.to_string())?;
+    let local_device_id = state.device_id().map_err(|e| e.to_string())?;
+    let local_device_name = state.device_name().map_err(|e| e.to_string())?;
     Ok(items
         .into_iter()
-        .map(|s: ObjectSourceItem| FileSourceDto {
-            record_id: s.record_id,
-            original_name: s.original_name,
-            original_path: s.original_path.unwrap_or_default(),
-            source_type: s.source_type,
-            source_account_id: s.source_account_id,
-            source_account_name: s.source_account_name,
-            source_conversation_id: s.source_conversation_id,
-            source_conversation_name: s.source_conversation_name,
-            file_time: Some(s.file_time),
-            discovered_at: s.discovered_at,
-            device_id: s.device_id,
-            has_local_path: s.has_local_path,
+        .map(|s: ObjectSourceItem| {
+            let is_local = s.device_id == local_device_id;
+            FileSourceDto {
+                record_id: s.record_id,
+                original_name: s.original_name,
+                original_path: s.original_path.unwrap_or_default(),
+                source_type: s.source_type,
+                source_account_id: s.source_account_id,
+                source_account_name: s.source_account_name,
+                source_conversation_id: s.source_conversation_id,
+                source_conversation_name: s.source_conversation_name,
+                file_time: Some(s.file_time),
+                discovered_at: s.discovered_at,
+                device_id: s.device_id,
+                device_name: if is_local {
+                    Some(local_device_name.clone())
+                } else {
+                    s.device_name
+                },
+                is_local,
+                has_local_path: s.has_local_path,
+            }
         })
         .collect())
 }

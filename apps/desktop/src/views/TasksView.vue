@@ -317,7 +317,7 @@ const pipelineError = ref("");
 const pipelineResult = ref<PipelineResultDto | null>(null);
 const stage = ref<StageId>("idle");
 const webdavReady = ref(false);
-const webdavConfig = ref<WebdavConfigDto>({ url: "", username: "", password: "", vaultId: "default-vault" });
+const webdavConfig = ref<WebdavConfigDto>({ url: "", username: "", password: "", vaultId: "chatvault-default" });
 
 const tasks = ref<UploadTaskDto[]>([]);
 const statusFilter = ref("");

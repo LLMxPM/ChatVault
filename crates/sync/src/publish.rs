@@ -145,9 +145,13 @@ impl<'a> JournalPublisher<'a> {
 
     /// 注册信息是可重试步骤；首次注册可先于 commit，读取方只消费有效提交。
     async fn register_device(&self, db: &mut Database, seq: u64) -> Result<()> {
+        let display_name = db
+            .get_setting("device_name")?
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let device = DeviceInfo {
             device_id: self.device_id.clone(),
-            display_name: None,
+            display_name,
             epoch: self.epoch,
             last_seq: seq,
             updated_at: chrono::Utc::now(),

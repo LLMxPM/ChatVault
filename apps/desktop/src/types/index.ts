@@ -73,6 +73,10 @@ export interface FileSourceDto {
   fileTime?: string | null;
   discoveredAt: string;
   deviceId: string;
+  /** 设备展示名称 */
+  deviceName?: string | null;
+  /** 是否本机设备 */
+  isLocal: boolean;
   hasLocalPath: boolean;
 }
 
@@ -186,10 +190,18 @@ export interface ArchiveResultDto {
  * 应用设置（Vault/设备/WebDAV/缓存/采集源/调度）
  */
 export interface AppSettingsDto {
+  /** 完整 Vault ID，格式为 chatvault-xxxx */
   vaultId: string;
+  /** 系统生成的设备 ID，不可修改 */
   deviceId: string;
+  /** 可配置设备名称 */
+  deviceName: string;
   webdavUrl: string;
   webdavUsername: string;
+  /** 已关联网盘的 Vault ID；未关联时为 null */
+  boundVaultId: string | null;
+  /** 已关联网盘的存储地址；未关联时为 null */
+  boundWebdavUrl: string | null;
   copyThresholdMib: number;
   cacheRetentionDays: number;
   cacheMaxMib: number;
@@ -197,6 +209,17 @@ export interface AppSettingsDto {
   scanIntervalMinutes: number;
   scheduleEnabled: boolean;
   collectSources: CollectSourceDto[];
+}
+
+/** 清空旧 Vault 绑定后的清理摘要 */
+export interface VaultResetReportDto {
+  hadBinding: boolean;
+  clearedCursors: number;
+  clearedJournalEvents: number;
+  clearedAppliedEvents: number;
+  clearedDevices: number;
+  requeuedUploads: number;
+  clearedSettings: number;
 }
 
 /** 流水线请求：与定时任务同构。 */

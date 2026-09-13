@@ -89,7 +89,7 @@ pub(crate) enum Commands {
         pass: Option<String>,
 
         /// 目标 Vault 标识
-        #[arg(long, default_value = "default-vault")]
+        #[arg(long, default_value = "chatvault-default")]
         vault_id: String,
 
         /// 本地 SQLite 数据库路径
@@ -116,7 +116,7 @@ pub(crate) enum Commands {
         user: Option<String>,
         #[arg(long)]
         pass: Option<String>,
-        #[arg(long, default_value = "default-vault")]
+        #[arg(long, default_value = "chatvault-default")]
         vault_id: String,
         #[arg(short, long, default_value = "chatvault.db")]
         db: PathBuf,
@@ -132,7 +132,7 @@ pub(crate) enum Commands {
         user: Option<String>,
         #[arg(long)]
         pass: Option<String>,
-        #[arg(long, default_value = "default-vault")]
+        #[arg(long, default_value = "chatvault-default")]
         vault_id: String,
         #[arg(short, long, default_value = "chatvault.db")]
         db: PathBuf,
@@ -148,7 +148,7 @@ pub(crate) enum Commands {
         user: Option<String>,
         #[arg(long)]
         pass: Option<String>,
-        #[arg(long, default_value = "default-vault")]
+        #[arg(long, default_value = "chatvault-default")]
         vault_id: String,
         #[arg(short, long, default_value = "chatvault.db")]
         db: PathBuf,

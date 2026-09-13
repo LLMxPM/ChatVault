@@ -92,7 +92,7 @@ async fn pull_device_events(
     vault_id: &str,
     device_id: &str,
 ) -> Result<usize> {
-    let root = format!("ChatVault/{vault_id}/commits/{device_id}");
+    let root = format!("{vault_id}/commits/{device_id}");
     let mut epochs: Vec<u64> = client
         .list_dir(&root)
         .await?
@@ -294,14 +294,14 @@ mod tests {
     #[test]
     fn test_seq_from_commit_path() {
         assert_eq!(
-            seq_from_commit_path("ChatVault/v/commits/dev1/1/5.json"),
+            seq_from_commit_path("chatvault-v/commits/dev1/1/5.json"),
             Some(5)
         );
         assert_eq!(
-            seq_from_commit_path("ChatVault/v/commits/dev1/1/1.json"),
+            seq_from_commit_path("chatvault-v/commits/dev1/1/1.json"),
             Some(1)
         );
-        assert_eq!(seq_from_commit_path("ChatVault/v/commits/dev1/1/"), None);
+        assert_eq!(seq_from_commit_path("chatvault-v/commits/dev1/1/"), None);
         assert_eq!(seq_from_commit_path("foo/bar.txt"), None);
     }
 

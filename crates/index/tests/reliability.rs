@@ -157,13 +157,97 @@ fn identity_is_unique_and_persisted() {
 #[test]
 fn binding_rejects_switches() {
     let mut db = Database::open_in_memory().unwrap();
-    db.bind_remote("https://example.test/dav/", "a").unwrap();
-    db.bind_remote("https://example.test/dav", "a").unwrap();
-    assert!(db.bind_remote("https://example.test/dav", "b").is_err());
-    assert!(db.bind_remote("https://other.test/dav", "a").is_err());
+    db.bind_remote("https://example.test/dav/", "chatvault-a")
+        .unwrap();
+    db.bind_remote("https://example.test/dav", "chatvault-a")
+        .unwrap();
+    assert!(db
+        .bind_remote("https://example.test/dav", "chatvault-b")
+        .is_err());
+    assert!(db
+        .bind_remote("https://other.test/dav", "chatvault-a")
+        .is_err());
     assert!(db
         .check_remote_binding("https://example.test/dav", "../a")
         .is_err());
+    assert!(db
+        .check_remote_binding("https://example.test/dav", "plain-a")
+        .is_err());
+}
+
+/// 清空旧 Vault 绑定后可改绑新 Vault；本地索引保留。
+#[test]
+fn reset_vault_binding_allows_rebind() {
+    use chatvault_core::models::{JournalEvent, JournalEventType};
+    use chrono::Utc;
+
+    let mut db = Database::open_in_memory().unwrap();
+    db.bind_remote("https://example.test/dav", "chatvault-a")
+        .unwrap();
+    db.upsert_sync_cursor("local-dev", 1, 5).unwrap();
+    db.set_setting("pending_segment_local-dev_1", "[]").unwrap();
+    db.set_setting("epoch_local-dev", "2").unwrap();
+    db.upsert_known_device(&chatvault_core::models::DeviceInfo {
+        device_id: "local-dev".into(),
+        display_name: Some("本机".into()),
+        epoch: 2,
+        last_seq: 5,
+        updated_at: Utc::now(),
+    })
+    .unwrap();
+
+    let time = Utc::now();
+    let ev = JournalEvent {
+        event_id: "evt-reset".into(),
+        device_id: "local-dev".into(),
+        epoch: 1,
+        seq: 1,
+        logical_clock: 1,
+        schema_version: 1,
+        event_type: JournalEventType::FileRecordAdded,
+        payload: serde_json::json!({
+            "object_id":"blake3:aa","hash":"aa","record_id":"r-reset","size":1,
+            "source_type":"generic-folder","source_account_id":null,"source_conversation_id":null,
+            "original_name":"a.txt","file_time":time.to_rfc3339(),"discovered_at":time.to_rfc3339(),"extension":"txt"
+        }),
+        created_at: time,
+    };
+    db.apply_file_record_added_event(&ev).unwrap();
+    db.insert_journal_event_if_absent(&ev).unwrap();
+    db.connection()
+        .execute(
+            "INSERT INTO applied_events(event_id, applied_at) VALUES ('remote-1', ?1)",
+            [time.to_rfc3339()],
+        )
+        .unwrap();
+    db.connection()
+        .execute(
+            "INSERT INTO upload_tasks(task_id,record_id,object_id,status,updated_at) VALUES ('t1','r-reset','blake3:aa','backed_up',?1)",
+            [time.to_rfc3339()],
+        )
+        .unwrap();
+
+    let report = db.reset_vault_binding().unwrap();
+    assert!(report.had_binding);
+    assert_eq!(report.cleared_cursors, 1);
+    assert_eq!(report.cleared_journal_events, 1);
+    assert_eq!(report.cleared_applied_events, 1);
+    assert_eq!(report.cleared_devices, 1);
+    assert_eq!(report.requeued_uploads, 1);
+
+    assert!(db.get_setting("remote_binding").unwrap().is_none());
+    assert!(db
+        .get_setting("pending_segment_local-dev_1")
+        .unwrap()
+        .is_none());
+    assert!(db.get_setting("epoch_local-dev").unwrap().is_none());
+    assert_eq!(db.cursor_seq("local-dev", 1).unwrap(), 0);
+    assert!(!db.event_already_applied("remote-1").unwrap());
+    // 本地来源记录保留
+    assert_eq!(db.get_stats().unwrap().total_records, 1);
+    // 可改绑新 Vault
+    db.bind_remote("https://example.test/dav", "chatvault-b")
+        .unwrap();
 }
 
 /// 先过滤再分页；晚于 500 条图片的文档仍能查询到。

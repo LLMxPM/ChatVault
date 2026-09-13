@@ -7,6 +7,13 @@ export interface ConfirmOptions {
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
+  /**
+   * 强制确认短语：用户必须完整输入该文本后才能点确认。
+   * 用于不可逆的高风险操作。
+   */
+  requirePhrase?: string;
+  /** 要求输入短语时的提示文案 */
+  requirePhraseLabel?: string;
 }
 
 interface ConfirmState extends ConfirmOptions {

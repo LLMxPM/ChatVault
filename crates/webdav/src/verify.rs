@@ -25,7 +25,7 @@ impl<'a> RemoteVerifier<'a> {
     ///
     /// 职责: 流式拉取远端文件数据，计算其 BLAKE3 并比对预期哈希
     /// 输入:
-    ///   - `remote_path`: 远端相对路径 (例如 `ChatVault/<vault_id>/objects/blake3/...`)
+    ///   - `remote_path`: 远端相对路径 (例如 `chatvault-xxxx/objects/blake3/...`)
     ///   - `expected_hex`: 本地计算并预期的十六进制哈希
     /// 输出: `Result<()>`
     /// 关键约束:

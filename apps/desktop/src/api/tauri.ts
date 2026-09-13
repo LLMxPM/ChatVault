@@ -15,6 +15,7 @@ import type {
   WebdavConfigDto,
   WebdavCapabilityDto,
   AppSettingsDto,
+  VaultResetReportDto,
   UploadTaskDto,
   SyncResultDto,
   SourceAccountDto,
@@ -145,6 +146,13 @@ export async function getAppSettings(): Promise<AppSettingsDto> {
  */
 export async function setAppSettings(settings: AppSettingsDto): Promise<void> {
   return await invoke<void>("set_app_settings", { settings });
+}
+
+/**
+ * 清空旧 Vault 绑定与同步状态
+ */
+export async function resetVaultBinding(): Promise<VaultResetReportDto> {
+  return await invoke<VaultResetReportDto>("reset_vault_binding");
 }
 
 /**

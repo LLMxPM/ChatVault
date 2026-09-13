@@ -43,10 +43,10 @@ mod tests {
     #[test]
     fn namespace_variants() {
         for (prefix, declaration) in [("D:", "xmlns:D"), ("d:", "xmlns:d"), ("", "xmlns")] {
-            let xml = format!("<{prefix}multistatus {declaration}=\"DAV:\"><{prefix}response><{prefix}href>/dav/ChatVault/v/devices/a&amp;b.json</{prefix}href></{prefix}response></{prefix}multistatus>");
+            let xml = format!("<{prefix}multistatus {declaration}=\"DAV:\"><{prefix}response><{prefix}href>/dav/chatvault-v/devices/a&amp;b.json</{prefix}href></{prefix}response></{prefix}multistatus>");
             assert_eq!(
-                parse_propfind_hrefs(&xml, "ChatVault/v/devices").unwrap(),
-                vec!["ChatVault/v/devices/a&b.json"]
+                parse_propfind_hrefs(&xml, "chatvault-v/devices").unwrap(),
+                vec!["chatvault-v/devices/a&b.json"]
             );
         }
         assert!(parse_propfind_hrefs("<broken", "v").is_err());

@@ -52,6 +52,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::webdav::clear_webdav_credential,
             commands::settings::get_app_settings,
             commands::settings::set_app_settings,
+            commands::settings::reset_vault_binding,
             commands::settings::set_collect_sources,
             commands::settings::set_schedule_config,
             commands::settings::get_schedule_status,
@@ -71,7 +72,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = app.path().app_local_data_dir()?;
     std::fs::create_dir_all(&data_dir)?;
     runtime::init_logging(&data_dir)?;
-    let state = AppState::new(data_dir.join("chatvault.db"), "default-vault".into())?;
+    let state = AppState::new(data_dir.join("chatvault.db"), state::default_vault_id())?;
     if let Err(error) = runtime::restore_schedule(&state) {
         tracing::warn!("恢复定时任务失败，请在设置中重新启用：{error}");
     }
