@@ -27,8 +27,10 @@ pub struct ValidatedImage {
 
 /// 最大允许的单边像素（防止解码炸弹）
 const MAX_DIMENSION: u32 = 20_000;
-/// 最大允许帧数
-const MAX_FRAMES: u32 = 10_000;
+/// 最大允许帧数（与探针对齐，避免超长动画耗尽内存）
+const MAX_FRAMES: u32 = 100;
+/// 动画总像素预算（宽×高×帧）
+const MAX_TOTAL_PIXELS: u64 = 40_000_000;
 /// 从磁盘读取图片时的单文件上限。
 const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -61,8 +63,10 @@ pub fn looks_like_standard_image(data: &[u8]) -> bool {
 }
 
 /// 是否为 WXGF（微信私有容器，未验收前不计入成功）
+///
+/// 容器魔数为小写 `wxgf`；不把 HEVC 起始码当作整文件识别。
 pub fn looks_like_wxgf(data: &[u8]) -> bool {
-    data.starts_with(b"WXGF") || data.starts_with(&[0x00, 0x00, 0x00, 0x01])
+    data.starts_with(b"wxgf")
 }
 
 /// 完整校验内存中的图片字节。
@@ -102,12 +106,17 @@ pub fn validate_image_bytes(data: &[u8]) -> Result<ValidatedImage> {
                 .map_err(|e| ChatVaultError::WeChatParse(format!("invalid_image: {e}")))?
                 .into_frames();
             let mut n = 0u32;
+            let mut total_pixels = 0u64;
             for frame in decoder {
-                frame.map_err(|e| ChatVaultError::WeChatParse(format!("invalid_image: {e}")))?;
+                let frame = frame
+                    .map_err(|e| ChatVaultError::WeChatParse(format!("invalid_image: {e}")))?;
                 n = n.saturating_add(1);
-                if n > MAX_FRAMES {
+                total_pixels = total_pixels.saturating_add(
+                    u64::from(frame.buffer().width()) * u64::from(frame.buffer().height()),
+                );
+                if n > MAX_FRAMES || total_pixels > MAX_TOTAL_PIXELS {
                     return Err(ChatVaultError::WeChatParse(
-                        "invalid_image: 帧数超限或为空".into(),
+                        "invalid_image: 帧数或像素预算超限".into(),
                     ));
                 }
             }
@@ -124,14 +133,18 @@ pub fn validate_image_bytes(data: &[u8]) -> Result<ValidatedImage> {
                 .map_err(|e| ChatVaultError::WeChatParse(format!("unsupported_payload: {e}")))?;
             if decoder.has_animation() {
                 let mut n = 0u32;
+                let mut total_pixels = 0u64;
                 for frame in decoder.into_frames() {
-                    frame.map_err(|e| {
+                    let frame = frame.map_err(|e| {
                         ChatVaultError::WeChatParse(format!("unsupported_payload: {e}"))
                     })?;
                     n = n.saturating_add(1);
-                    if n > MAX_FRAMES {
+                    total_pixels = total_pixels.saturating_add(
+                        u64::from(frame.buffer().width()) * u64::from(frame.buffer().height()),
+                    );
+                    if n > MAX_FRAMES || total_pixels > MAX_TOTAL_PIXELS {
                         return Err(ChatVaultError::WeChatParse(
-                            "invalid_image: 帧数超限或为空".into(),
+                            "invalid_image: 帧数或像素预算超限".into(),
                         ));
                     }
                 }
@@ -249,9 +262,14 @@ mod tests {
 
     #[test]
     fn rejects_wxgf() {
-        let data = b"WXGF\x00\x00\x00\x00\x00\x00\x00\x00";
+        let data = b"wxgf\x00\x00\x00\x00\x00\x00\x00\x00";
         let err = validate_image_bytes(data).unwrap_err();
         assert!(err.to_string().contains("unsupported_payload"));
+        assert!(looks_like_wxgf(b"wxgf...."));
+        assert!(!looks_like_wxgf(b"WXGF...."));
+        assert!(!looks_like_wxgf(&[
+            0x00, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 0
+        ]));
     }
 
     #[test]

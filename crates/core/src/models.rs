@@ -27,9 +27,9 @@ pub struct CollectSource {
     pub enable_images: bool,
 }
 
-/// 采集源图片处理的默认开关，保持当前媒体备份行为。
+/// 采集源图片处理的默认开关：默认关闭，由用户显式启用本机离线解密。
 fn default_enable_images() -> bool {
-    true
+    false
 }
 
 #[cfg(test)]
@@ -56,7 +56,7 @@ mod tests {
             r#"{"sourceType":"generic-folder","path":"C:\\attachments"}"#,
         )
         .unwrap();
-        assert!(legacy.enable_images);
+        assert!(!legacy.enable_images);
     }
 }
 

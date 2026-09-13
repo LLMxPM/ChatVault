@@ -98,7 +98,13 @@ pub fn prepare_image_candidates(
         std::collections::HashMap::new();
 
     // 参数只在遇到第一张 V2 图片时读取；标准明文图片无需参数。
-    let mut key_materials: Option<Vec<crate::media::AccountKeyMaterial>> = None;
+    // 失败态也缓存，避免对每张 V2 图重复扫描 kvcomm。
+    enum ParamState {
+        Ready(Vec<crate::media::AccountKeyMaterial>),
+        Unavailable,
+        LimitExceeded,
+    }
+    let mut param_state: Option<ParamState> = None;
 
     for candidate in candidates {
         // 稳定性检查
@@ -185,38 +191,36 @@ pub fn prepare_image_candidates(
             continue;
         }
 
-        let materials = if let Some(materials) = key_materials.as_ref() {
-            materials
-        } else {
+        if param_state.is_none() {
             match prepare_account_candidates(account_dir_name, None, max_candidates) {
                 Ok(materials) if !materials.is_empty() => {
-                    key_materials = Some(materials);
-                    key_materials.as_ref().unwrap()
+                    param_state = Some(ParamState::Ready(materials));
                 }
-                Ok(_) => {
-                    batch.stats.parameters_unavailable += 1;
-                    batch.failures.push(ImagePrepFailure {
-                        candidate,
-                        error_code: ImageErrorCode::MediaParametersUnavailable,
-                    });
-                    continue;
-                }
+                Ok(_) => param_state = Some(ParamState::Unavailable),
                 Err(error) if error.to_string().contains("candidate_limit_exceeded") => {
-                    batch.failures.push(ImagePrepFailure {
-                        candidate,
-                        error_code: ImageErrorCode::CandidateLimitExceeded,
-                    });
-                    continue;
+                    param_state = Some(ParamState::LimitExceeded);
                 }
-                Err(_) => {
-                    batch.stats.parameters_unavailable += 1;
-                    batch.failures.push(ImagePrepFailure {
-                        candidate,
-                        error_code: ImageErrorCode::MediaParametersUnavailable,
-                    });
-                    continue;
-                }
+                Err(_) => param_state = Some(ParamState::Unavailable),
             }
+        }
+        let materials = match &param_state {
+            Some(ParamState::Ready(materials)) => materials,
+            Some(ParamState::Unavailable) => {
+                batch.stats.parameters_unavailable += 1;
+                batch.failures.push(ImagePrepFailure {
+                    candidate,
+                    error_code: ImageErrorCode::MediaParametersUnavailable,
+                });
+                continue;
+            }
+            Some(ParamState::LimitExceeded) => {
+                batch.failures.push(ImagePrepFailure {
+                    candidate,
+                    error_code: ImageErrorCode::CandidateLimitExceeded,
+                });
+                continue;
+            }
+            None => continue,
         };
 
         // 尝试所有密钥候选
@@ -398,6 +402,12 @@ fn build_prepared_image(
     let plaintext_path =
         chatvault_metadata::staging::stage_bytes_pending(&data, &pending_dir).ok()?;
     let hash = chatvault_metadata::compute_blake3_bytes(&data);
+    let stem = candidate.normalized_stem.trim();
+    let export_name = if stem.is_empty() {
+        format!("{}.{}", &hash.hex_hash[..12], validated.extension)
+    } else {
+        format!("{}.{}", stem, validated.extension)
+    };
     let prepared = PreparedContent {
         plaintext_path: plaintext_path.to_string_lossy().to_string(),
         content_hash: hash.hex_hash,
@@ -410,7 +420,7 @@ fn build_prepared_image(
         source_type: chatvault_core::models::WECHAT_WINDOWS_4_SOURCE_TYPE.to_string(),
         source_account_id: Some(account_dir_name.to_string()),
         source_conversation_id: candidate.conv_hash.clone(),
-        export_name: format!("{}.{}", candidate.normalized_stem, validated.extension),
+        export_name,
         source_original_name: candidate.file_name.clone(),
         source_path: candidate.source_path.to_string_lossy().to_string(),
         source_mtime_ms,

@@ -105,7 +105,8 @@ export function useCollectSources() {
   function createSourceItem(source: CollectSourceDto): CollectSourceItem {
     return {
       ...source,
-      enableImages: source.sourceType === "wechat-windows-4" ? source.enableImages !== false : true,
+      // 微信图片解密默认关闭，由用户显式开启；通用目录不使用该字段。
+      enableImages: source.sourceType === "wechat-windows-4" ? source.enableImages === true : true,
       accounts: [],
       status: "checking",
       errorMessage: "",
@@ -121,7 +122,7 @@ export function useCollectSources() {
     return sources.map(({ sourceType, path, enableImages }) => ({
       sourceType,
       path,
-      enableImages: sourceType === "wechat-windows-4" ? enableImages !== false : true,
+      enableImages: sourceType === "wechat-windows-4" ? enableImages === true : true,
     }));
   }
 
@@ -157,7 +158,7 @@ export function useCollectSources() {
     if (source.sourceType !== "wechat-windows-4") return;
     const previousSources = cloneSources(collectSources.value);
     const previousSelections = selectedAccounts.value.map((target) => ({ ...target }));
-    source.enableImages = source.enableImages === false;
+    source.enableImages = source.enableImages !== true;
     if (!(await persistSources(previousSources, previousSelections))) {
       return;
     }
@@ -248,7 +249,8 @@ export function useCollectSources() {
     await addSource({
       sourceType: "wechat-windows-4",
       path,
-      enableImages: true,
+      // 默认关闭聊天图片解密；用户在任务页显式开启后才会读取本机统计参数。
+      enableImages: false,
       accounts,
       status: accounts.length ? "ready" : "empty",
       errorMessage: "",

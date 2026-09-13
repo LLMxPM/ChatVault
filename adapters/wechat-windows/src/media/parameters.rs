@@ -110,6 +110,33 @@ fn parse_code_from_statistic_name(name: &str) -> Option<u32> {
     Some(code)
 }
 
+/// 账号标识候选变体：完整目录名 + 公开的规范化规则（有限交叉，不穷举）。
+///
+/// - 完整目录名始终参与
+/// - `wxid_*` 或末尾 `_<4hex>`：额外尝试去后缀
+/// - `wxid_*` 且中间还有下划线：额外尝试 `wxid_<第二段>`（与探针一致）
+pub fn account_identity_variants(dir_name: &str) -> Vec<String> {
+    let mut out = vec![dir_name.to_string()];
+    if dir_name.is_empty() {
+        return out;
+    }
+    let normalized = normalize_account_id(dir_name);
+    if normalized != dir_name {
+        out.push(normalized.clone());
+    }
+    // wxid_a_b_c 形式：探针会额外尝试 wxid_a（parts[:2]），保留该有限变体
+    if dir_name.starts_with("wxid_") {
+        let parts: Vec<&str> = dir_name.split('_').collect();
+        if parts.len() >= 3 {
+            let short = format!("{}_{}", parts[0], parts[1]);
+            if short != dir_name && !out.contains(&short) {
+                out.push(short);
+            }
+        }
+    }
+    out
+}
+
 /// 规范化账号目录名为派生用标识。
 ///
 /// - `wxid_*` 形式：去掉末尾 `_<4hex>` 段
@@ -129,9 +156,8 @@ pub fn normalize_account_id(dir_name: &str) -> String {
     dir_name.to_string()
 }
 
-/// 派生账号密钥材料：AES key = MD5(decimal(code) || account_id) 小写 hex 前 16 ASCII 字节
-pub fn derive_key_material(code: u32, account_dir_name: &str) -> AccountKeyMaterial {
-    let account_id = normalize_account_id(account_dir_name);
+/// 用指定账号标识派生密钥材料
+fn derive_key_material_for_id(code: u32, account_id: &str) -> AccountKeyMaterial {
     let mut hasher = Md5::new();
     hasher.update(code.to_string().as_bytes());
     hasher.update(account_id.as_bytes());
@@ -140,11 +166,18 @@ pub fn derive_key_material(code: u32, account_dir_name: &str) -> AccountKeyMater
     let mut aes_key = [0u8; 16];
     aes_key.copy_from_slice(&hex.as_bytes()[..16]);
     AccountKeyMaterial {
-        account_id,
+        account_id: account_id.to_string(),
         code,
         aes_key,
         xor_byte: (code & 0xff) as u8,
     }
+}
+
+/// 派生账号密钥材料：AES key = MD5(decimal(code) || account_id) 小写 hex 前 16 ASCII 字节
+///
+/// 默认使用规范化后的账号标识；需要交叉多变体时用 `build_key_candidates`。
+pub fn derive_key_material(code: u32, account_dir_name: &str) -> AccountKeyMaterial {
+    derive_key_material_for_id(code, &normalize_account_id(account_dir_name))
 }
 
 /// 为指定账号目录构建有限候选密钥列表。
@@ -157,14 +190,17 @@ pub fn build_key_candidates(
 ) -> Vec<AccountKeyMaterial> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
+    let identities = account_identity_variants(account_dir_name);
     for &code in codes {
-        let material = derive_key_material(code, account_dir_name);
-        let key_id = (material.code, material.account_id.clone());
-        if seen.insert(key_id) {
-            out.push(material);
-        }
-        if out.len() >= max_candidates {
-            break;
+        for identity in &identities {
+            let material = derive_key_material_for_id(code, identity);
+            let key_id = (material.code, material.account_id.clone());
+            if seen.insert(key_id) {
+                out.push(material);
+            }
+            if out.len() >= max_candidates {
+                return out;
+            }
         }
     }
     out
@@ -240,6 +276,29 @@ mod tests {
         assert_eq!(normalize_account_id("wxid_abc123def"), "wxid_abc123def");
         assert_eq!(normalize_account_id("user_abcd"), "user");
         assert_eq!(normalize_account_id("plainname"), "plainname");
+    }
+
+    #[test]
+    fn account_variants_include_full_and_normalized() {
+        let variants = account_identity_variants("wxid_abc123def_a1b2");
+        assert!(variants.contains(&"wxid_abc123def_a1b2".to_string()));
+        assert!(variants.contains(&"wxid_abc123def".to_string()));
+
+        let plain = account_identity_variants("plainname");
+        assert_eq!(plain, vec!["plainname".to_string()]);
+
+        let multi = account_identity_variants("wxid_abc_def_1234");
+        assert!(multi.contains(&"wxid_abc_def_1234".to_string()));
+        assert!(multi.contains(&"wxid_abc_def".to_string()));
+        assert!(multi.contains(&"wxid_abc".to_string()));
+    }
+
+    #[test]
+    fn build_key_candidates_crosses_identities() {
+        let candidates = build_key_candidates(&[42], "wxid_test_a1b2", 16);
+        let ids: Vec<_> = candidates.iter().map(|c| c.account_id.as_str()).collect();
+        assert!(ids.contains(&"wxid_test_a1b2"));
+        assert!(ids.contains(&"wxid_test"));
     }
 
     #[test]

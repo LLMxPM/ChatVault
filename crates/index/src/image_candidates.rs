@@ -62,6 +62,7 @@ impl Database {
         if let Some((id, old_size, old_mtime, _old_status, old_digest, record_id)) = existing {
             // 摘要缺失也视为变化：这样旧候选第一次重新扫描时会清掉残留状态。
             let digest_changed = old_digest.as_deref() != current_digest.as_deref();
+            // 缓存缺失才触发重新准备：路径为空，或目标不是普通文件。
             let cache_missing = record_id.as_deref().is_some_and(|record_id| {
                 self.conn
                     .query_row(
@@ -72,7 +73,7 @@ impl Database {
                     .ok()
                     .flatten()
                     .is_none_or(|path| {
-                        std::fs::symlink_metadata(&path)
+                        !std::fs::symlink_metadata(&path)
                             .map(|metadata| {
                                 metadata.file_type().is_file() && !metadata.file_type().is_symlink()
                             })
@@ -415,6 +416,164 @@ mod tests {
             .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].source_size, 2);
+    }
+
+    #[test]
+    fn upsert_keeps_status_when_cache_still_present() {
+        let mut db = temp_db();
+        let object_id = "blake3:cache-present-object";
+        let now = Utc::now().to_rfc3339();
+        let cache =
+            std::env::temp_dir().join(format!("cv-candidate-cache-present-{}.bin", Uuid::new_v4()));
+        std::fs::write(&cache, b"cached").unwrap();
+        db.connection()
+            .execute(
+                "INSERT INTO file_objects (object_id,hash,size,mime,extension,created_at)
+                 VALUES (?1,'cache-present-object',6,'image/png','png',?2)",
+                rusqlite::params![object_id, now],
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "INSERT INTO file_records
+                 (record_id,object_id,source_type,original_name,file_time,time_source,discovered_at,device_id)
+                 VALUES ('record-cache-present',?1,'wechat-windows-4','a.png',?2,'mtime',?2,'device')",
+                rusqlite::params![object_id, now],
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "INSERT INTO local_files
+                 (record_id,original_path,cache_path,size,mtime_ms,availability,content_origin)
+                 VALUES ('record-cache-present',?1,?2,6,1,'available','decrypted')",
+                rusqlite::params![
+                    r"C:\x\a.dat".to_string(),
+                    cache.to_string_lossy().to_string()
+                ],
+            )
+            .unwrap();
+
+        let source =
+            std::env::temp_dir().join(format!("cv-candidate-src-present-{}.dat", Uuid::new_v4()));
+        std::fs::write(&source, b"aa").unwrap();
+        let id = db
+            .upsert_image_candidate(
+                "root",
+                "acc",
+                source.to_str().unwrap(),
+                2,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "UPDATE image_candidates SET status='ingested', record_id='record-cache-present' WHERE candidate_id=?1",
+                rusqlite::params![id],
+            )
+            .unwrap();
+
+        // 源 size/mtime/摘要未变且缓存仍在，不得重置为 discovered
+        db.upsert_image_candidate(
+            "root",
+            "acc",
+            source.to_str().unwrap(),
+            2,
+            1,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            db.get_candidate_status(&id).unwrap().as_deref(),
+            Some("ingested")
+        );
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(cache);
+    }
+
+    #[test]
+    fn upsert_resets_when_cache_file_missing() {
+        let mut db = temp_db();
+        let object_id = "blake3:cache-missing-object";
+        let now = Utc::now().to_rfc3339();
+        let missing_cache =
+            std::env::temp_dir().join(format!("cv-candidate-cache-missing-{}.bin", Uuid::new_v4()));
+        db.connection()
+            .execute(
+                "INSERT INTO file_objects (object_id,hash,size,mime,extension,created_at)
+                 VALUES (?1,'cache-missing-object',6,'image/png','png',?2)",
+                rusqlite::params![object_id, now],
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "INSERT INTO file_records
+                 (record_id,object_id,source_type,original_name,file_time,time_source,discovered_at,device_id)
+                 VALUES ('record-cache-missing',?1,'wechat-windows-4','a.png',?2,'mtime',?2,'device')",
+                rusqlite::params![object_id, now],
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "INSERT INTO local_files
+                 (record_id,original_path,cache_path,size,mtime_ms,availability,content_origin)
+                 VALUES ('record-cache-missing',?1,?2,6,1,'available','decrypted')",
+                rusqlite::params![
+                    r"C:\x\a.dat".to_string(),
+                    missing_cache.to_string_lossy().to_string()
+                ],
+            )
+            .unwrap();
+
+        let source =
+            std::env::temp_dir().join(format!("cv-candidate-src-missing-{}.dat", Uuid::new_v4()));
+        std::fs::write(&source, b"aa").unwrap();
+        let id = db
+            .upsert_image_candidate(
+                "root",
+                "acc",
+                source.to_str().unwrap(),
+                2,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "UPDATE image_candidates SET status='ingested', record_id='record-cache-missing' WHERE candidate_id=?1",
+                rusqlite::params![id],
+            )
+            .unwrap();
+
+        // 缓存文件不存在：即使源未变也应重置以便重新准备
+        db.upsert_image_candidate(
+            "root",
+            "acc",
+            source.to_str().unwrap(),
+            2,
+            1,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            db.get_candidate_status(&id).unwrap().as_deref(),
+            Some("discovered")
+        );
+
+        let _ = std::fs::remove_file(source);
     }
 
     #[test]

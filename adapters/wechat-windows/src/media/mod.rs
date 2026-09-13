@@ -15,8 +15,8 @@ pub use images::{
     ImageCandidate, MediaVariant,
 };
 pub use parameters::{
-    default_kvcomm_dirs, derive_key_material, normalize_account_id, prepare_account_candidates,
-    scan_parameter_codes, AccountKeyMaterial, ParameterScanError,
+    account_identity_variants, default_kvcomm_dirs, derive_key_material, normalize_account_id,
+    prepare_account_candidates, scan_parameter_codes, AccountKeyMaterial, ParameterScanError,
 };
 pub use prepare::{
     count_parameter_codes, parameter_directories, prepare_image_candidates, try_decrypt_image,

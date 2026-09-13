@@ -63,7 +63,7 @@
                   <input
                     type="checkbox"
                     class="h-4 w-4 accent-[var(--cv-accent)]"
-                    :checked="source.enableImages !== false"
+                    :checked="source.enableImages === true"
                     @change="toggleSourceImages(source)"
                   />
                   <span>启用聊天图片解密</span>
