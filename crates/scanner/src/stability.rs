@@ -48,8 +48,8 @@ pub fn get_snapshot<P: AsRef<Path>>(path: P) -> Result<FileSnapshot> {
 /// 输入:
 ///   - `path`: 文件路径
 ///   - `check_interval`: 两次比对之间的等待时长（如 200ms ~ 1000ms）
-/// 输出: `Result<bool>`: true 表示稳定可用，false 表示仍在变化中
-/// 关键约束:
+///     输出: `Result<bool>`: true 表示稳定可用，false 表示仍在变化中
+///     关键约束:
 ///   - 必须能正常读取，否则返回 Err 或 false
 pub async fn check_file_stability_async<P: AsRef<Path>>(
     path: P,
@@ -77,7 +77,7 @@ pub async fn check_file_stability_async<P: AsRef<Path>>(
 /// 输入:
 ///   - `path`: 文件路径
 ///   - `check_interval`: 等待时间
-/// 输出: `Result<bool>`
+///     输出: `Result<bool>`
 pub fn check_file_stability_sync<P: AsRef<Path>>(
     path: P,
     check_interval: Duration,

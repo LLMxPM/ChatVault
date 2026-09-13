@@ -12,7 +12,7 @@
 /// 输入:
 ///   - `vault_id`: 资料库标识（完整 `chatvault-xxxx`）
 ///   - `hex_hash`: 十六进制哈希字符串（至少包含 4 个字符）
-/// 输出: 相对路径，例如 `<vault_id>/objects/blake3/ab/cd/abcdef123456...`
+///     输出: 相对路径，例如 `<vault_id>/objects/blake3/ab/cd/abcdef123456...`
 pub fn get_object_path(vault_id: &str, hex_hash: &str) -> String {
     let clean_hash = hex_hash.trim_start_matches("blake3:");
     let p1 = if clean_hash.len() >= 2 {
@@ -44,7 +44,7 @@ pub fn get_config_path(vault_id: &str) -> String {
 ///   - `vault_id`: 资料库标识
 ///   - `device_id`: 设备标识
 ///   - `upload_id`: 本次上传任务唯一标识
-/// 输出: 例如 `<vault_id>/staging/<device_id>/<upload_id>`
+///     输出: 例如 `<vault_id>/staging/<device_id>/<upload_id>`
 pub fn get_staging_path(vault_id: &str, device_id: &str, upload_id: &str) -> String {
     format!("{}/staging/{}/{}", vault_id, device_id, upload_id)
 }

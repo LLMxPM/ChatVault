@@ -22,6 +22,14 @@ pub struct CollectSource {
     pub source_type: String,
     /// 用户选择的目录绝对路径。
     pub path: String,
+    /// 微信聊天图片是否启用本机离线解密；非微信来源忽略该字段。
+    #[serde(default = "default_enable_images")]
+    pub enable_images: bool,
+}
+
+/// 采集源图片处理的默认开关，保持当前媒体备份行为。
+fn default_enable_images() -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -33,16 +41,22 @@ mod tests {
         let source = CollectSource {
             source_type: GENERIC_FOLDER_SOURCE_TYPE.to_string(),
             path: r"C:\attachments".to_string(),
+            enable_images: true,
         };
         let encoded = serde_json::to_string(&source).unwrap();
         assert_eq!(
             encoded,
-            r#"{"sourceType":"generic-folder","path":"C:\\attachments"}"#
+            r#"{"sourceType":"generic-folder","path":"C:\\attachments","enableImages":true}"#
         );
         assert_eq!(
             serde_json::from_str::<CollectSource>(&encoded).unwrap(),
             source
         );
+        let legacy = serde_json::from_str::<CollectSource>(
+            r#"{"sourceType":"generic-folder","path":"C:\\attachments"}"#,
+        )
+        .unwrap();
+        assert!(legacy.enable_images);
     }
 }
 
@@ -89,6 +103,12 @@ pub struct FileObject {
     pub mime: String,
     /// 文件小写扩展名（不含点）
     pub extension: String,
+    /// 图片宽度；非图片为 None。
+    pub width: Option<u32>,
+    /// 图片高度；非图片为 None。
+    pub height: Option<u32>,
+    /// 图片帧数；非图片为 None。
+    pub frame_count: Option<u32>,
     /// 首次创建时间
     pub created_at: DateTime<Utc>,
 }
@@ -137,6 +157,8 @@ pub struct LocalFile {
     pub cache_path: Option<String>,
     /// 文件大小（字节）
     pub size: u64,
+    /// 解密来源的源文件大小；普通明文来源为 None。
+    pub source_size: Option<u64>,
     /// 本地文件最后修改时间戳（毫秒）
     pub mtime_ms: i64,
     /// 本地可用状态
@@ -238,6 +260,8 @@ pub struct PreparedContent {
     pub source_mtime_ms: i64,
     /// 源大小
     pub source_size: u64,
+    /// 本轮读取到的源 BLAKE3 摘要（仅本机候选复核使用）
+    pub source_digest: Option<String>,
     /// 图片变体类型
     pub media_variant: Option<String>,
     /// 图片分组键

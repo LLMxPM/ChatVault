@@ -35,13 +35,25 @@ impl Database {
 
     /// 有副本则严格使用副本；未创建副本时读取原路径，两者都必须匹配入库哈希。
     pub fn upload_source(&self, id: &str) -> Result<PathBuf> {
-        let (hash, cache, original): (String, Option<String>, String) = self.conn.query_row(
-            "SELECT o.hash,l.cache_path,l.original_path FROM upload_tasks t JOIN file_objects o ON t.object_id=o.object_id
+        let (hash, cache, original, content_origin): (String, Option<String>, String, Option<String>) = self.conn.query_row(
+            "SELECT o.hash,l.cache_path,l.original_path,l.content_origin FROM upload_tasks t JOIN file_objects o ON t.object_id=o.object_id
              LEFT JOIN local_files l ON t.record_id=l.record_id WHERE t.task_id=?1", [id],
-            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(db_error)?;
-        let selected = cache.unwrap_or(original);
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(db_error)?;
+        let selected = if content_origin.as_deref() == Some("decrypted") {
+            cache.ok_or_else(|| ChatVaultError::FileNotFound {
+                path: format!("任务 {id} 的明文缓存已回收，无法回退到微信密文"),
+            })?
+        } else {
+            cache.unwrap_or(original)
+        };
         let path = Some(PathBuf::from(&selected))
-            .filter(|p| p.is_file())
+            .filter(|p| {
+                std::fs::symlink_metadata(p)
+                    .map(|metadata| {
+                        metadata.file_type().is_file() && !metadata.file_type().is_symlink()
+                    })
+                    .unwrap_or(false)
+            })
             .ok_or_else(|| ChatVaultError::FileNotFound {
                 path: format!("任务 {id} 的上传来源已丢失：{selected}"),
             })?;
@@ -53,4 +65,57 @@ impl Database {
 /// 转换 SQLite 错误。
 fn db_error(e: rusqlite::Error) -> ChatVaultError {
     ChatVaultError::Database(e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn decrypted_upload_never_falls_back_to_ciphertext_source() {
+        let db = Database::open_in_memory().unwrap();
+        let source = std::env::temp_dir().join(format!(
+            "chatvault-upload-cipher-{}.dat",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&source, b"ciphertext").unwrap();
+        let plaintext = b"plaintext";
+        let hash = chatvault_metadata::compute_blake3_bytes(plaintext).hex_hash;
+        let object_id = format!("blake3:{hash}");
+        let now = Utc::now().to_rfc3339();
+        let conn = db.connection();
+        conn.execute(
+            "INSERT INTO file_objects (object_id,hash,size,mime,extension,created_at)
+             VALUES (?1,?2,?3,'image/png','png',?4)",
+            rusqlite::params![object_id, hash, plaintext.len() as i64, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_records
+             (record_id,object_id,source_type,original_name,file_time,time_source,discovered_at,device_id)
+             VALUES ('record-upload-cipher',?1,'wechat-windows-4','image.png',?2,'mtime',?2,'device')",
+            rusqlite::params![object_id, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO local_files
+             (record_id,original_path,cache_path,size,source_size,mtime_ms,availability,content_origin)
+             VALUES ('record-upload-cipher',?1,NULL,?2,10,1,'remote_only','decrypted')",
+            rusqlite::params![source.to_string_lossy().to_string(), plaintext.len() as i64],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO upload_tasks (task_id,record_id,object_id,status,updated_at)
+             VALUES ('task-upload-cipher','record-upload-cipher',?1,'queued',?2)",
+            rusqlite::params![object_id, now],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            db.upload_source("task-upload-cipher"),
+            Err(ChatVaultError::FileNotFound { .. })
+        ));
+        let _ = std::fs::remove_file(source);
+    }
 }

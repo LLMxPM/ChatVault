@@ -11,6 +11,7 @@ pub struct FileObjectViewDto {
     pub object_id: String,
     pub hash: String,
     pub original_name: String,
+    pub extension: String,
     pub file_size: u64,
     pub formatted_size: String,
     pub category: String,
@@ -57,6 +58,7 @@ fn map_object_item(item: ObjectSearchItem) -> FileObjectViewDto {
         object_id: item.object_id,
         hash: item.hash,
         original_name: item.original_name,
+        extension: item.extension,
         file_size: item.size,
         formatted_size: format_file_size(item.size),
         category: cat,
@@ -167,11 +169,7 @@ pub async fn get_vault_stats(
 
     let raw_u64 = total_raw_bytes.max(0) as u64;
     let uniq_u64 = unique_bytes.max(0) as u64;
-    let saved_u64 = if raw_u64 >= uniq_u64 {
-        raw_u64 - uniq_u64
-    } else {
-        0
-    };
+    let saved_u64 = raw_u64.saturating_sub(uniq_u64);
 
     let ratio = if raw_u64 > 0 {
         (saved_u64 as f64 / raw_u64 as f64) * 100.0
@@ -211,18 +209,92 @@ pub async fn reveal_file_in_explorer(path: String) -> std::result::Result<(), St
 ///
 /// 使用 explorer.exe 直接打开文件（不经 cmd 解析），避免路径元字符被 shell 解释。
 #[tauri::command]
-pub async fn open_file_with_system(path: String) -> std::result::Result<(), String> {
+pub async fn open_file_with_system(
+    path: String,
+    extension: Option<String>,
+) -> std::result::Result<(), String> {
     let p = Path::new(&path);
-    if !p.is_file() {
+    let metadata =
+        std::fs::symlink_metadata(p).map_err(|_| format!("文件不存在或不可读: {}", path))?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         return Err(format!("文件不存在或不可读: {}", path));
     }
 
+    // 哈希缓存没有扩展名时，创建受控的带真实后缀硬链接（跨卷时原子复制），
+    // 让 Windows 能按图片/视频类型选择默认程序；源缓存本身仍作为唯一打开依据。
+    let open_path = if p.extension().is_none() {
+        match extension.as_deref().filter(|value| {
+            !value.is_empty()
+                && value.len() <= 16
+                && value
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+        }) {
+            Some(ext) => prepare_extension_open_path(p, ext)
+                .map_err(|error| format!("准备系统打开副本失败: {error}"))?,
+            None => p.to_path_buf(),
+        }
+    } else {
+        p.to_path_buf()
+    };
+
     Command::new("explorer")
-        .arg(&path)
+        .arg(&open_path)
         .spawn()
         .map_err(|e| format!("打开文件失败: {}", e))?;
 
     Ok(())
+}
+
+/// 为无扩展名的受控缓存准备系统打开副本。
+fn prepare_extension_open_path(path: &Path, extension: &str) -> std::io::Result<PathBuf> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "缓存路径缺少目录"))?;
+    let open_dir = parent.join("open");
+    std::fs::create_dir_all(&open_dir)?;
+    let stem = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "缓存文件名无效"))?;
+    let target = open_dir.join(format!("{stem}.{extension}"));
+    match std::fs::symlink_metadata(&target) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "系统打开副本不是普通文件",
+                ));
+            }
+            if chatvault_metadata::verify_file_hash(&target, stem).is_ok() {
+                return Ok(target);
+            }
+            std::fs::remove_file(&target)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    // 同一受控目录优先使用硬链接，避免额外复制明文；跨卷或不支持硬链接时再复制。
+    if std::fs::hard_link(path, &target).is_ok() {
+        return Ok(target);
+    }
+    let mut temporary = tempfile::NamedTempFile::new_in(&open_dir)?;
+    let mut input = std::fs::File::open(path)?;
+    std::io::copy(&mut input, temporary.as_file_mut())?;
+    temporary.as_file().sync_all()?;
+    match temporary.persist_noclobber(&target) {
+        Ok(_) => Ok(target),
+        Err(error) => match std::fs::symlink_metadata(&target) {
+            Ok(metadata)
+                if metadata.file_type().is_file()
+                    && !metadata.file_type().is_symlink()
+                    && chatvault_metadata::verify_file_hash(&target, stem).is_ok() =>
+            {
+                Ok(target)
+            }
+            _ => Err(error.error),
+        },
+    }
 }
 
 /// 解析下载目录：空则使用用户 Downloads/ChatVault
@@ -381,5 +453,21 @@ mod tests {
         let p2 = unique_dest_path(&tmp, "a.txt");
         assert_eq!(p2.file_name().unwrap(), "a (2).txt");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn extension_open_copy_keeps_plaintext_and_real_suffix() {
+        let tmp =
+            std::env::temp_dir().join(format!("chatvault-open-copy-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let bytes = b"verified image bytes";
+        let hash = chatvault_metadata::compute_blake3_bytes(bytes).hex_hash;
+        let source = tmp.join(&hash);
+        std::fs::write(&source, bytes).unwrap();
+        let opened = prepare_extension_open_path(&source, "png").unwrap();
+        assert_eq!(opened.extension().and_then(|v| v.to_str()), Some("png"));
+        assert_eq!(std::fs::read(opened).unwrap(), bytes);
+        assert_eq!(std::fs::read(&source).unwrap(), bytes);
+        let _ = std::fs::remove_dir_all(tmp);
     }
 }

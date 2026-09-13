@@ -17,6 +17,7 @@ tokio = { workspace = true }
 chrono = { workspace = true }
 rusqlite = { workspace = true }
 uuid = { workspace = true }
+tempfile = "3"
 keyring = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

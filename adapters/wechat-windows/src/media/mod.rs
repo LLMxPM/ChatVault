@@ -9,6 +9,7 @@ pub mod parameters;
 pub mod prepare;
 pub mod v2;
 
+pub(crate) use images::is_link_or_reparse;
 pub use images::{
     conv_hash_for_path, discover_image_candidates, normalize_stem, variant_hint_from_filename,
     ImageCandidate, MediaVariant,
@@ -18,7 +19,7 @@ pub use parameters::{
     scan_parameter_codes, AccountKeyMaterial, ParameterScanError,
 };
 pub use prepare::{
-    count_parameter_codes, parameter_directories, prepare_account_images, try_decrypt_image,
+    count_parameter_codes, parameter_directories, prepare_image_candidates, try_decrypt_image,
     ImagePrepBatch, ImagePrepFailure, ImagePrepStats, PreparedImage,
 };
 pub use v2::{decrypt_v2, looks_like_v2, parse_v2_header, V2DecryptError, V2Header};

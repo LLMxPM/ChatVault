@@ -27,8 +27,8 @@ impl<'a> RemoteVerifier<'a> {
     /// 输入:
     ///   - `remote_path`: 远端相对路径 (例如 `chatvault-xxxx/objects/blake3/...`)
     ///   - `expected_hex`: 本地计算并预期的十六进制哈希
-    /// 输出: `Result<()>`
-    /// 关键约束:
+    ///     输出: `Result<()>`
+    ///     关键约束:
     ///   - 必须全量回读整个流，若传输中断或哈希不匹配，返回明确错误
     pub async fn verify_remote_hash(&self, remote_path: &str, expected_hex: &str) -> Result<()> {
         self.verify_remote_size(remote_path, expected_hex)

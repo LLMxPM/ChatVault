@@ -11,10 +11,10 @@ use chatvault_metadata::get_config_path;
 /// 职责:
 ///   - 若远端已存在 vault.json 则复用
 ///   - 否则以本地 VaultConfig 序列化后 PUT 创建
-/// 输入:
+///     输入:
 ///   - `client`: WebDAV 客户端
 ///   - `config`: 本地 Vault 配置
-/// 输出: `Result<()>`
+///     输出: `Result<()>`
 pub async fn ensure_vault_config(client: &WebDavClient, config: &VaultConfig) -> Result<()> {
     validate_config(config, &config.vault_id)?;
     let path = get_config_path(&config.vault_id);
@@ -43,7 +43,7 @@ pub async fn ensure_vault_config(client: &WebDavClient, config: &VaultConfig) ->
 /// 输入:
 ///   - `client`: WebDAV 客户端
 ///   - `vault_id`: 资料库标识
-/// 输出: `Result<VaultConfig>`
+///     输出: `Result<VaultConfig>`
 pub async fn load_vault_config(client: &WebDavClient, vault_id: &str) -> Result<VaultConfig> {
     chatvault_metadata::validate_vault_id(vault_id)?;
     let path = get_config_path(vault_id);

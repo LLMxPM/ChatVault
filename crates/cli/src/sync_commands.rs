@@ -37,6 +37,7 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
                 &mut indexed,
                 &mut skipped,
                 &mut discovered,
+                source.enable_images,
             )?,
             GENERIC_FOLDER_SOURCE_TYPE => scan_generic_source(
                 &mut db,
@@ -101,6 +102,7 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
 }
 
 /// 按微信 4.x 适配器扫描一个配置的根目录。
+#[allow(clippy::too_many_arguments)]
 fn scan_wechat_source(
     db: &mut Database,
     device_id: &str,
@@ -109,6 +111,7 @@ fn scan_wechat_source(
     indexed: &mut usize,
     skipped: &mut usize,
     discovered: &mut usize,
+    enable_images: bool,
 ) -> Result<()> {
     let root = PathBuf::from(root_path);
     if !root.is_dir() {
@@ -154,6 +157,7 @@ fn scan_wechat_source(
             indexed,
             skipped,
             discovered,
+            enable_images,
         )?;
     }
     Ok(())
@@ -235,8 +239,15 @@ fn process_scheduled_images(
     indexed: &mut usize,
     skipped: &mut usize,
     discovered: &mut usize,
+    enable_images: bool,
 ) -> Result<()> {
-    use adapter_wechat_windows::media::{discover_image_candidates, prepare_account_images};
+    use adapter_wechat_windows::media::{discover_image_candidates, prepare_image_candidates};
+
+    let _ = db.recover_pending_image_cache();
+    if !enable_images {
+        println!("    [image] 已按采集源配置关闭聊天图片解密");
+        return Ok(());
+    }
 
     if !acc.images_dir.is_dir() {
         return Ok(());
@@ -258,35 +269,50 @@ fn process_scheduled_images(
     }
     *discovered += candidates.len();
 
+    db.recover_image_candidates(Some(&acc.source_account_id))?;
+    let pending_rows =
+        db.list_pending_image_candidates(&acc.source_account_id, Utc::now().timestamp_millis())?;
+    let pending_ids: std::collections::HashMap<String, String> = pending_rows
+        .iter()
+        .map(|row| (row.source_path.clone(), row.candidate_id.clone()))
+        .collect();
+    let pending_candidates: Vec<_> = candidates
+        .into_iter()
+        .filter(|candidate| {
+            pending_ids.contains_key(&candidate.source_path.to_string_lossy().to_string())
+        })
+        .collect();
+    for candidate in &pending_candidates {
+        if let Some(id) = pending_ids.get(&candidate.source_path.to_string_lossy().to_string()) {
+            db.mark_candidate_preparing(id)?;
+        }
+    }
     let staging = db.staging_dir();
-    let batch = prepare_account_images(&acc.images_dir, &acc.source_account_id, &staging, 64);
+    let batch = prepare_image_candidates(pending_candidates, &acc.source_account_id, &staging, 64);
 
     let mut all_complete = true;
     for item in &batch.prepared {
         let source_path = item.candidate.source_path.to_string_lossy().to_string();
-        let pending = db
-            .list_pending_image_candidates(&acc.source_account_id, i64::MAX)
-            .unwrap_or_default();
-        let candidate_id = pending
-            .iter()
-            .find(|c| c.source_path == source_path)
-            .map(|c| c.candidate_id.clone());
+        let candidate_id = pending_ids.get(&source_path).cloned();
         match db.ingest_prepared_content(&item.prepared, device_id, candidate_id.as_deref()) {
             Ok(IngestResult::Indexed { .. }) => *indexed += 1,
             Ok(IngestResult::Skipped { .. }) => *skipped += 1,
             Err(e) => {
                 all_complete = false;
                 eprintln!("[-] 图片入库失败: {}", e);
+                if let Some(cid) = candidate_id.as_deref() {
+                    let _ = db.mark_candidate_failed(
+                        cid,
+                        chatvault_core::models::ImageErrorCode::PreparedContentMissing,
+                    );
+                }
             }
         }
     }
     for failure in &batch.failures {
         let source_path = failure.candidate.source_path.to_string_lossy().to_string();
-        let pending = db
-            .list_pending_image_candidates(&acc.source_account_id, i64::MAX)
-            .unwrap_or_default();
-        if let Some(row) = pending.iter().find(|c| c.source_path == source_path) {
-            let _ = db.mark_candidate_failed(&row.candidate_id, failure.error_code);
+        if let Some(candidate_id) = pending_ids.get(&source_path) {
+            let _ = db.mark_candidate_failed(candidate_id, failure.error_code);
         }
     }
     if all_complete {

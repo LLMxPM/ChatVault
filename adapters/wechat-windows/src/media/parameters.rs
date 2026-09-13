@@ -196,6 +196,11 @@ pub fn prepare_account_candidates(
         None => default_kvcomm_dirs(),
     };
     let codes = scan_parameter_codes(&dirs).map_err(map_parameter_error)?;
+    if codes.len() > max_candidates {
+        return Err(ChatVaultError::WeChatParse(
+            "candidate_limit_exceeded".into(),
+        ));
+    }
     Ok(build_key_candidates(
         &codes,
         account_dir_name,

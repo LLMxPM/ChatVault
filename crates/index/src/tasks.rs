@@ -18,7 +18,7 @@ impl Database {
             WHERE (?1 IS NULL OR t.status=?1) ORDER BY t.updated_at DESC LIMIT ?2";
         let mut stmt = self
             .conn
-            .prepare(&sql)
+            .prepare(sql)
             .map_err(|e| ChatVaultError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![status_filter, limit.min(500) as i64], |r| {

@@ -210,7 +210,7 @@ impl WebDavClient {
     ///
     /// 职责: 将路径逐层拆解，并从顶级逐层执行 MKCOL
     /// 输入: `relative_path`: 目标文件或目录路径
-    /// 输出: `Result<()>`
+    ///     输出: `Result<()>`
     pub async fn ensure_dir(&self, relative_path: &str) -> Result<()> {
         let parts: Vec<&str> = relative_path
             .trim_matches('/')
@@ -240,7 +240,7 @@ impl WebDavClient {
     /// 输入:
     ///   - `local_path`: 本地文件绝对路径
     ///   - `remote_path`: 远端相对路径
-    /// 输出: `Result<()>`
+    ///     输出: `Result<()>`
     pub async fn upload_file<P: AsRef<Path>>(
         &self,
         local_path: P,
@@ -293,7 +293,7 @@ impl WebDavClient {
     /// 输入:
     ///   - `bytes`: 数据切片
     ///   - `remote_path`: 目标相对路径
-    /// 输出: `Result<()>`
+    ///     输出: `Result<()>`
     pub async fn upload_bytes(&self, bytes: Vec<u8>, remote_path: &str) -> Result<()> {
         if let Some(parent) = Path::new(remote_path).parent() {
             let parent_str = parent.to_string_lossy().replace('\\', "/");
@@ -328,7 +328,7 @@ impl WebDavClient {
     ///   - `src_rel_path`: 源相对路径
     ///   - `dest_rel_path`: 目标相对路径
     ///   - `overwrite`: 是否覆盖目标
-    /// 输出: `Result<()>`
+    ///     输出: `Result<()>`
     pub async fn move_resource(
         &self,
         src_rel_path: &str,
@@ -390,8 +390,8 @@ impl WebDavClient {
     ///   - `remote_path`: 远端相对路径
     ///   - `dest_path`: 最终本地绝对路径（父目录需可写）
     ///   - `expected_hex`: 预期十六进制哈希（可含 `blake3:` 前缀）
-    /// 输出: `Result<u64>` 写入字节数
-    /// 关键约束:
+    ///     输出: `Result<u64>` 写入字节数
+    ///     关键约束:
     ///   - 校验失败删除临时文件，不覆盖目标
     ///   - 目标已存在时覆盖为校验通过的新文件
     pub async fn download_to_path<P: AsRef<Path>>(

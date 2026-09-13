@@ -3,15 +3,19 @@
 //! 桌面与 CLI 共用；微信准备细节调用适配器 API，不感知 V2 内部结构。
 
 use crate::media::{
-    conv_hash_for_path, decrypt_v2, default_kvcomm_dirs, derive_key_material,
-    discover_image_candidates, looks_like_v2, normalize_account_id, normalize_stem,
-    prepare_account_candidates, scan_parameter_codes, ImageCandidate, MediaVariant, V2DecryptError,
+    conv_hash_for_path, decrypt_v2, default_kvcomm_dirs, derive_key_material, looks_like_v2,
+    normalize_account_id, normalize_stem, prepare_account_candidates, scan_parameter_codes,
+    ImageCandidate, MediaVariant,
 };
 use chatvault_core::models::{ImageErrorCode, PreparedContent};
 use chatvault_metadata::{looks_like_standard_image, validate_image_bytes};
 use chatvault_scanner::check_file_stability_sync;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// 单文件解密读取上限，防止异常源文件耗尽桌面进程内存。
+const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// 单个账号的图片准备结果统计
 #[derive(Debug, Default, Clone)]
@@ -61,12 +65,12 @@ pub struct ImagePrepBatch {
     pub stats: ImagePrepStats,
 }
 
-/// 准备一个账号的全部可处理图片。
+/// 准备已由索引层筛选出的图片候选。
 ///
-/// 输入: 图片根目录、账号目录名、受控明文暂存目录。
-/// 输出: 成功准备的明文列表与失败明细。
-pub fn prepare_account_images(
-    images_dir: &Path,
+/// 每次只把一个源文件读入内存；标准图片不依赖微信参数，V2 图片只有在
+/// 完整解密并通过标准解码后才写入受控 pending 目录。
+pub fn prepare_image_candidates(
+    candidates: Vec<ImageCandidate>,
     account_dir_name: &str,
     staging_dir: &Path,
     max_candidates: usize,
@@ -77,7 +81,6 @@ pub fn prepare_account_images(
         stats: ImagePrepStats::default(),
     };
 
-    let candidates = discover_image_candidates(images_dir, account_dir_name);
     batch.stats.discovered = candidates.len();
     if candidates.is_empty() {
         return batch;
@@ -90,39 +93,12 @@ pub fn prepare_account_images(
         .collect();
     batch.stats.logical_groups = groups.len();
 
-    // 扫描参数
-    let key_materials = match prepare_account_candidates(account_dir_name, None, max_candidates) {
-        Ok(m) => m,
-        Err(_) => {
-            // 所有候选标记为参数不可用
-            batch.stats.parameters_unavailable = candidates.len();
-            for c in candidates {
-                batch.failures.push(ImagePrepFailure {
-                    candidate: c,
-                    error_code: ImageErrorCode::MediaParametersUnavailable,
-                });
-            }
-            return batch;
-        }
-    };
-
-    if key_materials.is_empty() {
-        batch.stats.parameters_unavailable = candidates.len();
-        for c in candidates {
-            batch.failures.push(ImagePrepFailure {
-                candidate: c,
-                error_code: ImageErrorCode::MediaParametersUnavailable,
-            });
-        }
-        return batch;
-    }
-
     // 组内最大像素表（用于变体判定）
     let mut group_max_pixels: std::collections::HashMap<String, (u32, u32)> =
         std::collections::HashMap::new();
 
-    // 第一遍：尝试全部候选，收集尺寸
-    let mut decrypted_ok: Vec<(ImageCandidate, Vec<u8>, MediaVariant)> = Vec::new();
+    // 参数只在遇到第一张 V2 图片时读取；标准明文图片无需参数。
+    let mut key_materials: Option<Vec<crate::media::AccountKeyMaterial>> = None;
 
     for candidate in candidates {
         // 稳定性检查
@@ -137,36 +113,62 @@ pub fn prepare_account_images(
             continue;
         }
 
-        let data = match std::fs::read(&candidate.source_path) {
-            Ok(d) => d,
-            Err(_) => {
-                batch.failures.push(ImagePrepFailure {
-                    candidate,
-                    error_code: ImageErrorCode::SourceChanged,
-                });
-                continue;
-            }
-        };
+        let (data, source_size, source_mtime_ms, source_digest) =
+            match read_source_stable(&candidate.source_path) {
+                Ok(value) => value,
+                Err(error_code) => {
+                    batch.failures.push(ImagePrepFailure {
+                        candidate,
+                        error_code,
+                    });
+                    continue;
+                }
+            };
+        if source_size != candidate.file_size
+            || source_mtime_ms != candidate.modified_time.timestamp_millis()
+        {
+            batch.failures.push(ImagePrepFailure {
+                candidate,
+                error_code: ImageErrorCode::SourceChanged,
+            });
+            continue;
+        }
 
         // 标准明文图片（另存到通用目录的情况不在此路径）
         if looks_like_standard_image(&data) {
             match validate_image_bytes(&data) {
                 Ok(validated) => {
-                    let pixels = validated.width as u64 * validated.height as u64;
-                    let entry = group_max_pixels
-                        .entry(candidate.image_group_key.clone())
-                        .or_insert((0, 0));
-                    if pixels > entry.0 as u64 * entry.1 as u64 {
-                        *entry = (validated.width, validated.height);
+                    if let Some(item) = build_prepared_image(
+                        candidate.clone(),
+                        data,
+                        validated,
+                        MediaVariant::Display,
+                        account_dir_name,
+                        staging_dir,
+                        source_size,
+                        source_mtime_ms,
+                        source_digest,
+                    ) {
+                        update_group_max(&mut group_max_pixels, &item.prepared);
+                        batch.prepared.push(item);
+                    } else {
+                        batch.failures.push(ImagePrepFailure {
+                            candidate,
+                            error_code: ImageErrorCode::InsufficientSpace,
+                        });
                     }
-                    let variant = MediaVariant::Display;
-                    decrypted_ok.push((candidate, data, variant));
                 }
-                Err(_) => {
-                    batch.stats.invalid_image += 1;
+                Err(error) => {
+                    let error_code = if error.to_string().contains("unsupported_payload") {
+                        batch.stats.unsupported_payload += 1;
+                        ImageErrorCode::UnsupportedPayload
+                    } else {
+                        batch.stats.invalid_image += 1;
+                        ImageErrorCode::InvalidImage
+                    };
                     batch.failures.push(ImagePrepFailure {
                         candidate,
-                        error_code: ImageErrorCode::InvalidImage,
+                        error_code,
                     });
                 }
             }
@@ -183,30 +185,75 @@ pub fn prepare_account_images(
             continue;
         }
 
-        // 尝试所有密钥候选
-        let mut decrypted: Option<Vec<u8>> = None;
-        let mut any_structure_ok = false;
-        for material in &key_materials {
-            match decrypt_v2(&data, &material.aes_key, material.xor_byte) {
-                Ok(plain) => {
-                    decrypted = Some(plain);
-                    break;
+        let materials = if let Some(materials) = key_materials.as_ref() {
+            materials
+        } else {
+            match prepare_account_candidates(account_dir_name, None, max_candidates) {
+                Ok(materials) if !materials.is_empty() => {
+                    key_materials = Some(materials);
+                    key_materials.as_ref().unwrap()
                 }
-                Err(V2DecryptError::SignatureMismatch) => continue,
-                Err(V2DecryptError::TooShort) => {
-                    any_structure_ok = true;
+                Ok(_) => {
+                    batch.stats.parameters_unavailable += 1;
+                    batch.failures.push(ImagePrepFailure {
+                        candidate,
+                        error_code: ImageErrorCode::MediaParametersUnavailable,
+                    });
+                    continue;
+                }
+                Err(error) if error.to_string().contains("candidate_limit_exceeded") => {
+                    batch.failures.push(ImagePrepFailure {
+                        candidate,
+                        error_code: ImageErrorCode::CandidateLimitExceeded,
+                    });
                     continue;
                 }
                 Err(_) => {
-                    any_structure_ok = true;
+                    batch.stats.parameters_unavailable += 1;
+                    batch.failures.push(ImagePrepFailure {
+                        candidate,
+                        error_code: ImageErrorCode::MediaParametersUnavailable,
+                    });
                     continue;
+                }
+            }
+        };
+
+        // 尝试所有密钥候选
+        let mut prepared: Option<(Vec<u8>, chatvault_metadata::ValidatedImage)> = None;
+        let mut any_decrypted = false;
+        let mut any_unsupported_payload = false;
+        // 只有完整图片校验成功才接受候选，填充成功但图片损坏时继续尝试。
+        for material in materials {
+            if let Ok(plain) = decrypt_v2(&data, &material.aes_key, material.xor_byte) {
+                any_decrypted = true;
+                match validate_image_bytes(&plain) {
+                    Ok(validated) => {
+                        prepared = Some((plain, validated));
+                        break;
+                    }
+                    Err(error) if error.to_string().contains("unsupported_payload") => {
+                        any_unsupported_payload = true;
+                    }
+                    Err(_) => {}
                 }
             }
         }
 
-        let Some(plain) = decrypted else {
-            if any_structure_ok {
-                // 头合法但密钥未命中
+        let Some((plain, validated)) = prepared else {
+            if any_unsupported_payload {
+                batch.stats.unsupported_payload += 1;
+                batch.failures.push(ImagePrepFailure {
+                    candidate,
+                    error_code: ImageErrorCode::UnsupportedPayload,
+                });
+            } else if any_decrypted {
+                batch.stats.invalid_image += 1;
+                batch.failures.push(ImagePrepFailure {
+                    candidate,
+                    error_code: ImageErrorCode::InvalidImage,
+                });
+            } else if crate::media::parse_v2_header(&data).is_ok() {
                 batch.stats.parameters_not_applicable += 1;
                 batch.failures.push(ImagePrepFailure {
                     candidate,
@@ -222,112 +269,177 @@ pub fn prepare_account_images(
             continue;
         };
 
-        // 完整校验
-        match validate_image_bytes(&plain) {
-            Ok(validated) => {
-                let pixels = validated.width as u64 * validated.height as u64;
-                let entry = group_max_pixels
-                    .entry(candidate.image_group_key.clone())
-                    .or_insert((0, 0));
-                if pixels > entry.0 as u64 * entry.1 as u64 {
-                    *entry = (validated.width, validated.height);
-                }
-                let hint = candidate.filename_variant;
-                // 暂存为 Unknown，第二遍根据组内最大尺寸修正
-                decrypted_ok.push((candidate, plain, hint.unwrap_or(MediaVariant::Unknown)));
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("unsupported_payload") {
-                    batch.stats.unsupported_payload += 1;
-                    batch.failures.push(ImagePrepFailure {
-                        candidate,
-                        error_code: ImageErrorCode::UnsupportedPayload,
-                    });
-                } else {
-                    batch.stats.invalid_image += 1;
-                    batch.failures.push(ImagePrepFailure {
-                        candidate,
-                        error_code: ImageErrorCode::InvalidImage,
-                    });
-                }
-            }
+        let hint = candidate.filename_variant.unwrap_or(MediaVariant::Unknown);
+        if let Some(item) = build_prepared_image(
+            candidate.clone(),
+            plain,
+            validated,
+            hint,
+            account_dir_name,
+            staging_dir,
+            source_size,
+            source_mtime_ms,
+            source_digest,
+        ) {
+            update_group_max(&mut group_max_pixels, &item.prepared);
+            batch.prepared.push(item);
+        } else {
+            batch.failures.push(ImagePrepFailure {
+                candidate,
+                error_code: ImageErrorCode::InsufficientSpace,
+            });
         }
     }
 
-    // 第二遍：写入明文暂存并构建 PreparedContent
-    let _ = std::fs::create_dir_all(staging_dir);
-    for (candidate, plain, hint_variant) in decrypted_ok {
-        let validated = match validate_image_bytes(&plain) {
-            Ok(v) => v,
-            Err(_) => {
-                batch.stats.invalid_image += 1;
-                batch.failures.push(ImagePrepFailure {
-                    candidate,
-                    error_code: ImageErrorCode::InvalidImage,
-                });
-                continue;
-            }
-        };
-
+    // 第二遍只修正变体标签，不保留任何整图字节。
+    for item in &mut batch.prepared {
         let (max_w, max_h) = group_max_pixels
-            .get(&candidate.image_group_key)
+            .get(item.prepared.image_group_key.as_deref().unwrap_or_default())
             .copied()
-            .unwrap_or((validated.width, validated.height));
+            .unwrap_or((
+                item.prepared.width.unwrap_or(1),
+                item.prepared.height.unwrap_or(1),
+            ));
+        let hint = item
+            .prepared
+            .media_variant
+            .as_deref()
+            .map(|value| match value {
+                "display" => MediaVariant::Display,
+                "high" => MediaVariant::High,
+                "thumbnail" => MediaVariant::Thumbnail,
+                _ => MediaVariant::Unknown,
+            });
         let variant = crate::media::images::resolve_variant(
-            Some(hint_variant),
-            validated.width,
-            validated.height,
+            hint,
+            item.prepared.width.unwrap_or(1),
+            item.prepared.height.unwrap_or(1),
             max_w as u64 * max_h as u64,
         );
-
-        let hash = chatvault_metadata::compute_blake3_bytes(&plain);
-        let export_name = format!("{}.{}", candidate.normalized_stem, validated.extension);
-        let plaintext_path = staging_dir.join(&hash.hex_hash);
-
-        // 原子写入明文
-        if !plaintext_path.exists() {
-            if let Err(e) = std::fs::write(&plaintext_path, &plain) {
-                tracing::warn!("写入明文暂存失败 {}: {}", plaintext_path.display(), e);
-                batch.failures.push(ImagePrepFailure {
-                    candidate,
-                    error_code: ImageErrorCode::InsufficientSpace,
-                });
-                continue;
-            }
-        }
-
-        let prepared = PreparedContent {
-            plaintext_path: plaintext_path.to_string_lossy().to_string(),
-            content_hash: hash.hex_hash.clone(),
-            size: validated.size,
-            mime: validated.mime.clone(),
-            extension: validated.extension.clone(),
-            width: Some(validated.width),
-            height: Some(validated.height),
-            frame_count: Some(validated.frame_count),
-            source_type: chatvault_core::models::WECHAT_WINDOWS_4_SOURCE_TYPE.to_string(),
-            source_account_id: Some(account_dir_name.to_string()),
-            source_conversation_id: candidate.conv_hash.clone(),
-            export_name,
-            source_original_name: candidate.file_name.clone(),
-            source_path: candidate.source_path.to_string_lossy().to_string(),
-            source_mtime_ms: candidate.modified_time.timestamp_millis(),
-            source_size: candidate.file_size,
-            media_variant: Some(variant.as_str().to_string()),
-            image_group_key: Some(candidate.image_group_key.clone()),
-            file_time: candidate.modified_time,
-        };
-
-        batch.stats.prepared += 1;
-        batch.prepared.push(PreparedImage {
-            candidate,
-            prepared,
-            plaintext_path,
-        });
+        item.prepared.media_variant = Some(variant.as_str().to_string());
     }
 
+    batch.stats.prepared = batch.prepared.len();
     batch
+}
+
+/// 读取并校验源文件快照，返回字节、大小、mtime 和源 BLAKE3 摘要。
+fn read_source_stable(
+    path: &Path,
+) -> std::result::Result<(Vec<u8>, u64, i64, String), ImageErrorCode> {
+    if crate::media::images::is_link_or_reparse(path) {
+        return Err(ImageErrorCode::SourceChanged);
+    }
+    let before = std::fs::metadata(path).map_err(|_| ImageErrorCode::SourceChanged)?;
+    if before.len() == 0 {
+        return Err(ImageErrorCode::EmptySource);
+    }
+    if before.len() > MAX_SOURCE_BYTES {
+        return Err(ImageErrorCode::InsufficientSpace);
+    }
+    let digest_before =
+        chatvault_metadata::compute_blake3_file(path).map_err(|_| ImageErrorCode::SourceChanged)?;
+    if digest_before.bytes_read != before.len() {
+        return Err(ImageErrorCode::SourceChanged);
+    }
+    let mtime_before = before
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_millis() as i64)
+        .unwrap_or(0);
+    let file = std::fs::File::open(path).map_err(|_| ImageErrorCode::SourceChanged)?;
+    let mut data = Vec::with_capacity(before.len() as usize);
+    file.take(MAX_SOURCE_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(|_| ImageErrorCode::SourceChanged)?;
+    if data.len() as u64 > MAX_SOURCE_BYTES {
+        return Err(ImageErrorCode::InsufficientSpace);
+    }
+    let after = std::fs::metadata(path).map_err(|_| ImageErrorCode::SourceChanged)?;
+    if crate::media::images::is_link_or_reparse(path) {
+        return Err(ImageErrorCode::SourceChanged);
+    }
+    let mtime_after = after
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_millis() as i64)
+        .unwrap_or(0);
+    if before.len() != data.len() as u64
+        || before.len() != after.len()
+        || mtime_before != mtime_after
+    {
+        return Err(ImageErrorCode::SourceChanged);
+    }
+    let digest = chatvault_metadata::compute_blake3_bytes(&data).hex_hash;
+    let digest_after =
+        chatvault_metadata::compute_blake3_file(path).map_err(|_| ImageErrorCode::SourceChanged)?;
+    if digest != digest_after.hex_hash || digest_before.hex_hash != digest_after.hex_hash {
+        return Err(ImageErrorCode::SourceChanged);
+    }
+    Ok((data, after.len(), mtime_after, digest))
+}
+
+/// 将完整校验后的图片写入 pending 目录并构建入库上下文。
+#[allow(clippy::too_many_arguments)]
+fn build_prepared_image(
+    candidate: ImageCandidate,
+    data: Vec<u8>,
+    validated: chatvault_metadata::ValidatedImage,
+    hint: MediaVariant,
+    account_dir_name: &str,
+    staging_dir: &Path,
+    source_size: u64,
+    source_mtime_ms: i64,
+    source_digest: String,
+) -> Option<PreparedImage> {
+    let pending_dir = staging_dir.join("pending");
+    let plaintext_path =
+        chatvault_metadata::staging::stage_bytes_pending(&data, &pending_dir).ok()?;
+    let hash = chatvault_metadata::compute_blake3_bytes(&data);
+    let prepared = PreparedContent {
+        plaintext_path: plaintext_path.to_string_lossy().to_string(),
+        content_hash: hash.hex_hash,
+        size: validated.size,
+        mime: validated.mime,
+        extension: validated.extension.clone(),
+        width: Some(validated.width),
+        height: Some(validated.height),
+        frame_count: Some(validated.frame_count),
+        source_type: chatvault_core::models::WECHAT_WINDOWS_4_SOURCE_TYPE.to_string(),
+        source_account_id: Some(account_dir_name.to_string()),
+        source_conversation_id: candidate.conv_hash.clone(),
+        export_name: format!("{}.{}", candidate.normalized_stem, validated.extension),
+        source_original_name: candidate.file_name.clone(),
+        source_path: candidate.source_path.to_string_lossy().to_string(),
+        source_mtime_ms,
+        source_size,
+        source_digest: Some(source_digest),
+        media_variant: Some(hint.as_str().to_string()),
+        image_group_key: Some(candidate.image_group_key.clone()),
+        file_time: candidate.modified_time,
+    };
+    Some(PreparedImage {
+        candidate,
+        prepared,
+        plaintext_path,
+    })
+}
+
+/// 更新会话分组的最大图片尺寸。
+fn update_group_max(
+    groups: &mut std::collections::HashMap<String, (u32, u32)>,
+    prepared: &PreparedContent,
+) {
+    let Some(key) = prepared.image_group_key.as_deref() else {
+        return;
+    };
+    let (width, height) = (prepared.width.unwrap_or(0), prepared.height.unwrap_or(0));
+    let entry = groups.entry(key.to_string()).or_insert((0, 0));
+    if u64::from(width) * u64::from(height) > u64::from(entry.0) * u64::from(entry.1) {
+        *entry = (width, height);
+    }
 }
 
 /// 尝试解密单个文件（供测试与调试用）
@@ -339,18 +451,34 @@ pub fn try_decrypt_image(
     if !looks_like_v2(data) {
         return Err(ImageErrorCode::UnsupportedStructure);
     }
+    if crate::media::parse_v2_header(data).is_err() {
+        return Err(ImageErrorCode::UnsupportedStructure);
+    }
     let materials: Vec<_> = codes
         .iter()
         .map(|&c| derive_key_material(c, account_dir_name))
         .collect();
+    let mut any_decrypted = false;
+    let mut any_unsupported_payload = false;
     for m in &materials {
-        match decrypt_v2(data, &m.aes_key, m.xor_byte) {
-            Ok(plain) => return Ok(plain),
-            Err(V2DecryptError::SignatureMismatch) => continue,
-            Err(_) => continue,
+        if let Ok(plain) = decrypt_v2(data, &m.aes_key, m.xor_byte) {
+            any_decrypted = true;
+            match validate_image_bytes(&plain) {
+                Ok(_) => return Ok(plain),
+                Err(error) if error.to_string().contains("unsupported_payload") => {
+                    any_unsupported_payload = true;
+                }
+                Err(_) => {}
+            }
         }
     }
-    Err(ImageErrorCode::AccountParametersMiss)
+    if any_unsupported_payload {
+        Err(ImageErrorCode::UnsupportedPayload)
+    } else if any_decrypted {
+        Err(ImageErrorCode::InvalidImage)
+    } else {
+        Err(ImageErrorCode::AccountParametersMiss)
+    }
 }
 
 /// 获取默认参数目录（供 UI 展示说明）
@@ -464,5 +592,25 @@ mod tests {
     fn non_v2_reports_unsupported_structure() {
         let result = try_decrypt_image(b"not v2 at all here!!", &[1], "acc");
         assert_eq!(result, Err(ImageErrorCode::UnsupportedStructure));
+    }
+
+    #[test]
+    fn standard_png_prepares_without_parameter_files() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("cv_img_prepare_{unique}"));
+        let image_dir = root.join("conv1").join("2026-09").join("Img");
+        std::fs::create_dir_all(&image_dir).unwrap();
+        let source = image_dir.join("plain.dat");
+        std::fs::write(&source, minimal_png()).unwrap();
+        let candidates = crate::media::discover_image_candidates(&root, "wxid_test");
+        let staging = root.join("objects");
+        let batch = prepare_image_candidates(candidates, "wxid_test", &staging, 64);
+        assert_eq!(batch.prepared.len(), 1);
+        assert!(batch.failures.is_empty());
+        assert!(std::path::Path::new(&batch.prepared[0].prepared.plaintext_path).is_file());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

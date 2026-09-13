@@ -32,7 +32,7 @@ impl WeChat4Detector {
     /// 可继续枚举账号的规范路径。
     pub fn validate_root<P: AsRef<Path>>(root: P) -> Result<PathBuf> {
         let path = root.as_ref();
-        if !path.is_dir() {
+        if !path.is_dir() || crate::media::is_link_or_reparse(path) {
             return Err(ChatVaultError::FileNotFound {
                 path: path.display().to_string(),
             });
@@ -96,10 +96,10 @@ impl WeChat4Detector {
     ///       并验证账号目录下是否存在 `msg` 或 `msg/file`。
     /// 输入:
     ///   - `root`: 微信 4.x 数据根目录 (例如 `Documents/xwechat_files`)
-    /// 输出: `Result<Vec<WeChatAccount>>`
+    ///     输出: `Result<Vec<WeChatAccount>>`
     pub fn find_accounts<P: AsRef<Path>>(root: P) -> Result<Vec<WeChatAccount>> {
         let r = root.as_ref();
-        if !r.exists() {
+        if !r.exists() || crate::media::is_link_or_reparse(r) {
             return Err(ChatVaultError::FileNotFound {
                 path: r.display().to_string(),
             });
@@ -110,7 +110,7 @@ impl WeChat4Detector {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            if crate::media::is_link_or_reparse(&path) || !path.is_dir() {
                 continue;
             }
 

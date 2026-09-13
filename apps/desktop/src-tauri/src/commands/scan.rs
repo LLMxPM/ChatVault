@@ -3,7 +3,7 @@
 // 多媒体根：msg/file 与 msg/video 各自独立检查点；图片走候选准备流程。
 use super::*;
 use adapter_wechat_windows::media::{
-    discover_image_candidates, prepare_account_images, ImagePrepStats,
+    discover_image_candidates, prepare_image_candidates, ImagePrepStats,
 };
 use chatvault_core::models::{
     CollectSource, GENERIC_FOLDER_SOURCE_TYPE, WECHAT_WINDOWS_4_SOURCE_TYPE,
@@ -193,12 +193,14 @@ fn is_selected_account(
 ///
 /// 依次处理 `msg/file`、`msg/video` 两个媒体根（各自独立检查点），
 /// 再对 `msg/attach` 图片做候选准备与入库。
+#[allow(clippy::too_many_arguments)]
 fn scan_wechat_source(
     db: &mut chatvault_index::Database,
     device_id: &str,
     root: &std::path::Path,
     target_accounts: Option<&[WechatAccountTargetDto]>,
     full_scan: bool,
+    enable_images: bool,
     scan_started_ms: i64,
     tally: &mut ScanTally,
     image_stats: &mut ImagePrepStats,
@@ -238,7 +240,15 @@ fn scan_wechat_source(
         )?;
 
         // --- 图片: msg/attach ---
-        process_images(db, device_id, &acc, scan_started_ms, tally, image_stats)?;
+        process_images(
+            db,
+            device_id,
+            &acc,
+            scan_started_ms,
+            enable_images,
+            tally,
+            image_stats,
+        )?;
     }
     Ok(())
 }
@@ -327,17 +337,31 @@ fn process_images(
     device_id: &str,
     acc: &adapter_wechat_windows::WeChatAccount,
     scan_started_ms: i64,
+    enable_images: bool,
     tally: &mut ScanTally,
     image_stats: &mut ImagePrepStats,
 ) -> std::result::Result<(), String> {
+    let _ = db.recover_pending_image_cache();
+    if !enable_images {
+        tracing::info!(
+            "账号 {} 已关闭聊天图片解密，跳过图片参数与上传",
+            acc.source_account_id
+        );
+        return Ok(());
+    }
     if !acc.images_dir.is_dir() {
         return Ok(());
     }
-
     let images_root_s = acc.images_dir.to_string_lossy().to_string();
 
     // 1. 发现候选并持久化
     let candidates = discover_image_candidates(&acc.images_dir, &acc.source_account_id);
+    let discovered_count = candidates.len();
+    let logical_groups = candidates
+        .iter()
+        .map(|candidate| candidate.image_group_key.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
     for c in &candidates {
         db.upsert_image_candidate(
             &images_root_s,
@@ -353,15 +377,39 @@ fn process_images(
         .map_err(|e| e.to_string())?;
     }
 
+    db.recover_image_candidates(Some(&acc.source_account_id))
+        .map_err(|e| e.to_string())?;
+    let pending_rows = db
+        .list_pending_image_candidates(&acc.source_account_id, Utc::now().timestamp_millis())
+        .map_err(|e| e.to_string())?;
+    let pending_ids: std::collections::HashMap<String, String> = pending_rows
+        .iter()
+        .map(|row| (row.source_path.clone(), row.candidate_id.clone()))
+        .collect();
+    let pending_candidates: Vec<_> = candidates
+        .into_iter()
+        .filter(|candidate| {
+            pending_ids.contains_key(&candidate.source_path.to_string_lossy().to_string())
+        })
+        .collect();
+    for candidate in &pending_candidates {
+        if let Some(candidate_id) =
+            pending_ids.get(&candidate.source_path.to_string_lossy().to_string())
+        {
+            db.mark_candidate_preparing(candidate_id)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
     // 2. 准备（解密 + 校验 + 暂存）
     let staging = db.staging_dir();
-    let batch = prepare_account_images(
-        &acc.images_dir,
+    let batch = prepare_image_candidates(
+        pending_candidates,
         &acc.source_account_id,
         &staging,
         64, // 候选密钥上限
     );
-    image_stats.discovered += batch.stats.discovered;
+    image_stats.discovered += discovered_count;
     image_stats.prepared += batch.stats.prepared;
     image_stats.parameters_unavailable += batch.stats.parameters_unavailable;
     image_stats.parameters_not_applicable += batch.stats.parameters_not_applicable;
@@ -369,27 +417,16 @@ fn process_images(
     image_stats.unsupported_payload += batch.stats.unsupported_payload;
     image_stats.invalid_image += batch.stats.invalid_image;
     image_stats.waiting_stable += batch.stats.waiting_stable;
-    image_stats.logical_groups += batch.stats.logical_groups;
+    image_stats.logical_groups += logical_groups;
 
-    tally.discovered += batch.stats.discovered;
+    tally.discovered += discovered_count;
 
     // 3. 入库成功的明文
     let mut all_complete = true;
     for item in &batch.prepared {
         let source_path = item.candidate.source_path.to_string_lossy().to_string();
-        // 幂等：同路径同哈希已入库则跳过
-        if db.path_is_current(&source_path).unwrap_or(false) {
-            tally.skipped += 1;
-            continue;
-        }
         // 找到候选 ID
-        let pending = db
-            .list_pending_image_candidates(&acc.source_account_id, i64::MAX)
-            .unwrap_or_default();
-        let candidate_id = pending
-            .iter()
-            .find(|c| c.source_path == source_path)
-            .map(|c| c.candidate_id.clone());
+        let candidate_id = pending_ids.get(&source_path).cloned();
 
         match db.ingest_prepared_content(&item.prepared, device_id, candidate_id.as_deref()) {
             Ok(chatvault_index::IngestResult::Indexed { is_new_object, .. }) => {
@@ -405,7 +442,7 @@ fn process_images(
             Err(e) => {
                 all_complete = false;
                 tracing::warn!("图片入库失败 {}: {}", source_path, e);
-                if let Some(cid) = &candidate_id {
+                if let Some(cid) = candidate_id.as_deref() {
                     let _ = db.mark_candidate_failed(
                         cid,
                         chatvault_core::models::ImageErrorCode::PreparedContentMissing,
@@ -418,11 +455,8 @@ fn process_images(
     // 4. 标记失败候选
     for failure in &batch.failures {
         let source_path = failure.candidate.source_path.to_string_lossy().to_string();
-        let pending = db
-            .list_pending_image_candidates(&acc.source_account_id, i64::MAX)
-            .unwrap_or_default();
-        if let Some(row) = pending.iter().find(|c| c.source_path == source_path) {
-            let _ = db.mark_candidate_failed(&row.candidate_id, failure.error_code);
+        if let Some(candidate_id) = pending_ids.get(&source_path) {
+            let _ = db.mark_candidate_failed(candidate_id, failure.error_code);
         }
     }
 
@@ -505,6 +539,7 @@ pub(crate) fn execute_scan(
                 &root,
                 target_accounts,
                 full_scan,
+                source.enable_images,
                 scan_started_ms,
                 &mut tally,
                 &mut image_stats,

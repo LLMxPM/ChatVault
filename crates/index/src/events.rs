@@ -49,6 +49,12 @@ impl Database {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let width = p.get("width").and_then(|v| v.as_u64()).map(|v| v as i64);
+        let height = p.get("height").and_then(|v| v.as_u64()).map(|v| v as i64);
+        let frame_count = p
+            .get("frame_count")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as i64);
 
         let tx = self
             .conn
@@ -56,9 +62,26 @@ impl Database {
             .map_err(|e| ChatVaultError::Database(e.to_string()))?;
 
         tx.execute(
-            "INSERT OR IGNORE INTO file_objects (object_id, hash, size, mime, extension, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![object_id, hash, size, mime, extension, created_at],
+            "INSERT OR IGNORE INTO file_objects
+             (object_id, hash, size, mime, extension, width, height, frame_count, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                object_id,
+                hash,
+                size,
+                mime,
+                extension,
+                width,
+                height,
+                frame_count,
+                created_at
+            ],
+        )
+        .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        tx.execute(
+            "UPDATE file_objects SET width=COALESCE(width, ?1), height=COALESCE(height, ?2),
+             frame_count=COALESCE(frame_count, ?3) WHERE object_id=?4",
+            params![width, height, frame_count, object_id],
         )
         .map_err(|e| ChatVaultError::Database(e.to_string()))?;
 

@@ -32,7 +32,7 @@ pub struct CommitMarker {
 ///   - `db`: 本地数据库
 ///   - `vault_id`: 资料库 ID
 ///   - `local_device_id`: 本机设备 ID（跳过自己的日志）
-/// 输出: `Result<usize>` 应用的新事件数
+///     输出: `Result<usize>` 应用的新事件数
 pub async fn pull_and_apply(
     client: &WebDavClient,
     db: &mut Database,

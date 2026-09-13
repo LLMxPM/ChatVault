@@ -90,7 +90,7 @@ pub struct ObjectSearchItem {
     pub discovered_at: String,
     pub source_count: usize,
     pub location: ObjectLocation,
-    /// 本机可打开路径（original_path 优先，其次 cache_path）
+    /// 本机可打开路径；解密来源只允许使用明文 cache_path。
     pub open_path: Option<String>,
 }
 
@@ -458,7 +458,8 @@ impl<'a> SearchService<'a> {
                 r.device_id,
                 NULLIF(kd.display_name, '') AS device_name,
                 l.original_path,
-                l.cache_path
+                l.cache_path,
+                l.content_origin
             FROM file_records r
             LEFT JOIN local_files l ON r.record_id = l.record_id
             LEFT JOIN source_accounts sa
@@ -493,6 +494,7 @@ impl<'a> SearchService<'a> {
                     row.get::<_, Option<String>>(10)?,
                     row.get::<_, Option<String>>(11)?,
                     row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<String>>(13)?,
                 ))
             })
             .map_err(|e| ChatVaultError::Database(format!("执行来源展开失败: {}", e)))?;
@@ -513,8 +515,10 @@ impl<'a> SearchService<'a> {
                 device_name,
                 original_path,
                 cache_path,
+                _content_origin,
             ) = row.map_err(|e| ChatVaultError::Database(e.to_string()))?;
 
+            // 来源详情的路径用于定位源文件；解密图片的可打开路径仍由对象查询单独处理。
             let has_local_path =
                 path_exists(original_path.as_deref()) || path_exists(cache_path.as_deref());
             results.push(ObjectSourceItem {
@@ -557,14 +561,14 @@ impl<'a> SearchService<'a> {
             .map(|id| id as &dyn rusqlite::ToSql)
             .collect();
 
-        // 1. 本地路径与可读性；open_path 优先 original，其次 cache
+        // 1. 本地路径与可读性；解密来源只能打开明文 cache_path。
         let mut any_local: HashSet<String> = HashSet::new();
         let mut local_readable: HashSet<String> = HashSet::new();
         let mut open_original: HashMap<String, String> = HashMap::new();
         let mut open_cache: HashMap<String, String> = HashMap::new();
         let sql = format!(
             r#"
-            SELECT r.object_id, l.original_path, l.cache_path
+            SELECT r.object_id, l.original_path, l.cache_path, l.content_origin
             FROM local_files l
             JOIN file_records r ON r.record_id = l.record_id
             WHERE r.object_id IN ({placeholders})
@@ -581,14 +585,22 @@ impl<'a> SearchService<'a> {
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
                     ))
                 })
                 .map_err(|e| ChatVaultError::Database(e.to_string()))?;
             for row in rows {
-                let (object_id, original_path, cache_path) =
+                let (object_id, original_path, cache_path, content_origin) =
                     row.map_err(|e| ChatVaultError::Database(e.to_string()))?;
                 any_local.insert(object_id.clone());
-                if path_exists(Some(&original_path)) {
+                if content_origin.as_deref() == Some("decrypted") {
+                    if path_exists(cache_path.as_deref()) {
+                        local_readable.insert(object_id.clone());
+                        if let Some(cache) = cache_path {
+                            open_cache.entry(object_id).or_insert(cache);
+                        }
+                    }
+                } else if path_exists(Some(&original_path)) {
                     local_readable.insert(object_id.clone());
                     open_original.entry(object_id).or_insert(original_path);
                 } else if path_exists(cache_path.as_deref()) {
@@ -666,8 +678,15 @@ impl<'a> SearchService<'a> {
 
 /// 路径非空且在磁盘上存在
 fn path_exists(path: Option<&str>) -> bool {
-    path.map(|p| !p.trim().is_empty() && std::path::Path::new(p).is_file())
-        .unwrap_or(false)
+    path.map(|p| {
+        if p.trim().is_empty() {
+            return false;
+        }
+        std::fs::symlink_metadata(p)
+            .map(|metadata| metadata.file_type().is_file() && !metadata.file_type().is_symlink())
+            .unwrap_or(false)
+    })
+    .unwrap_or(false)
 }
 
 /// 构建记录级过滤 WHERE 子句与参数（供记录检索与对象检索共用）
@@ -921,5 +940,82 @@ mod tests {
         assert_eq!(objects.len(), 1);
         assert_eq!(objects[0].location, ObjectLocation::Remote);
         assert!(objects[0].open_path.is_none());
+    }
+
+    #[test]
+    fn decrypted_object_opens_plaintext_cache_only() {
+        let db = Database::open_in_memory().unwrap();
+        let source = std::env::temp_dir().join(format!(
+            "chatvault-decrypted-source-{}.dat",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&source, b"ciphertext").unwrap();
+        let plaintext = b"verified plaintext";
+        let hash = chatvault_metadata::compute_blake3_bytes(plaintext).hex_hash;
+        let cache = db.staging_dir().join(&hash);
+        std::fs::write(&cache, plaintext).unwrap();
+        let object_id = format!("blake3:{hash}");
+        let record_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let conn = db.connection();
+        conn.execute(
+            "INSERT INTO file_objects (object_id,hash,size,mime,extension,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![
+                object_id,
+                hash,
+                plaintext.len() as i64,
+                "image/png",
+                "png",
+                now
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_records
+             (record_id,object_id,source_type,source_account_id,source_conversation_id,
+              original_name,file_time,time_source,discovered_at,device_id,
+              media_variant,image_group_key,source_original_name)
+             VALUES (?1,?2,?3,NULL,NULL,?4,?5,'mtime',?5,?6,NULL,NULL,?7)",
+            rusqlite::params![
+                record_id,
+                object_id,
+                "wechat-windows-4",
+                "photo.png",
+                now,
+                "dev",
+                "photo.dat"
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO local_files
+             (record_id,original_path,cache_path,size,source_size,mtime_ms,availability,content_origin)
+             VALUES (?1,?2,?3,?4,?5,?6,'available','decrypted')",
+            rusqlite::params![
+                record_id,
+                source.to_string_lossy().to_string(),
+                cache.to_string_lossy().to_string(),
+                plaintext.len() as i64,
+                10i64,
+                Utc::now().timestamp_millis()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_search_fts (record_id,original_name) VALUES (?1,?2)",
+            rusqlite::params![record_id, "photo.png"],
+        )
+        .unwrap();
+
+        let objects = SearchService::new(&db)
+            .search_objects(&SearchFilter::default(), "dev")
+            .unwrap();
+        assert_eq!(objects.len(), 1);
+        assert_eq!(
+            objects[0].open_path.as_deref(),
+            Some(cache.to_str().unwrap())
+        );
+        let _ = std::fs::remove_file(source);
     }
 }

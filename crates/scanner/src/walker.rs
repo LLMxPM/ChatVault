@@ -36,7 +36,7 @@ impl Default for ScanOptions {
 /// 输入:
 ///   - `root`: 根目录路径
 ///   - `options`: 过滤选项
-/// 输出: 路径列表 `Result<Vec<PathBuf>>`
+///     输出: 路径列表 `Result<Vec<PathBuf>>`
 pub fn scan_directory<P: AsRef<Path>>(root: P, options: &ScanOptions) -> Result<Vec<PathBuf>> {
     scan_directory_with_strategy(root, options, None, &FullScanStrategy)
 }
@@ -49,7 +49,7 @@ pub fn scan_directory<P: AsRef<Path>>(root: P, options: &ScanOptions) -> Result<
 ///   - `options`: 文件过滤选项
 ///   - `since`: 增量扫描起点；None 表示全量发现
 ///   - `strategy`: 当前来源使用的目录遍历策略
-/// 输出: 路径列表 `Result<Vec<PathBuf>>`
+///     输出: 路径列表 `Result<Vec<PathBuf>>`
 pub fn scan_directory_with_strategy<S: IncrementalScanStrategy + ?Sized, P: AsRef<Path>>(
     root: P,
     options: &ScanOptions,

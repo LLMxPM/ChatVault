@@ -56,6 +56,19 @@
                   {{ source.path }}
                 </p>
                 <p class="mt-0.5 text-cv-caption text-cv-text-3">{{ sourceStatusDetail(source) }}</p>
+                <label
+                  v-if="source.sourceType === 'wechat-windows-4'"
+                  class="mt-2 inline-flex cursor-pointer items-center gap-2 text-cv-caption text-cv-text-2"
+                >
+                  <input
+                    type="checkbox"
+                    class="h-4 w-4 accent-[var(--cv-accent)]"
+                    :checked="source.enableImages !== false"
+                    @change="toggleSourceImages(source)"
+                  />
+                  <span>启用聊天图片解密</span>
+                  <span class="text-cv-text-3">仅本机解密并备份可打开图片，不保存微信密钥</span>
+                </label>
               </div>
               <div class="flex shrink-0 items-center gap-1">
                 <UiButton
@@ -308,6 +321,7 @@ const {
   sourceStatusTone,
   sourceTypeLabel,
   toggleAccount,
+  toggleSourceImages,
 } = useCollectSources();
 const scheduleEnabled = ref(false);
 const scanIntervalMinutes = ref(30);

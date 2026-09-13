@@ -6,7 +6,7 @@
 use adapter_generic_folder::GenericFolderParser;
 use adapter_wechat_windows::{WeChat4Detector, WeChat4Parser};
 use anyhow::{Context, Result};
-use chatvault_core::models::DiscoveredFile;
+use chatvault_core::models::{CollectSource, DiscoveredFile, WECHAT_WINDOWS_4_SOURCE_TYPE};
 use chatvault_index::{Database, IngestResult, SearchFilter, SearchService};
 use chatvault_scanner::check_file_stability_sync;
 use chatvault_webdav::{CapabilityDetector, WebDavClient, WebDavConfig};
@@ -145,8 +145,13 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
     let mut new_object_count = 0;
     let mut discovered_count = 0;
 
-    if target.eq_ignore_ascii_case("wechat") {
-        let root = WeChat4Detector::detect_root().context("探测微信 4.x 根目录失败")?;
+    let wechat_root = if target.eq_ignore_ascii_case("wechat") {
+        Some(WeChat4Detector::detect_root().context("探测微信 4.x 根目录失败")?)
+    } else {
+        WeChat4Detector::validate_root(target).ok()
+    };
+    if let Some(root) = wechat_root {
+        let configured_images = load_cli_image_setting(&db, &root.to_string_lossy());
         let accounts = WeChat4Detector::find_accounts(&root)?;
         if accounts.is_empty() {
             println!("未找到可扫描的微信 4.x 账号");
@@ -195,6 +200,7 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
                 &mut skipped_count,
                 &mut new_object_count,
                 &mut discovered_count,
+                configured_images,
             )?;
         }
     } else {
@@ -252,6 +258,25 @@ fn resolve_scan_since(
     }
     let ms = db.get_scan_started_ms(root)?;
     Ok(ms.map(chatvault_index::system_time_from_ms))
+}
+
+/// 从持久化采集源配置读取微信图片开关；直接扫描未配置路径时默认开启。
+fn load_cli_image_setting(db: &Database, root: &str) -> bool {
+    let raw = db
+        .get_setting("collect_sources")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "[]".to_string());
+    let sources: Vec<CollectSource> = serde_json::from_str(&raw).unwrap_or_default();
+    let key = chatvault_core::normalize_scan_key(root);
+    sources
+        .into_iter()
+        .find(|source| {
+            source.source_type == WECHAT_WINDOWS_4_SOURCE_TYPE
+                && chatvault_core::normalize_scan_key(&source.path) == key
+        })
+        .map(|source| source.enable_images)
+        .unwrap_or(true)
 }
 
 /// 扫描单个媒体根（msg/file 或 msg/video）
@@ -347,13 +372,19 @@ fn process_cli_images(
     skipped_count: &mut usize,
     new_object_count: &mut usize,
     discovered_count: &mut usize,
+    enable_images: bool,
 ) -> Result<()> {
-    use adapter_wechat_windows::media::{discover_image_candidates, prepare_account_images};
+    use adapter_wechat_windows::media::{discover_image_candidates, prepare_image_candidates};
+
+    let _ = db.recover_pending_image_cache();
+    if !enable_images {
+        println!("    [image] 已按采集源配置关闭聊天图片解密");
+        return Ok(());
+    }
 
     if !acc.images_dir.is_dir() {
         return Ok(());
     }
-
     let images_root_s = acc.images_dir.to_string_lossy().to_string();
     let candidates = discover_image_candidates(&acc.images_dir, &acc.source_account_id);
     for c in &candidates {
@@ -372,19 +403,32 @@ fn process_cli_images(
     println!("    [image] 本次候选 {} 个图片", candidates.len());
     *discovered_count += candidates.len();
 
+    db.recover_image_candidates(Some(&acc.source_account_id))?;
+    let pending_rows =
+        db.list_pending_image_candidates(&acc.source_account_id, Utc::now().timestamp_millis())?;
+    let pending_ids: std::collections::HashMap<String, String> = pending_rows
+        .iter()
+        .map(|row| (row.source_path.clone(), row.candidate_id.clone()))
+        .collect();
+    let pending_candidates: Vec<_> = candidates
+        .into_iter()
+        .filter(|candidate| {
+            pending_ids.contains_key(&candidate.source_path.to_string_lossy().to_string())
+        })
+        .collect();
+    for candidate in &pending_candidates {
+        if let Some(id) = pending_ids.get(&candidate.source_path.to_string_lossy().to_string()) {
+            db.mark_candidate_preparing(id)?;
+        }
+    }
+
     let staging = db.staging_dir();
-    let batch = prepare_account_images(&acc.images_dir, &acc.source_account_id, &staging, 64);
+    let batch = prepare_image_candidates(pending_candidates, &acc.source_account_id, &staging, 64);
 
     let mut all_complete = true;
     for item in &batch.prepared {
         let source_path = item.candidate.source_path.to_string_lossy().to_string();
-        let pending = db
-            .list_pending_image_candidates(&acc.source_account_id, i64::MAX)
-            .unwrap_or_default();
-        let candidate_id = pending
-            .iter()
-            .find(|c| c.source_path == source_path)
-            .map(|c| c.candidate_id.clone());
+        let candidate_id = pending_ids.get(&source_path).cloned();
 
         match db.ingest_prepared_content(&item.prepared, device_id, candidate_id.as_deref()) {
             Ok(IngestResult::Indexed { is_new_object, .. }) => {
@@ -399,7 +443,7 @@ fn process_cli_images(
             Err(e) => {
                 all_complete = false;
                 eprintln!("[-] 图片入库失败: {}", e);
-                if let Some(cid) = &candidate_id {
+                if let Some(cid) = candidate_id.as_deref() {
                     let _ = db.mark_candidate_failed(
                         cid,
                         chatvault_core::models::ImageErrorCode::PreparedContentMissing,
@@ -411,11 +455,8 @@ fn process_cli_images(
 
     for failure in &batch.failures {
         let source_path = failure.candidate.source_path.to_string_lossy().to_string();
-        let pending = db
-            .list_pending_image_candidates(&acc.source_account_id, i64::MAX)
-            .unwrap_or_default();
-        if let Some(row) = pending.iter().find(|c| c.source_path == source_path) {
-            let _ = db.mark_candidate_failed(&row.candidate_id, failure.error_code);
+        if let Some(candidate_id) = pending_ids.get(&source_path) {
+            let _ = db.mark_candidate_failed(candidate_id, failure.error_code);
         }
     }
 
@@ -563,8 +604,8 @@ fn handle_search(
 
     println!("[+] 命中 {} 条记录:\n", results.len());
     println!(
-        "{:<36} | {:<10} | {:<20} | {}",
-        "对象哈希(前12位)", "大小", "时间", "文件名"
+        "{:<36} | {:<10} | {:<20} | 文件名",
+        "对象哈希(前12位)", "大小", "时间"
     );
     println!("{:-<100}", "");
 

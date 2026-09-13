@@ -108,6 +108,7 @@ pub(crate) fn ensure_source_conversation(
 }
 
 /// 使用确定性版本序更新账号映射，旧版本或重复事件不会覆盖新状态。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn upsert_source_account_version(
     conn: &Connection,
     source_type: &str,
@@ -157,6 +158,7 @@ pub(crate) fn upsert_source_account_version(
 }
 
 /// 使用确定性版本序更新聊天映射，旧版本或重复事件不会覆盖新状态。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn upsert_source_conversation_version(
     conn: &Connection,
     source_type: &str,

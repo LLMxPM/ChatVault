@@ -26,7 +26,7 @@ impl GenericFolderParser {
     /// 输入:
     ///   - `folder`: 目标目录路径
     ///   - `since`: 增量起点；由扫描策略接收，通用目录策略不会据此裁剪目录
-    /// 输出: `Result<Vec<DiscoveredFile>>`
+    ///     输出: `Result<Vec<DiscoveredFile>>`
     pub fn parse_with_since<P: AsRef<Path>>(
         folder: P,
         since: Option<SystemTime>,
@@ -61,7 +61,7 @@ impl GenericFolderParser {
                 None => continue,
             };
 
-            let modified_system = metadata.modified().map_err(|e| ChatVaultError::Io(e))?;
+            let modified_system = metadata.modified().map_err(ChatVaultError::Io)?;
             let modified_time: DateTime<Utc> = modified_system.into();
 
             discovered.push(DiscoveredFile {

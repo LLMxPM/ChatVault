@@ -28,7 +28,7 @@ impl WeChat4Parser {
     /// 输入:
     ///   - `account`: 微信账号结构体
     ///   - `since`: 增量起点；月份目录 mtime 不晚于该时刻时跳过对应子树
-    /// 输出: `Result<Vec<DiscoveredFile>>`
+    ///     输出: `Result<Vec<DiscoveredFile>>`
     pub fn parse_account_files_since(
         account: &WeChatAccount,
         since: Option<SystemTime>,
@@ -136,7 +136,7 @@ impl WeChat4Parser {
     /// 输入:
     ///   - `files_root`: 微信账号的 `msg/file` 根目录
     ///   - `file_path`: 待解析的文件路径
-    /// 输出: 聊天目录名；标准 `msg/file/YYYY-MM/<file>` 平铺布局返回 `None`
+    ///     输出: 聊天目录名；标准 `msg/file/YYYY-MM/<file>` 平铺布局返回 `None`
     pub fn conversation_id_for_path<P: AsRef<Path>, Q: AsRef<Path>>(
         files_root: P,
         file_path: Q,

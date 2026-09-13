@@ -105,6 +105,7 @@ export function useCollectSources() {
   function createSourceItem(source: CollectSourceDto): CollectSourceItem {
     return {
       ...source,
+      enableImages: source.sourceType === "wechat-windows-4" ? source.enableImages !== false : true,
       accounts: [],
       status: "checking",
       errorMessage: "",
@@ -117,7 +118,11 @@ export function useCollectSources() {
   }
 
   function sourcePayload(sources: CollectSourceItem[]): CollectSourceDto[] {
-    return sources.map(({ sourceType, path }) => ({ sourceType, path }));
+    return sources.map(({ sourceType, path, enableImages }) => ({
+      sourceType,
+      path,
+      enableImages: sourceType === "wechat-windows-4" ? enableImages !== false : true,
+    }));
   }
 
   function hasPathConflict(path: string, ignoredIndex = -1) {
@@ -145,6 +150,17 @@ export function useCollectSources() {
     const index = selectedAccounts.value.findIndex((target) => targetKey(target) === key);
     if (index >= 0) selectedAccounts.value.splice(index, 1);
     else selectedAccounts.value.push(toAccountTarget(account));
+  }
+
+  /** 切换微信采集源的聊天图片解密开关并持久化。 */
+  async function toggleSourceImages(source: CollectSourceItem) {
+    if (source.sourceType !== "wechat-windows-4") return;
+    const previousSources = cloneSources(collectSources.value);
+    const previousSelections = selectedAccounts.value.map((target) => ({ ...target }));
+    source.enableImages = source.enableImages === false;
+    if (!(await persistSources(previousSources, previousSelections))) {
+      return;
+    }
   }
 
   /** 根据当前已识别账号清理失效的临时勾选项。 */
@@ -186,6 +202,7 @@ export function useCollectSources() {
       await addSource({
         sourceType: "generic-folder",
         path,
+        enableImages: true,
         accounts: [],
         status: "ready",
         errorMessage: "",
@@ -231,6 +248,7 @@ export function useCollectSources() {
     await addSource({
       sourceType: "wechat-windows-4",
       path,
+      enableImages: true,
       accounts,
       status: accounts.length ? "ready" : "empty",
       errorMessage: "",
@@ -300,7 +318,11 @@ export function useCollectSources() {
         return;
       }
 
-      const replacement = createSourceItem({ sourceType: source.sourceType, path });
+      const replacement = createSourceItem({
+        sourceType: source.sourceType,
+        path,
+        enableImages: source.enableImages !== false,
+      });
       if (source.sourceType === "wechat-windows-4") {
         replacement.accounts = await inspectWechatDirectory(path);
         replacement.status = replacement.accounts.length ? "ready" : "empty";
@@ -387,5 +409,6 @@ export function useCollectSources() {
     sourceStatusTone,
     sourceTypeLabel,
     toggleAccount,
+    toggleSourceImages,
   };
 }

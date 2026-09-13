@@ -501,7 +501,7 @@ async function handleOpen(item: FileObjectViewDto) {
   if (!item.openPath) return;
   busyKey.value = item.objectId + ":open";
   try {
-    await openFileWithSystem(item.openPath);
+    await openFileWithSystem(item.openPath, item.extension);
   } catch (err) {
     pushToast({ tone: "danger", title: "无法打开文件", description: String(err) });
   } finally {

@@ -24,9 +24,9 @@ pub struct HashResult {
 /// 职责: 打开文件，流式分块读取并使用 BLAKE3 计算完整哈希
 /// 输入:
 ///   - `path`: 待计算的目标文件路径
-/// 输出:
+///     输出:
 ///   - `Result<HashResult>`: 计算成功的哈希与对象ID，或 IO 异常
-/// 关键约束:
+///     关键约束:
 ///   - 文件必须存在且具备可读权限
 ///   - 采用 64KB 缓冲流读取，对 GB 级大文件友好
 pub fn compute_blake3_file<P: AsRef<Path>>(path: P) -> Result<HashResult> {
@@ -83,7 +83,7 @@ pub fn compute_blake3_bytes(bytes: &[u8]) -> HashResult {
 /// 输入:
 ///   - `path`: 本地文件路径
 ///   - `expected_hex`: 期望的十六进制哈希（可含也可不含 `blake3:` 前缀）
-/// 输出: 一致返回 Ok(())，否则返回 `ChatVaultError::HashMismatch`
+///     输出: 一致返回 Ok(())，否则返回 `ChatVaultError::HashMismatch`
 pub fn verify_file_hash<P: AsRef<Path>>(path: P, expected_hex: &str) -> Result<()> {
     let clean_expected = expected_hex.trim_start_matches("blake3:");
     let res = compute_blake3_file(path)?;

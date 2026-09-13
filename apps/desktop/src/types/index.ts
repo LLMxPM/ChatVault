@@ -8,6 +8,8 @@ export type CollectSourceType = "wechat-windows-4" | "generic-folder";
 export interface CollectSourceDto {
   sourceType: CollectSourceType;
   path: string;
+  /** 微信聊天图片是否启用本机离线解密；非微信来源忽略。 */
+  enableImages?: boolean;
 }
 
 /** 微信 4.x 账号探测信息。 */
@@ -68,6 +70,7 @@ export interface FileObjectViewDto {
   objectId: string;
   hash: string;
   originalName: string;
+  extension: string;
   fileSize: number;
   formattedSize: string;
   category: "doc" | "image" | "video" | "audio" | "archive" | "other";

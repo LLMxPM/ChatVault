@@ -5,6 +5,7 @@
 
 use chatvault_core::error::{ChatVaultError, Result};
 use image::GenericImageView;
+use std::io::{Cursor, Read};
 use std::path::Path;
 
 /// 图片校验结果
@@ -28,6 +29,8 @@ pub struct ValidatedImage {
 const MAX_DIMENSION: u32 = 20_000;
 /// 最大允许帧数
 const MAX_FRAMES: u32 = 10_000;
+/// 从磁盘读取图片时的单文件上限。
+const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// 根据魔数快速判断是否可能是标准图片（用于筛选，非成功标准）
 pub fn looks_like_standard_image(data: &[u8]) -> bool {
@@ -91,31 +94,58 @@ pub fn validate_image_bytes(data: &[u8]) -> Result<ValidatedImage> {
     let (width, height) = img.dimensions();
     check_dimensions(width, height)?;
 
-    // 帧数：GIF 需要额外检查；其他格式为 1
-    let frame_count = if format == image::ImageFormat::Gif {
-        // 尝试读取 GIF 帧信息
-        let cursor = std::io::Cursor::new(data);
-        match image::codecs::gif::GifDecoder::new(cursor) {
-            Ok(decoder) => {
-                use image::AnimationDecoder;
-                let frames = decoder.into_frames().collect_frames();
-                match frames {
-                    Ok(f) => {
-                        let n = f.len() as u32;
-                        if n > MAX_FRAMES {
-                            return Err(ChatVaultError::WeChatParse(
-                                "invalid_image: 帧数超限".into(),
-                            ));
-                        }
-                        n.max(1)
-                    }
-                    Err(_) => 1,
+    // 动画必须完整读取每一帧；image::load_from_memory 可能只解出首帧，不能单独作为完整性证明。
+    let frame_count = match format {
+        image::ImageFormat::Gif => {
+            use image::AnimationDecoder;
+            let decoder = image::codecs::gif::GifDecoder::new(Cursor::new(data))
+                .map_err(|e| ChatVaultError::WeChatParse(format!("invalid_image: {e}")))?
+                .into_frames();
+            let mut n = 0u32;
+            for frame in decoder {
+                frame.map_err(|e| ChatVaultError::WeChatParse(format!("invalid_image: {e}")))?;
+                n = n.saturating_add(1);
+                if n > MAX_FRAMES {
+                    return Err(ChatVaultError::WeChatParse(
+                        "invalid_image: 帧数超限或为空".into(),
+                    ));
                 }
             }
-            Err(_) => 1,
+            if n == 0 {
+                return Err(ChatVaultError::WeChatParse(
+                    "invalid_image: 帧数超限或为空".into(),
+                ));
+            }
+            n
         }
-    } else {
-        1
+        image::ImageFormat::WebP => {
+            use image::AnimationDecoder;
+            let decoder = image::codecs::webp::WebPDecoder::new(Cursor::new(data))
+                .map_err(|e| ChatVaultError::WeChatParse(format!("unsupported_payload: {e}")))?;
+            if decoder.has_animation() {
+                let mut n = 0u32;
+                for frame in decoder.into_frames() {
+                    frame.map_err(|e| {
+                        ChatVaultError::WeChatParse(format!("unsupported_payload: {e}"))
+                    })?;
+                    n = n.saturating_add(1);
+                    if n > MAX_FRAMES {
+                        return Err(ChatVaultError::WeChatParse(
+                            "invalid_image: 帧数超限或为空".into(),
+                        ));
+                    }
+                }
+                if n == 0 {
+                    return Err(ChatVaultError::WeChatParse(
+                        "invalid_image: 帧数超限或为空".into(),
+                    ));
+                }
+                n
+            } else {
+                1
+            }
+        }
+        _ => 1,
     };
 
     let (mime, extension) = match format {
@@ -144,7 +174,21 @@ pub fn validate_image_bytes(data: &[u8]) -> Result<ValidatedImage> {
 
 /// 校验磁盘上的图片文件
 pub fn validate_image_file<P: AsRef<Path>>(path: P) -> Result<ValidatedImage> {
-    let data = std::fs::read(path.as_ref())?;
+    let metadata = std::fs::metadata(path.as_ref())?;
+    if metadata.len() > MAX_FILE_BYTES {
+        return Err(ChatVaultError::WeChatParse(
+            "invalid_image: 文件超过读取上限".into(),
+        ));
+    }
+    let mut data = Vec::with_capacity(metadata.len() as usize);
+    std::fs::File::open(path.as_ref())?
+        .take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut data)?;
+    if data.len() as u64 > MAX_FILE_BYTES {
+        return Err(ChatVaultError::WeChatParse(
+            "invalid_image: 文件超过读取上限".into(),
+        ));
+    }
     validate_image_bytes(&data)
 }
 
@@ -215,6 +259,28 @@ mod tests {
         let png = minimal_png();
         let truncated = &png[..png.len() / 2];
         assert!(validate_image_bytes(truncated).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_gif_and_webp() {
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            2,
+            2,
+            image::Rgb([1, 2, 3]),
+        ));
+        let mut gif_buf = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut gif_buf, image::ImageFormat::Gif)
+            .unwrap();
+        let gif = gif_buf.into_inner();
+        assert!(validate_image_bytes(&gif[..gif.len().saturating_sub(2)]).is_err());
+
+        let mut webp_buf = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut webp_buf, image::ImageFormat::WebP)
+            .unwrap();
+        let webp = webp_buf.into_inner();
+        assert!(validate_image_bytes(&webp[..webp.len().saturating_sub(2)]).is_err());
     }
 
     #[test]

@@ -62,14 +62,33 @@ pub fn stage_file(
     }
     temporary.as_file().sync_all()?;
     let target = directory.join(&hash);
-    if target.exists() {
-        crate::verify_file_hash(&target, &hash)?;
-    } else if let Err(e) = temporary.persist_noclobber(&target) {
-        if target.exists() {
-            crate::verify_file_hash(&target, &hash)?;
-        } else {
-            return Err(e.error.into());
+    match fs::symlink_metadata(&target) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                return Err(ChatVaultError::Internal("对象缓存路径不是普通文件".into()));
+            }
+            if crate::verify_file_hash(&target, &hash).is_err() {
+                // 残缺对象不能阻塞重试；只删除已知错误的普通文件，再原子安装新副本。
+                fs::remove_file(&target)?;
+                if let Err(error) = temporary.persist_noclobber(&target) {
+                    if target.exists() {
+                        crate::verify_file_hash(&target, &hash)?;
+                    } else {
+                        return Err(error.error.into());
+                    }
+                }
+            }
         }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Err(error) = temporary.persist_noclobber(&target) {
+                if target.exists() {
+                    crate::verify_file_hash(&target, &hash)?;
+                } else {
+                    return Err(error.error.into());
+                }
+            }
+        }
+        Err(error) => return Err(error.into()),
     }
     Ok((
         target,
@@ -80,4 +99,18 @@ pub fn stage_file(
         },
         before.modified()?,
     ))
+}
+
+/// 将已验证的明文写入受控 pending 目录并原子保留，返回唯一暂存路径。
+///
+/// pending 文件不会被对象 GC 扫描；入库成功后再由索引层原子安装为内容对象。
+pub fn stage_bytes_pending(bytes: &[u8], directory: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(directory)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    let (_file, path) = temporary
+        .keep()
+        .map_err(|error| ChatVaultError::Io(error.error))?;
+    Ok(path)
 }

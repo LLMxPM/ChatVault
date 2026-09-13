@@ -26,6 +26,9 @@ pub struct ImageCandidateRow {
     pub record_id: Option<String>,
 }
 
+type ExistingCandidate = (String, i64, i64, String, Option<String>, Option<String>);
+
+#[allow(clippy::too_many_arguments)]
 impl Database {
     /// 插入或更新图片候选（按 source_account_id + source_path 唯一）
     pub fn upsert_image_candidate(
@@ -41,18 +44,45 @@ impl Database {
         image_group_key: Option<&str>,
     ) -> Result<String> {
         let now = Utc::now().to_rfc3339();
+        let current_digest =
+            chatvault_metadata::compute_blake3_file(std::path::Path::new(source_path))
+                .ok()
+                .map(|digest| digest.hex_hash);
         // 已存在则更新源状态并重置失败态（源可能已变化）
-        let existing: Option<String> = self
+        let existing: Option<ExistingCandidate> = self
             .conn
             .query_row(
-                "SELECT candidate_id FROM image_candidates
+                "SELECT candidate_id, source_size, source_mtime_ms, status, source_digest, record_id FROM image_candidates
                  WHERE source_account_id=?1 AND source_path=?2",
                 params![source_account_id, source_path],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .ok();
 
-        if let Some(id) = existing {
+        if let Some((id, old_size, old_mtime, _old_status, old_digest, record_id)) = existing {
+            // 摘要缺失也视为变化：这样旧候选第一次重新扫描时会清掉残留状态。
+            let digest_changed = old_digest.as_deref() != current_digest.as_deref();
+            let cache_missing = record_id.as_deref().is_some_and(|record_id| {
+                self.conn
+                    .query_row(
+                        "SELECT cache_path FROM local_files WHERE record_id=?1",
+                        params![record_id],
+                        |row| row.get::<_, Option<String>>(0),
+                    )
+                    .ok()
+                    .flatten()
+                    .is_none_or(|path| {
+                        std::fs::symlink_metadata(&path)
+                            .map(|metadata| {
+                                metadata.file_type().is_file() && !metadata.file_type().is_symlink()
+                            })
+                            .unwrap_or(false)
+                    })
+            });
+            let changed = old_size != source_size
+                || old_mtime != source_mtime_ms
+                || digest_changed
+                || cache_missing;
             self.conn
                 .execute(
                     "UPDATE image_candidates SET
@@ -61,8 +91,14 @@ impl Database {
                        month=COALESCE(?4, month),
                        normalized_stem=COALESCE(?5, normalized_stem),
                        image_group_key=COALESCE(?6, image_group_key),
-                       updated_at=?7
-                     WHERE candidate_id=?8",
+                       status=CASE WHEN ?8 THEN 'discovered' ELSE status END,
+                       error_code=CASE WHEN ?8 THEN NULL ELSE error_code END,
+                       source_digest=CASE WHEN ?8 THEN ?7 ELSE COALESCE(?7, source_digest) END,
+                       record_id=CASE WHEN ?8 THEN NULL ELSE record_id END,
+                       attempt_count=CASE WHEN ?8 THEN 0 ELSE attempt_count END,
+                       next_retry_ms=CASE WHEN ?8 THEN NULL ELSE next_retry_ms END,
+                       updated_at=?9
+                     WHERE candidate_id=?10",
                     params![
                         source_size,
                         source_mtime_ms,
@@ -70,6 +106,8 @@ impl Database {
                         month,
                         normalized_stem,
                         image_group_key,
+                        current_digest,
+                        changed,
                         now,
                         id
                     ],
@@ -83,10 +121,10 @@ impl Database {
             .execute(
                 "INSERT INTO image_candidates (
                    candidate_id, source_root, source_account_id, source_path,
-                   source_size, source_mtime_ms, conv_hash, month,
+                   source_size, source_mtime_ms, source_digest, conv_hash, month,
                    normalized_stem, image_group_key, status, attempt_count,
                    created_at, updated_at
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'discovered',0,?11,?11)",
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'discovered',0,?12,?12)",
                 params![
                     id,
                     source_root,
@@ -94,6 +132,7 @@ impl Database {
                     source_path,
                     source_size,
                     source_mtime_ms,
+                    current_digest,
                     conv_hash,
                     month,
                     normalized_stem,
@@ -112,13 +151,18 @@ impl Database {
         error_code: ImageErrorCode,
     ) -> Result<()> {
         let now = Utc::now().to_rfc3339();
+        let next_retry_ms = if error_code.auto_retry() {
+            Some(Utc::now().timestamp_millis() + 3_600_000)
+        } else {
+            None
+        };
         self.conn
             .execute(
                 "UPDATE image_candidates SET
-                   status='failed', error_code=?1,
-                   attempt_count=attempt_count+1, updated_at=?2
-                 WHERE candidate_id=?3",
-                params![error_code.as_str(), now, candidate_id],
+                   status='failed', error_code=?1, next_retry_ms=?2,
+                   attempt_count=attempt_count+1, updated_at=?3
+                 WHERE candidate_id=?4",
+                params![error_code.as_str(), next_retry_ms, now, candidate_id],
             )
             .map_err(|e| ChatVaultError::Database(e.to_string()))?;
         Ok(())
@@ -165,7 +209,15 @@ impl Database {
                         attempt_count, record_id
                  FROM image_candidates
                  WHERE source_account_id=?1
-                   AND status IN ('discovered','waiting_stable','failed','decrypted_pending_verify')
+                   AND (
+                     status IN ('discovered','waiting_stable','decrypted_pending_verify','verified_plaintext')
+                     OR (status='failed' AND error_code IN (
+                       'waiting_stable','empty_source','source_changed',
+                       'media_parameters_unavailable','parameters_not_applicable',
+                       'candidate_limit_exceeded','account_parameters_miss',
+                       'insufficient_space','prepared_content_missing'
+                     ))
+                   )
                    AND (next_retry_ms IS NULL OR next_retry_ms <= ?2)
                  ORDER BY rowid",
             )
@@ -257,6 +309,28 @@ impl Database {
         Ok(count)
     }
 
+    /// 将崩溃中断留下的准备状态重新排队；已入库候选不会被回退。
+    pub fn recover_image_candidates(&mut self, source_account_id: Option<&str>) -> Result<usize> {
+        let now = Utc::now().to_rfc3339();
+        let sql = if source_account_id.is_some() {
+            "UPDATE image_candidates SET status='discovered', error_code=NULL, next_retry_ms=NULL, updated_at=?1
+             WHERE source_account_id=?2 AND status IN ('preparing','decrypted_pending_verify','verified_plaintext') AND record_id IS NULL"
+        } else {
+            "UPDATE image_candidates SET status='discovered', error_code=NULL, next_retry_ms=NULL, updated_at=?1
+             WHERE status IN ('preparing','decrypted_pending_verify','verified_plaintext') AND record_id IS NULL"
+        };
+        let count = if let Some(account) = source_account_id {
+            self.conn
+                .execute(sql, params![now, account])
+                .map_err(|e| ChatVaultError::Database(e.to_string()))?
+        } else {
+            self.conn
+                .execute(sql, params![now])
+                .map_err(|e| ChatVaultError::Database(e.to_string()))?
+        };
+        Ok(count)
+    }
+
     /// 获取候选状态字符串（供状态机检查）
     pub fn get_candidate_status(&self, candidate_id: &str) -> Result<Option<String>> {
         self.conn
@@ -341,5 +415,45 @@ mod tests {
             .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].source_size, 2);
+    }
+
+    #[test]
+    fn upsert_detects_same_size_overwrite_by_digest() {
+        let mut db = temp_db();
+        let path = std::env::temp_dir().join(format!("cv-candidate-digest-{}.dat", Uuid::new_v4()));
+        std::fs::write(&path, b"aa").unwrap();
+        let id = db
+            .upsert_image_candidate(
+                "root",
+                "acc",
+                path.to_str().unwrap(),
+                2,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        db.mark_candidate_failed(&id, ImageErrorCode::InvalidImage)
+            .unwrap();
+        std::fs::write(&path, b"bb").unwrap();
+        db.upsert_image_candidate(
+            "root",
+            "acc",
+            path.to_str().unwrap(),
+            2,
+            1,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            db.get_candidate_status(&id).unwrap().as_deref(),
+            Some("discovered")
+        );
+        let _ = std::fs::remove_file(path);
     }
 }

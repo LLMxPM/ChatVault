@@ -8,6 +8,37 @@ use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+/// 判断路径是否为符号链接或 Windows 重解析点；遍历微信目录时一律拒绝。
+pub(crate) fn is_link_or_reparse(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return true;
+    };
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// 将目录解析为真实路径，并确保仍位于允许的根目录内。
+fn canonical_child(root: &Path, path: &Path) -> Option<PathBuf> {
+    if is_link_or_reparse(path) {
+        return None;
+    }
+    let canonical_root = std::fs::canonicalize(root).ok()?;
+    let canonical_path = std::fs::canonicalize(path).ok()?;
+    canonical_path
+        .starts_with(&canonical_root)
+        .then_some(canonical_path)
+}
+
 /// 图片变体类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -190,7 +221,27 @@ pub fn discover_image_candidates(
     images_dir: &Path,
     source_account_id: &str,
 ) -> Vec<ImageCandidate> {
-    if !images_dir.is_dir() {
+    if !images_dir.is_dir() || is_link_or_reparse(images_dir) {
+        return Vec::new();
+    }
+    // attach 位于 `<account>/msg/attach`；同时校验账号根是真实目录，避免
+    // 通过账号目录或其父级重解析点把规范化路径带到选定账号之外。
+    let account_root = images_dir
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(images_dir);
+    if is_link_or_reparse(account_root) {
+        return Vec::new();
+    }
+    let canonical_account_root = match std::fs::canonicalize(account_root) {
+        Ok(root) => root,
+        Err(_) => return Vec::new(),
+    };
+    let canonical_root = match std::fs::canonicalize(images_dir) {
+        Ok(root) => root,
+        Err(_) => return Vec::new(),
+    };
+    if !canonical_root.starts_with(&canonical_account_root) {
         return Vec::new();
     }
     let mut candidates = Vec::new();
@@ -199,18 +250,25 @@ pub fn discover_image_candidates(
     };
 
     for conv_entry in conv_entries.flatten() {
-        if !conv_entry.path().is_dir() {
+        let conv_path = conv_entry.path();
+        let Some(conv_path) = canonical_child(&canonical_root, &conv_path) else {
+            continue;
+        };
+        if !conv_path.is_dir() {
             continue;
         }
         let conv_name = match conv_entry.file_name().to_str() {
             Some(n) if !n.is_empty() => n.to_string(),
             _ => continue,
         };
-        let Ok(month_entries) = std::fs::read_dir(conv_entry.path()) else {
+        let Ok(month_entries) = std::fs::read_dir(&conv_path) else {
             continue;
         };
         for month_entry in month_entries.flatten() {
             let month_path = month_entry.path();
+            let Some(month_path) = canonical_child(&canonical_root, &month_path) else {
+                continue;
+            };
             if !month_path.is_dir() {
                 continue;
             }
@@ -219,6 +277,9 @@ pub fn discover_image_candidates(
                 _ => continue,
             };
             let img_dir = month_path.join("Img");
+            let Some(img_dir) = canonical_child(&canonical_root, &img_dir) else {
+                continue;
+            };
             if !img_dir.is_dir() {
                 continue;
             }
@@ -227,7 +288,10 @@ pub fn discover_image_candidates(
             };
             for file_entry in file_entries.flatten() {
                 let path = file_entry.path();
-                if !path.is_file() {
+                let Some(path) = canonical_child(&canonical_root, &path) else {
+                    continue;
+                };
+                if !path.is_file() || !path.starts_with(&img_dir) {
                     continue;
                 }
                 let metadata = match std::fs::metadata(&path) {

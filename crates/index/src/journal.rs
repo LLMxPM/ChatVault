@@ -98,7 +98,7 @@ impl Database {
         let rows = stmt
             .query_map(
                 params![device_id, after_seq as i64, limit as i64, epoch as i64],
-                |r| row_to_journal_event(r),
+                row_to_journal_event,
             )
             .map_err(|e| ChatVaultError::Database(e.to_string()))?;
 

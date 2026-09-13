@@ -77,9 +77,9 @@ export async function listObjectSources(objectId: string): Promise<FileSourceDto
   return await invoke<FileSourceDto[]>("list_object_sources", { objectId });
 }
 
-/** 用系统默认程序打开本地文件。 */
-export async function openFileWithSystem(path: string): Promise<void> {
-  return await invoke<void>("open_file_with_system", { path });
+/** 用系统默认程序打开本地文件；无扩展名缓存可传真实扩展名生成受控打开副本。 */
+export async function openFileWithSystem(path: string, extension?: string): Promise<void> {
+  return await invoke<void>("open_file_with_system", { path, extension });
 }
 
 /** 从 WebDAV 下载内容对象到下载目录。 */

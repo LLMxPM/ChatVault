@@ -32,6 +32,9 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             size INTEGER NOT NULL,
             mime TEXT NOT NULL,
             extension TEXT NOT NULL,
+            width INTEGER,
+            height INTEGER,
+            frame_count INTEGER,
             created_at TEXT NOT NULL
         );
 
@@ -96,6 +99,7 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             original_path TEXT NOT NULL,
             cache_path TEXT,
             size INTEGER NOT NULL,
+            source_size INTEGER,
             mtime_ms INTEGER NOT NULL,
             availability TEXT NOT NULL,
             content_origin TEXT
