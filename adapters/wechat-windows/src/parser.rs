@@ -45,6 +45,82 @@ impl WeChat4Parser {
         Self::parse_folder_since(&account.files_dir, Some(&account.source_account_id), since)
     }
 
+    /// 全量扫描指定微信账号的视频目录（仅 `.mp4` 本体）
+    pub fn parse_account_videos(account: &WeChatAccount) -> Result<Vec<DiscoveredFile>> {
+        Self::parse_account_videos_since(account, None)
+    }
+
+    /// 增量发现 `msg/video` 下的 `.mp4` 视频本体
+    ///
+    /// 职责: 跳过 `.jpg` / `_thumb.jpg` 与 0 字节；会话 ID 恒为 None
+    /// 输入:
+    ///   - `account`: 微信账号结构体
+    ///   - `since`: 增量起点；月份目录 mtime 不晚于该时刻时跳过对应子树
+    pub fn parse_account_videos_since(
+        account: &WeChatAccount,
+        since: Option<SystemTime>,
+    ) -> Result<Vec<DiscoveredFile>> {
+        if !account.video_dir.exists() {
+            tracing::info!(
+                "账号 {} 的视频目录尚未生成: {}",
+                account.source_account_id,
+                account.video_dir.display()
+            );
+            return Ok(Vec::new());
+        }
+
+        let options = ScanOptions {
+            max_depth: None,
+            skip_hidden: true,
+            min_size: 1,
+        };
+        let strategy = MtimeAtDepthStrategy::new(1);
+        let paths = scan_directory_with_strategy(&account.video_dir, &options, since, &strategy)?;
+        let mut discovered = Vec::with_capacity(paths.len());
+
+        for path in paths {
+            if !Self::is_mp4_file(&path) {
+                continue;
+            }
+            let metadata = match std::fs::metadata(&path) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!("无法读取视频元数据 {}: {}", path.display(), e);
+                    continue;
+                }
+            };
+            let file_name = match path.file_name().and_then(|s| s.to_str()) {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+            let modified_system = metadata.modified().map_err(ChatVaultError::Io)?;
+            let modified_time: DateTime<Utc> = modified_system.into();
+
+            discovered.push(DiscoveredFile {
+                source_type: WECHAT_WINDOWS_4_SOURCE_TYPE.to_string(),
+                source_account_id: Some(account.source_account_id.clone()),
+                absolute_path: path.to_string_lossy().to_string(),
+                file_name,
+                file_size: metadata.len(),
+                modified_time,
+                // 视频目录无会话子目录，不把月份目录伪造成会话 ID
+                source_conversation_id: None,
+            });
+        }
+
+        Ok(discovered)
+    }
+
+    /// 判断是否为 `.mp4` 普通文件（大小写不敏感）
+    fn is_mp4_file(path: &Path) -> bool {
+        path.is_file()
+            && path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|e| e.eq_ignore_ascii_case("mp4"))
+                .unwrap_or(false)
+    }
+
     /// 从任意给定的微信 4.x 目录提取文件（全量）
     pub fn parse_folder<P: AsRef<Path>>(
         folder: P,
@@ -114,7 +190,7 @@ impl WeChat4Parser {
                 None => continue,
             };
 
-            let modified_system = metadata.modified().map_err(|e| ChatVaultError::Io(e))?;
+            let modified_system = metadata.modified().map_err(ChatVaultError::Io)?;
             let modified_time: DateTime<Utc> = modified_system.into();
 
             // 只有存在明确聊天目录时才写入聊天 ID；标准月份平铺文件保持未知。
@@ -197,5 +273,56 @@ mod tests {
             Some("wxid_friend")
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn make_account(base: &Path) -> WeChatAccount {
+        let root_dir = base.join("xwechat_files").join("wxid_test");
+        WeChatAccount {
+            source_account_id: "wxid_test".to_string(),
+            files_dir: root_dir.join("msg").join("file"),
+            video_dir: root_dir.join("msg").join("video"),
+            images_dir: root_dir.join("msg").join("attach"),
+            root_dir,
+        }
+    }
+
+    #[test]
+    fn video_parser_only_collects_mp4() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("chatvault_wechat_video_{unique}"));
+        let account = make_account(&base);
+        let month = account.video_dir.join("2026-09");
+        std::fs::create_dir_all(&month).unwrap();
+        std::fs::write(month.join("abc123.mp4"), b"fake-mp4-bytes").unwrap();
+        std::fs::write(month.join("abc123.jpg"), b"cover").unwrap();
+        std::fs::write(month.join("abc123_thumb.jpg"), b"thumb").unwrap();
+        std::fs::write(month.join("empty.mp4"), b"").unwrap();
+
+        let discovered = WeChat4Parser::parse_account_videos(&account).unwrap();
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].file_name, "abc123.mp4");
+        assert!(discovered[0].source_conversation_id.is_none());
+        assert_eq!(
+            discovered[0].source_account_id.as_deref(),
+            Some("wxid_test")
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn video_parser_handles_missing_directory() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("chatvault_wechat_video_miss_{unique}"));
+        let account = make_account(&base);
+
+        let discovered = WeChat4Parser::parse_account_videos(&account).unwrap();
+        assert!(discovered.is_empty());
     }
 }

@@ -99,6 +99,11 @@ impl Database {
         self.db_path.as_deref()
     }
 
+    /// 获取受控暂存目录（明文对象与解密产物的存放位置）
+    pub fn staging_dir(&self) -> PathBuf {
+        self.staging_dir.clone()
+    }
+
     /// 获取底层只读/可变连接引用
     pub fn connection(&self) -> &Connection {
         &self.conn

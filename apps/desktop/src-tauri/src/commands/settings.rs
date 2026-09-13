@@ -40,10 +40,11 @@ pub async fn get_app_settings(
     let vault_id = state.vault_id().map_err(|e| e.to_string())?;
     let device_id = state.device_id().map_err(|e| e.to_string())?;
     let device_name = state.device_name().map_err(|e| e.to_string())?;
-    let (bound_webdav_url, bound_vault_id) = match db.get_remote_binding().map_err(|e| e.to_string())? {
-        Some((url, vault)) => (Some(url), Some(vault)),
-        None => (None, None),
-    };
+    let (bound_webdav_url, bound_vault_id) =
+        match db.get_remote_binding().map_err(|e| e.to_string())? {
+            Some((url, vault)) => (Some(url), Some(vault)),
+            None => (None, None),
+        };
 
     let collect_sources_raw =
         get(setting_keys::COLLECT_SOURCES).unwrap_or_else(|| "[]".to_string());

@@ -1,6 +1,10 @@
 // ChatVault 桌面命令：scan 职责实现与前端错误映射。
 // 默认增量：由来源策略发现候选 + 已知文件复检；首次或指定 full_scan 时全量发现。
+// 多媒体根：msg/file 与 msg/video 各自独立检查点；图片走候选准备流程。
 use super::*;
+use adapter_wechat_windows::media::{
+    discover_image_candidates, prepare_account_images, ImagePrepStats,
+};
 use chatvault_core::models::{
     CollectSource, GENERIC_FOLDER_SOURCE_TYPE, WECHAT_WINDOWS_4_SOURCE_TYPE,
 };
@@ -45,11 +49,15 @@ fn wechat_account_dtos(
 
     for acc in accounts {
         let files = WeChat4Parser::parse_account_files(&acc).unwrap_or_default();
+        let videos = WeChat4Parser::parse_account_videos(&acc).unwrap_or_default();
+        let images = discover_image_candidates(&acc.images_dir, &acc.source_account_id);
         dtos.push(WechatAccountDto {
             source_account_id: acc.source_account_id,
             source_dir: acc.files_dir.to_string_lossy().to_string(),
             source_root: root.to_string_lossy().to_string(),
             files_count_estimated: files.len(),
+            videos_count_estimated: videos.len(),
+            images_count_estimated: images.len(),
         });
     }
 
@@ -182,6 +190,9 @@ fn is_selected_account(
 }
 
 /// 扫描一个微信 4.x 采集源下的全部或指定账号。
+///
+/// 依次处理 `msg/file`、`msg/video` 两个媒体根（各自独立检查点），
+/// 再对 `msg/attach` 图片做候选准备与入库。
 fn scan_wechat_source(
     db: &mut chatvault_index::Database,
     device_id: &str,
@@ -190,6 +201,7 @@ fn scan_wechat_source(
     full_scan: bool,
     scan_started_ms: i64,
     tally: &mut ScanTally,
+    image_stats: &mut ImagePrepStats,
 ) -> std::result::Result<(), String> {
     if !root.is_dir() {
         tracing::warn!("微信 4.x 采集目录不存在，跳过扫描: {}", root.display());
@@ -200,40 +212,232 @@ fn scan_wechat_source(
         if !is_selected_account(target_accounts, root, &acc.source_account_id) {
             continue;
         }
-        let files_root = acc.files_dir.to_string_lossy().to_string();
-        let since = resolve_since(db, &files_root, full_scan)?;
-        let walked =
-            WeChat4Parser::parse_account_files_since(&acc, since).map_err(|e| e.to_string())?;
-        let changed_known = if since.is_some() {
-            db.list_changed_known_files(&files_root)
-                .map_err(|e| e.to_string())?
-        } else {
-            Vec::new()
+
+        // --- 媒体根 1: msg/file ---
+        scan_media_root(
+            db,
+            device_id,
+            &acc.files_dir,
+            &acc.source_account_id,
+            full_scan,
+            scan_started_ms,
+            tally,
+            true,
+        )?;
+
+        // --- 媒体根 2: msg/video ---
+        scan_media_root(
+            db,
+            device_id,
+            &acc.video_dir,
+            &acc.source_account_id,
+            full_scan,
+            scan_started_ms,
+            tally,
+            false,
+        )?;
+
+        // --- 图片: msg/attach ---
+        process_images(db, device_id, &acc, scan_started_ms, tally, image_stats)?;
+    }
+    Ok(())
+}
+
+/// 扫描单个媒体根（msg/file 或 msg/video）
+///
+/// `use_file_parser`: true 用文件解析（含会话目录），false 用视频解析（仅 mp4）
+#[allow(clippy::too_many_arguments)]
+fn scan_media_root(
+    db: &mut chatvault_index::Database,
+    device_id: &str,
+    media_root: &std::path::Path,
+    account_id: &str,
+    full_scan: bool,
+    scan_started_ms: i64,
+    tally: &mut ScanTally,
+    use_file_parser: bool,
+) -> std::result::Result<(), String> {
+    let root_s = media_root.to_string_lossy().to_string();
+    let since = resolve_since(db, &root_s, full_scan)?;
+
+    let walked = if use_file_parser {
+        // msg/file：复用月份 mtime 裁剪 + 会话目录解析
+        if !media_root.exists() {
+            return Ok(());
+        }
+        WeChat4Parser::parse_folder_since(media_root, Some(account_id), since)
+            .map_err(|e| e.to_string())?
+    } else {
+        // msg/video：仅 .mp4
+        let fake_account = adapter_wechat_windows::WeChatAccount {
+            source_account_id: account_id.to_string(),
+            root_dir: media_root
+                .parent()
+                .and_then(|p| p.parent())
+                .unwrap_or(media_root)
+                .to_path_buf(),
+            files_dir: media_root.to_path_buf(),
+            video_dir: media_root.to_path_buf(),
+            images_dir: media_root.to_path_buf(),
         };
-        let candidates = merge_candidates(
-            walked,
-            changed_known,
-            WECHAT_WINDOWS_4_SOURCE_TYPE,
-            Some(&acc.source_account_id),
-            None,
-            Some(&acc.files_dir),
-        );
-        let complete = ingest_candidates(db, device_id, candidates, tally)?;
-        if complete {
-            db.mark_scan_started(
-                &files_root,
-                WECHAT_WINDOWS_4_SOURCE_TYPE,
-                Some(&acc.source_account_id),
-                scan_started_ms,
-            )
-            .map_err(|e| e.to_string())?;
+        WeChat4Parser::parse_account_videos_since(&fake_account, since)
+            .map_err(|e| e.to_string())?
+    };
+
+    let changed_known = if since.is_some() {
+        db.list_changed_known_files(&root_s)
+            .map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let candidates = merge_candidates(
+        walked,
+        changed_known,
+        WECHAT_WINDOWS_4_SOURCE_TYPE,
+        Some(account_id),
+        None,
+        if use_file_parser {
+            Some(media_root)
         } else {
-            tracing::warn!(
-                "微信账号 {} 本轮存在未完成候选，保留原扫描检查点",
-                acc.source_account_id
-            );
+            None
+        },
+    );
+    let complete = ingest_candidates(db, device_id, candidates, tally)?;
+    if complete {
+        db.mark_scan_started(
+            &root_s,
+            WECHAT_WINDOWS_4_SOURCE_TYPE,
+            Some(account_id),
+            scan_started_ms,
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        tracing::warn!(
+            "账号 {} 媒体根 {} 本轮存在未完成候选，保留原扫描检查点",
+            account_id,
+            root_s
+        );
+    }
+    Ok(())
+}
+
+/// 处理账号的聊天图片：候选持久化 → 准备 → 入库
+fn process_images(
+    db: &mut chatvault_index::Database,
+    device_id: &str,
+    acc: &adapter_wechat_windows::WeChatAccount,
+    scan_started_ms: i64,
+    tally: &mut ScanTally,
+    image_stats: &mut ImagePrepStats,
+) -> std::result::Result<(), String> {
+    if !acc.images_dir.is_dir() {
+        return Ok(());
+    }
+
+    let images_root_s = acc.images_dir.to_string_lossy().to_string();
+
+    // 1. 发现候选并持久化
+    let candidates = discover_image_candidates(&acc.images_dir, &acc.source_account_id);
+    for c in &candidates {
+        db.upsert_image_candidate(
+            &images_root_s,
+            &acc.source_account_id,
+            &c.source_path.to_string_lossy(),
+            c.file_size as i64,
+            c.modified_time.timestamp_millis(),
+            c.conv_hash.as_deref(),
+            Some(&c.month),
+            Some(&c.normalized_stem),
+            Some(&c.image_group_key),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    // 2. 准备（解密 + 校验 + 暂存）
+    let staging = db.staging_dir();
+    let batch = prepare_account_images(
+        &acc.images_dir,
+        &acc.source_account_id,
+        &staging,
+        64, // 候选密钥上限
+    );
+    image_stats.discovered += batch.stats.discovered;
+    image_stats.prepared += batch.stats.prepared;
+    image_stats.parameters_unavailable += batch.stats.parameters_unavailable;
+    image_stats.parameters_not_applicable += batch.stats.parameters_not_applicable;
+    image_stats.unsupported_structure += batch.stats.unsupported_structure;
+    image_stats.unsupported_payload += batch.stats.unsupported_payload;
+    image_stats.invalid_image += batch.stats.invalid_image;
+    image_stats.waiting_stable += batch.stats.waiting_stable;
+    image_stats.logical_groups += batch.stats.logical_groups;
+
+    tally.discovered += batch.stats.discovered;
+
+    // 3. 入库成功的明文
+    let mut all_complete = true;
+    for item in &batch.prepared {
+        let source_path = item.candidate.source_path.to_string_lossy().to_string();
+        // 幂等：同路径同哈希已入库则跳过
+        if db.path_is_current(&source_path).unwrap_or(false) {
+            tally.skipped += 1;
+            continue;
+        }
+        // 找到候选 ID
+        let pending = db
+            .list_pending_image_candidates(&acc.source_account_id, i64::MAX)
+            .unwrap_or_default();
+        let candidate_id = pending
+            .iter()
+            .find(|c| c.source_path == source_path)
+            .map(|c| c.candidate_id.clone());
+
+        match db.ingest_prepared_content(&item.prepared, device_id, candidate_id.as_deref()) {
+            Ok(chatvault_index::IngestResult::Indexed { is_new_object, .. }) => {
+                if is_new_object {
+                    tally.new_objects += 1;
+                } else {
+                    tally.skipped += 1;
+                }
+            }
+            Ok(chatvault_index::IngestResult::Skipped { .. }) => {
+                tally.skipped += 1;
+            }
+            Err(e) => {
+                all_complete = false;
+                tracing::warn!("图片入库失败 {}: {}", source_path, e);
+                if let Some(cid) = &candidate_id {
+                    let _ = db.mark_candidate_failed(
+                        cid,
+                        chatvault_core::models::ImageErrorCode::PreparedContentMissing,
+                    );
+                }
+            }
         }
     }
+
+    // 4. 标记失败候选
+    for failure in &batch.failures {
+        let source_path = failure.candidate.source_path.to_string_lossy().to_string();
+        let pending = db
+            .list_pending_image_candidates(&acc.source_account_id, i64::MAX)
+            .unwrap_or_default();
+        if let Some(row) = pending.iter().find(|c| c.source_path == source_path) {
+            let _ = db.mark_candidate_failed(&row.candidate_id, failure.error_code);
+        }
+    }
+
+    // 5. 目录枚举完成且候选落库后推进图片根检查点
+    // 注意：检查点只表示「已发现」，不代表「全部成功备份」
+    if all_complete {
+        db.mark_scan_started(
+            &images_root_s,
+            WECHAT_WINDOWS_4_SOURCE_TYPE,
+            Some(&acc.source_account_id),
+            scan_started_ms,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -289,6 +493,7 @@ pub(crate) fn execute_scan(
     let start_time = Instant::now();
     let scan_started_ms = Utc::now().timestamp_millis();
     let mut tally = ScanTally::new();
+    let mut image_stats = ImagePrepStats::default();
     let sources = load_collect_sources(db)?;
 
     for source in &sources {
@@ -302,6 +507,7 @@ pub(crate) fn execute_scan(
                 full_scan,
                 scan_started_ms,
                 &mut tally,
+                &mut image_stats,
             )?,
             GENERIC_FOLDER_SOURCE_TYPE => {
                 scan_generic_source(db, device_id, &root, full_scan, scan_started_ms, &mut tally)?
@@ -315,6 +521,12 @@ pub(crate) fn execute_scan(
         total_new_objects: tally.new_objects,
         total_skipped: tally.skipped,
         duration_ms: start_time.elapsed().as_millis(),
+        images_discovered: image_stats.discovered,
+        images_prepared: image_stats.prepared,
+        images_parameters_unavailable: image_stats.parameters_unavailable,
+        images_unsupported: image_stats.unsupported_structure + image_stats.unsupported_payload,
+        images_invalid: image_stats.invalid_image,
+        images_logical_groups: image_stats.logical_groups,
     })
 }
 

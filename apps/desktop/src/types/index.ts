@@ -15,7 +15,12 @@ export interface WechatAccountDto {
   sourceAccountId: string;
   sourceDir: string;
   sourceRoot: string;
+  /** 文件附件候选数（msg/file） */
   filesCountEstimated: number;
+  /** 视频候选数（msg/video 下的 .mp4） */
+  videosCountEstimated: number;
+  /** 图片候选数（msg/attach/**\/Img） */
+  imagesCountEstimated: number;
 }
 
 /** 立即扫描时用于定位微信账号的目录与账号标识。 */
@@ -41,6 +46,18 @@ export interface ScanResultDto {
   totalNewObjects: number;
   totalSkipped: number;
   durationMs: number;
+  /** 图片候选发现数 */
+  imagesDiscovered?: number;
+  /** 图片解密校验成功数 */
+  imagesPrepared?: number;
+  /** 参数不可用数 */
+  imagesParametersUnavailable?: number;
+  /** 未支持格式数 */
+  imagesUnsupported?: number;
+  /** 校验失败数 */
+  imagesInvalid?: number;
+  /** 逻辑图片组数 */
+  imagesLogicalGroups?: number;
 }
 
 /** 内容对象位置状态。 */

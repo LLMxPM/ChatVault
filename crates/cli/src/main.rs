@@ -111,10 +111,15 @@ fn handle_detect() -> Result<()> {
         println!("    {}. 账号标识: {}", i + 1, acc.source_account_id);
         println!("       根目录:   {}", acc.root_dir.display());
         println!("       附件目录: {}", acc.files_dir.display());
+        println!("       视频目录: {}", acc.video_dir.display());
+        println!("       图片目录: {}", acc.images_dir.display());
 
         // 尝试统计当前文件数
         if let Ok(files) = WeChat4Parser::parse_account_files(acc) {
             println!("       当前附件文件数: {}", files.len());
+        }
+        if let Ok(videos) = WeChat4Parser::parse_account_videos(acc) {
+            println!("       当前视频文件数: {}", videos.len());
         }
     }
 
@@ -148,46 +153,49 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
             return Ok(());
         }
         for acc in accounts {
-            println!("[*] 正在扫描微信账号 [{}] 的附件...", acc.source_account_id);
-            let files_root = acc.files_dir.to_string_lossy().to_string();
-            let since = resolve_scan_since(&db, &files_root, full)?;
-            let walked = WeChat4Parser::parse_account_files_since(&acc, since)?;
-            let changed_known = if since.is_some() {
-                db.list_changed_known_files(&files_root)?
-            } else {
-                Vec::new()
-            };
-            let files = merge_changed_known(
-                walked,
-                changed_known,
-                "wechat-windows-4",
-                Some(&acc.source_account_id),
-                None,
-                Some(&acc.files_dir),
-            );
-            println!("    本次候选 {} 个文件", files.len());
-            discovered_count += files.len();
-            let complete = process_scan_files(
+            println!("[*] 正在扫描微信账号 [{}]...", acc.source_account_id);
+
+            // 媒体根 1: msg/file
+            scan_cli_media_root(
                 &mut db,
                 &device_id,
-                &files,
+                &acc.files_dir,
+                &acc.source_account_id,
+                full,
+                scan_started_ms,
                 &mut indexed_count,
                 &mut skipped_count,
                 &mut new_object_count,
+                &mut discovered_count,
+                true,
             )?;
-            if complete {
-                db.mark_scan_started(
-                    &files_root,
-                    "wechat-windows-4",
-                    Some(&acc.source_account_id),
-                    scan_started_ms,
-                )?;
-            } else {
-                println!(
-                    "[-] 微信账号 {} 存在未完成候选，保留原扫描检查点",
-                    acc.source_account_id
-                );
-            }
+
+            // 媒体根 2: msg/video（仅 .mp4）
+            scan_cli_media_root(
+                &mut db,
+                &device_id,
+                &acc.video_dir,
+                &acc.source_account_id,
+                full,
+                scan_started_ms,
+                &mut indexed_count,
+                &mut skipped_count,
+                &mut new_object_count,
+                &mut discovered_count,
+                false,
+            )?;
+
+            // 图片: msg/attach
+            process_cli_images(
+                &mut db,
+                &device_id,
+                &acc,
+                scan_started_ms,
+                &mut indexed_count,
+                &mut skipped_count,
+                &mut new_object_count,
+                &mut discovered_count,
+            )?;
         }
     } else {
         println!("[*] 正在扫描通用目录: {}", target);
@@ -244,6 +252,192 @@ fn resolve_scan_since(
     }
     let ms = db.get_scan_started_ms(root)?;
     Ok(ms.map(chatvault_index::system_time_from_ms))
+}
+
+/// 扫描单个媒体根（msg/file 或 msg/video）
+#[allow(clippy::too_many_arguments)]
+fn scan_cli_media_root(
+    db: &mut Database,
+    device_id: &str,
+    media_root: &std::path::Path,
+    account_id: &str,
+    full: bool,
+    scan_started_ms: i64,
+    indexed_count: &mut usize,
+    skipped_count: &mut usize,
+    new_object_count: &mut usize,
+    discovered_count: &mut usize,
+    use_file_parser: bool,
+) -> Result<()> {
+    let root_s = media_root.to_string_lossy().to_string();
+    let since = resolve_scan_since(db, &root_s, full)?;
+
+    let walked = if use_file_parser {
+        if !media_root.exists() {
+            return Ok(());
+        }
+        WeChat4Parser::parse_folder_since(media_root, Some(account_id), since)?
+    } else {
+        let fake_account = adapter_wechat_windows::WeChatAccount {
+            source_account_id: account_id.to_string(),
+            root_dir: media_root
+                .parent()
+                .and_then(|p| p.parent())
+                .unwrap_or(media_root)
+                .to_path_buf(),
+            files_dir: media_root.to_path_buf(),
+            video_dir: media_root.to_path_buf(),
+            images_dir: media_root.to_path_buf(),
+        };
+        WeChat4Parser::parse_account_videos_since(&fake_account, since)?
+    };
+
+    let changed_known = if since.is_some() {
+        db.list_changed_known_files(&root_s)?
+    } else {
+        Vec::new()
+    };
+    let files = merge_changed_known(
+        walked,
+        changed_known,
+        "wechat-windows-4",
+        Some(account_id),
+        None,
+        if use_file_parser {
+            Some(media_root)
+        } else {
+            None
+        },
+    );
+    println!(
+        "    [{}] 本次候选 {} 个文件",
+        if use_file_parser { "file" } else { "video" },
+        files.len()
+    );
+    *discovered_count += files.len();
+    let complete = process_scan_files(
+        db,
+        device_id,
+        &files,
+        indexed_count,
+        skipped_count,
+        new_object_count,
+    )?;
+    if complete {
+        db.mark_scan_started(
+            &root_s,
+            "wechat-windows-4",
+            Some(account_id),
+            scan_started_ms,
+        )?;
+    } else {
+        println!("[-] 媒体根 {} 存在未完成候选，保留原扫描检查点", root_s);
+    }
+    Ok(())
+}
+
+/// 处理账号的聊天图片
+#[allow(clippy::too_many_arguments)]
+fn process_cli_images(
+    db: &mut Database,
+    device_id: &str,
+    acc: &adapter_wechat_windows::WeChatAccount,
+    scan_started_ms: i64,
+    indexed_count: &mut usize,
+    skipped_count: &mut usize,
+    new_object_count: &mut usize,
+    discovered_count: &mut usize,
+) -> Result<()> {
+    use adapter_wechat_windows::media::{discover_image_candidates, prepare_account_images};
+
+    if !acc.images_dir.is_dir() {
+        return Ok(());
+    }
+
+    let images_root_s = acc.images_dir.to_string_lossy().to_string();
+    let candidates = discover_image_candidates(&acc.images_dir, &acc.source_account_id);
+    for c in &candidates {
+        db.upsert_image_candidate(
+            &images_root_s,
+            &acc.source_account_id,
+            &c.source_path.to_string_lossy(),
+            c.file_size as i64,
+            c.modified_time.timestamp_millis(),
+            c.conv_hash.as_deref(),
+            Some(&c.month),
+            Some(&c.normalized_stem),
+            Some(&c.image_group_key),
+        )?;
+    }
+    println!("    [image] 本次候选 {} 个图片", candidates.len());
+    *discovered_count += candidates.len();
+
+    let staging = db.staging_dir();
+    let batch = prepare_account_images(&acc.images_dir, &acc.source_account_id, &staging, 64);
+
+    let mut all_complete = true;
+    for item in &batch.prepared {
+        let source_path = item.candidate.source_path.to_string_lossy().to_string();
+        let pending = db
+            .list_pending_image_candidates(&acc.source_account_id, i64::MAX)
+            .unwrap_or_default();
+        let candidate_id = pending
+            .iter()
+            .find(|c| c.source_path == source_path)
+            .map(|c| c.candidate_id.clone());
+
+        match db.ingest_prepared_content(&item.prepared, device_id, candidate_id.as_deref()) {
+            Ok(IngestResult::Indexed { is_new_object, .. }) => {
+                *indexed_count += 1;
+                if is_new_object {
+                    *new_object_count += 1;
+                }
+            }
+            Ok(IngestResult::Skipped { .. }) => {
+                *skipped_count += 1;
+            }
+            Err(e) => {
+                all_complete = false;
+                eprintln!("[-] 图片入库失败: {}", e);
+                if let Some(cid) = &candidate_id {
+                    let _ = db.mark_candidate_failed(
+                        cid,
+                        chatvault_core::models::ImageErrorCode::PreparedContentMissing,
+                    );
+                }
+            }
+        }
+    }
+
+    for failure in &batch.failures {
+        let source_path = failure.candidate.source_path.to_string_lossy().to_string();
+        let pending = db
+            .list_pending_image_candidates(&acc.source_account_id, i64::MAX)
+            .unwrap_or_default();
+        if let Some(row) = pending.iter().find(|c| c.source_path == source_path) {
+            let _ = db.mark_candidate_failed(&row.candidate_id, failure.error_code);
+        }
+    }
+
+    println!(
+        "    [image] 解密成功 {}, 参数不可用 {}, 未支持 {}, 校验失败 {}, 等待稳定 {}",
+        batch.stats.prepared,
+        batch.stats.parameters_unavailable,
+        batch.stats.unsupported_structure + batch.stats.unsupported_payload,
+        batch.stats.invalid_image,
+        batch.stats.waiting_stable
+    );
+
+    if all_complete {
+        db.mark_scan_started(
+            &images_root_s,
+            "wechat-windows-4",
+            Some(&acc.source_account_id),
+            scan_started_ms,
+        )?;
+    }
+
+    Ok(())
 }
 
 /// 合并目录发现与已知文件内容变更

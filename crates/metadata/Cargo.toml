@@ -14,3 +14,4 @@ serde_json.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 tempfile = "3"
+image.workspace = true

@@ -87,7 +87,9 @@
                 />
                 <span class="min-w-0">
                   <span class="block truncate font-mono text-cv-caption text-cv-text">{{ account.sourceAccountId }}</span>
-                  <span class="block text-cv-caption text-cv-text-3">约 {{ account.filesCountEstimated }} 个附件</span>
+                  <span class="block text-cv-caption text-cv-text-3">
+                    附件 {{ account.filesCountEstimated }} · 视频 {{ account.videosCountEstimated ?? 0 }} · 图片 {{ account.imagesCountEstimated ?? 0 }}
+                  </span>
                 </span>
               </label>
             </div>

@@ -60,7 +60,9 @@ impl Database {
         if let Some(bound) = self.get_setting("remote_binding")? {
             let target = serde_json::to_string(&(url.trim().trim_end_matches('/'), vault))?;
             if bound != target {
-                return Err(ChatVaultError::Internal("当前已绑定其他资料库；若要换用新的 Vault ID，请先在设置里清空旧 Vault".into()));
+                return Err(ChatVaultError::Internal(
+                    "当前已绑定其他资料库；若要换用新的 Vault ID，请先在设置里清空旧 Vault".into(),
+                ));
             }
         }
         Ok(())

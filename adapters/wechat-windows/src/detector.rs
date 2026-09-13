@@ -15,6 +15,10 @@ pub struct WeChatAccount {
     pub root_dir: PathBuf,
     /// 聊天附件文件所在目录 (通常为 `root_dir/msg/file`)
     pub files_dir: PathBuf,
+    /// 视频本体目录 (`msg/video`)；缺失时该路径仍给出，由扫描层按空目录处理
+    pub video_dir: PathBuf,
+    /// 聊天图片加密目录 (`msg/attach`)；缺失时该路径仍给出，由扫描层按空目录处理
+    pub images_dir: PathBuf,
 }
 
 /// 微信 4.x 探测器
@@ -123,6 +127,8 @@ impl WeChat4Detector {
 
             let msg_dir = path.join("msg");
             let files_dir = msg_dir.join("file");
+            let video_dir = msg_dir.join("video");
+            let images_dir = msg_dir.join("attach");
 
             // 只要存在 msg 目录，即使当前还没有收到 file，也属于合法账号
             if msg_dir.exists() {
@@ -130,6 +136,8 @@ impl WeChat4Detector {
                     source_account_id: dir_name.to_string(),
                     root_dir: path,
                     files_dir,
+                    video_dir,
+                    images_dir,
                 });
             }
         }

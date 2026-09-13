@@ -118,37 +118,184 @@ fn scan_wechat_source(
     let accounts = WeChat4Detector::find_accounts(&root)?;
     for acc in accounts {
         println!("[*] 扫描微信账号 [{}]", acc.source_account_id);
-        let files_root = acc.files_dir.to_string_lossy().to_string();
-        let since = resolve_since(db, &files_root)?;
-        let walked = WeChat4Parser::parse_account_files_since(&acc, since)?;
-        let changed_known = if since.is_some() {
-            db.list_changed_known_files(&files_root)?
-        } else {
-            Vec::new()
+
+        // 媒体根 1: msg/file
+        scan_one_media_root(
+            db,
+            device_id,
+            &acc.files_dir,
+            &acc.source_account_id,
+            scan_started_ms,
+            indexed,
+            skipped,
+            discovered,
+            true,
+        )?;
+
+        // 媒体根 2: msg/video
+        scan_one_media_root(
+            db,
+            device_id,
+            &acc.video_dir,
+            &acc.source_account_id,
+            scan_started_ms,
+            indexed,
+            skipped,
+            discovered,
+            false,
+        )?;
+
+        // 图片: msg/attach
+        process_scheduled_images(
+            db,
+            device_id,
+            &acc,
+            scan_started_ms,
+            indexed,
+            skipped,
+            discovered,
+        )?;
+    }
+    Ok(())
+}
+
+/// 扫描单个媒体根
+#[allow(clippy::too_many_arguments)]
+fn scan_one_media_root(
+    db: &mut Database,
+    device_id: &str,
+    media_root: &std::path::Path,
+    account_id: &str,
+    scan_started_ms: i64,
+    indexed: &mut usize,
+    skipped: &mut usize,
+    discovered: &mut usize,
+    use_file_parser: bool,
+) -> Result<()> {
+    let root_s = media_root.to_string_lossy().to_string();
+    let since = resolve_since(db, &root_s)?;
+    let walked = if use_file_parser {
+        if !media_root.exists() {
+            return Ok(());
+        }
+        WeChat4Parser::parse_folder_since(media_root, Some(account_id), since)?
+    } else {
+        let fake = adapter_wechat_windows::WeChatAccount {
+            source_account_id: account_id.to_string(),
+            root_dir: media_root
+                .parent()
+                .and_then(|p| p.parent())
+                .unwrap_or(media_root)
+                .to_path_buf(),
+            files_dir: media_root.to_path_buf(),
+            video_dir: media_root.to_path_buf(),
+            images_dir: media_root.to_path_buf(),
         };
-        let files = merge_changed_known(
-            walked,
-            changed_known,
+        WeChat4Parser::parse_account_videos_since(&fake, since)?
+    };
+    let changed_known = if since.is_some() {
+        db.list_changed_known_files(&root_s)?
+    } else {
+        Vec::new()
+    };
+    let files = merge_changed_known(
+        walked,
+        changed_known,
+        WECHAT_WINDOWS_4_SOURCE_TYPE,
+        Some(account_id),
+        None,
+        if use_file_parser {
+            Some(media_root)
+        } else {
+            None
+        },
+    );
+    *discovered += files.len();
+    let complete = process_files(db, device_id, &files, indexed, skipped)?;
+    if complete {
+        db.mark_scan_started(
+            &root_s,
+            WECHAT_WINDOWS_4_SOURCE_TYPE,
+            Some(account_id),
+            scan_started_ms,
+        )?;
+    } else {
+        println!("[-] 媒体根 {} 存在未完成候选，保留原扫描检查点", root_s);
+    }
+    Ok(())
+}
+
+/// 处理聊天图片（定时任务路径）
+#[allow(clippy::too_many_arguments)]
+fn process_scheduled_images(
+    db: &mut Database,
+    device_id: &str,
+    acc: &adapter_wechat_windows::WeChatAccount,
+    scan_started_ms: i64,
+    indexed: &mut usize,
+    skipped: &mut usize,
+    discovered: &mut usize,
+) -> Result<()> {
+    use adapter_wechat_windows::media::{discover_image_candidates, prepare_account_images};
+
+    if !acc.images_dir.is_dir() {
+        return Ok(());
+    }
+    let images_root_s = acc.images_dir.to_string_lossy().to_string();
+    let candidates = discover_image_candidates(&acc.images_dir, &acc.source_account_id);
+    for c in &candidates {
+        db.upsert_image_candidate(
+            &images_root_s,
+            &acc.source_account_id,
+            &c.source_path.to_string_lossy(),
+            c.file_size as i64,
+            c.modified_time.timestamp_millis(),
+            c.conv_hash.as_deref(),
+            Some(&c.month),
+            Some(&c.normalized_stem),
+            Some(&c.image_group_key),
+        )?;
+    }
+    *discovered += candidates.len();
+
+    let staging = db.staging_dir();
+    let batch = prepare_account_images(&acc.images_dir, &acc.source_account_id, &staging, 64);
+
+    let mut all_complete = true;
+    for item in &batch.prepared {
+        let source_path = item.candidate.source_path.to_string_lossy().to_string();
+        let pending = db
+            .list_pending_image_candidates(&acc.source_account_id, i64::MAX)
+            .unwrap_or_default();
+        let candidate_id = pending
+            .iter()
+            .find(|c| c.source_path == source_path)
+            .map(|c| c.candidate_id.clone());
+        match db.ingest_prepared_content(&item.prepared, device_id, candidate_id.as_deref()) {
+            Ok(IngestResult::Indexed { .. }) => *indexed += 1,
+            Ok(IngestResult::Skipped { .. }) => *skipped += 1,
+            Err(e) => {
+                all_complete = false;
+                eprintln!("[-] 图片入库失败: {}", e);
+            }
+        }
+    }
+    for failure in &batch.failures {
+        let source_path = failure.candidate.source_path.to_string_lossy().to_string();
+        let pending = db
+            .list_pending_image_candidates(&acc.source_account_id, i64::MAX)
+            .unwrap_or_default();
+        if let Some(row) = pending.iter().find(|c| c.source_path == source_path) {
+            let _ = db.mark_candidate_failed(&row.candidate_id, failure.error_code);
+        }
+    }
+    if all_complete {
+        db.mark_scan_started(
+            &images_root_s,
             WECHAT_WINDOWS_4_SOURCE_TYPE,
             Some(&acc.source_account_id),
-            None,
-            Some(&acc.files_dir),
-        );
-        *discovered += files.len();
-        let complete = process_files(db, device_id, &files, indexed, skipped)?;
-        if complete {
-            db.mark_scan_started(
-                &files_root,
-                WECHAT_WINDOWS_4_SOURCE_TYPE,
-                Some(&acc.source_account_id),
-                scan_started_ms,
-            )?;
-        } else {
-            println!(
-                "[-] 微信账号 {} 存在未完成候选，保留原扫描检查点",
-                acc.source_account_id
-            );
-        }
+            scan_started_ms,
+        )?;
     }
     Ok(())
 }
