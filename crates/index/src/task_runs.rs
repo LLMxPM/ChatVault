@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
 
-/// 任务运行列表行
+/// 运行列表行
 #[derive(Debug, Clone)]
 pub struct TaskRunRow {
     pub run_id: String,
@@ -22,6 +22,10 @@ pub struct TaskRunRow {
     pub webdav_configured: bool,
     pub summary_json: Option<String>,
     pub error_message: Option<String>,
+    pub runner_kind: String,
+    pub runner_pid: Option<i64>,
+    pub cancel_requested: bool,
+    pub heartbeat_at: Option<String>,
 }
 
 /// 任务运行阶段行
@@ -83,30 +87,125 @@ fn optional_time(s: Option<&str>) -> Result<Option<DateTime<Utc>>> {
     s.map(parse_time).transpose()
 }
 
+const TASK_RUN_COLUMNS: &str =
+    "run_id,kind,trigger_source,status,started_at,finished_at,duration_ms, \
+ webdav_configured,summary_json,error_message,runner_kind,runner_pid,cancel_requested,heartbeat_at";
+
+fn map_task_run_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRunRow> {
+    Ok(TaskRunRow {
+        run_id: r.get(0)?,
+        kind: r.get(1)?,
+        trigger_source: r.get(2)?,
+        status: r.get(3)?,
+        started_at: r.get(4)?,
+        finished_at: r.get(5)?,
+        duration_ms: r.get(6)?,
+        webdav_configured: r.get::<_, i64>(7)? != 0,
+        summary_json: r.get(8)?,
+        error_message: r.get(9)?,
+        runner_kind: r.get(10)?,
+        runner_pid: r.get(11)?,
+        cancel_requested: r.get::<_, i64>(12)? != 0,
+        heartbeat_at: r.get(13)?,
+    })
+}
+
 impl Database {
-    /// 创建一次运行（status=running）
+    /// 创建一次运行（status=running），记录执行方与 PID
     pub fn start_task_run(
         &mut self,
         kind: TaskRunKind,
         trigger_source: &str,
         webdav_configured: bool,
+        runner_kind: &str,
     ) -> Result<String> {
         let run_id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
+        let pid = std::process::id() as i64;
         self.conn
             .execute(
-                "INSERT INTO task_runs (run_id,kind,trigger_source,status,started_at,webdav_configured)
-                 VALUES (?1,?2,?3,'running',?4,?5)",
+                "INSERT INTO task_runs (run_id,kind,trigger_source,status,started_at,webdav_configured,runner_kind,runner_pid,heartbeat_at)
+                 VALUES (?1,?2,?3,'running',?4,?5,?6,?7,?4)",
                 params![
                     run_id,
                     kind.as_str(),
                     trigger_source,
                     now,
-                    webdav_configured as i64
+                    webdav_configured as i64,
+                    runner_kind,
+                    pid
                 ],
             )
             .map_err(db_error)?;
         Ok(run_id)
+    }
+
+    /// 节流更新运行心跳与当前阶段进度统计
+    pub fn touch_task_run_progress(
+        &mut self,
+        run_id: &str,
+        stage: TaskRunStageName,
+        done: usize,
+        total: usize,
+        current_name: Option<&str>,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let stats = serde_json::json!({
+            "done": done,
+            "total": total,
+            "currentName": current_name,
+        })
+        .to_string();
+        self.conn
+            .execute(
+                "UPDATE task_runs SET heartbeat_at=?1 WHERE run_id=?2 AND status='running'",
+                params![now, run_id],
+            )
+            .map_err(db_error)?;
+        self.conn
+            .execute(
+                "UPDATE task_run_stages SET stats_json=?1 WHERE run_id=?2 AND stage=?3 AND status='running'",
+                params![stats, run_id, stage.as_str()],
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    /// 请求取消运行（仅 running）
+    pub fn request_cancel_task_run(&mut self, run_id: &str) -> Result<bool> {
+        let n = self
+            .conn
+            .execute(
+                "UPDATE task_runs SET cancel_requested=1 WHERE run_id=?1 AND status='running'",
+                params![run_id],
+            )
+            .map_err(db_error)?;
+        Ok(n > 0)
+    }
+
+    /// 读取取消标志
+    pub fn task_run_cancel_requested(&self, run_id: &str) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT cancel_requested FROM task_runs WHERE run_id=?1",
+                params![run_id],
+                |r| Ok(r.get::<_, i64>(0)? != 0),
+            )
+            .map_err(db_error)
+    }
+
+    /// 当前是否有正在执行的运行（供桌面监视器展示）
+    pub fn get_active_task_run(&self) -> Result<Option<TaskRunRow>> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {TASK_RUN_COLUMNS} FROM task_runs WHERE status='running' ORDER BY started_at DESC LIMIT 1"
+                ),
+                [],
+                map_task_run_row,
+            )
+            .optional()
+            .map_err(db_error)
     }
 
     /// 开始阶段（幂等：同 run 同 stage 重复调用进入 running）
@@ -232,27 +331,12 @@ impl Database {
     pub fn list_task_runs(&self, limit: usize) -> Result<Vec<TaskRunRow>> {
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT run_id,kind,trigger_source,status,started_at,finished_at,duration_ms,
-                        webdav_configured,summary_json,error_message
-                 FROM task_runs ORDER BY started_at DESC LIMIT ?1",
-            )
+            .prepare(&format!(
+                "SELECT {TASK_RUN_COLUMNS} FROM task_runs ORDER BY started_at DESC LIMIT ?1"
+            ))
             .map_err(db_error)?;
         let rows = stmt
-            .query_map(params![limit.min(200) as i64], |r| {
-                Ok(TaskRunRow {
-                    run_id: r.get(0)?,
-                    kind: r.get(1)?,
-                    trigger_source: r.get(2)?,
-                    status: r.get(3)?,
-                    started_at: r.get(4)?,
-                    finished_at: r.get(5)?,
-                    duration_ms: r.get(6)?,
-                    webdav_configured: r.get::<_, i64>(7)? != 0,
-                    summary_json: r.get(8)?,
-                    error_message: r.get(9)?,
-                })
-            })
+            .query_map(params![limit.min(200) as i64], map_task_run_row)
             .map_err(db_error)?;
         rows.map(|r| r.map_err(db_error)).collect()
     }
@@ -261,24 +345,9 @@ impl Database {
     pub fn get_task_run(&self, run_id: &str) -> Result<Option<TaskRunRow>> {
         self.conn
             .query_row(
-                "SELECT run_id,kind,trigger_source,status,started_at,finished_at,duration_ms,
-                        webdav_configured,summary_json,error_message
-                 FROM task_runs WHERE run_id=?1",
+                &format!("SELECT {TASK_RUN_COLUMNS} FROM task_runs WHERE run_id=?1"),
                 params![run_id],
-                |r| {
-                    Ok(TaskRunRow {
-                        run_id: r.get(0)?,
-                        kind: r.get(1)?,
-                        trigger_source: r.get(2)?,
-                        status: r.get(3)?,
-                        started_at: r.get(4)?,
-                        finished_at: r.get(5)?,
-                        duration_ms: r.get(6)?,
-                        webdav_configured: r.get::<_, i64>(7)? != 0,
-                        summary_json: r.get(8)?,
-                        error_message: r.get(9)?,
-                    })
-                },
+                map_task_run_row,
             )
             .optional()
             .map_err(db_error)
@@ -363,17 +432,22 @@ impl Database {
         rows.map(|r| r.map_err(db_error)).collect()
     }
 
-    /// 启动时：将残留 running 标记为 failed（应用异常退出）
+    /// 启动时：将心跳过期的 running 标记为 failed（崩溃残留）
+    ///
+    /// 有新鲜心跳（默认 60s 内）的 running 一律不动，避免桌面启动误杀正在跑的 CLI 定时运行。
     pub fn mark_stale_running_task_runs(&mut self) -> Result<usize> {
-        let now = Utc::now().to_rfc3339();
+        let now = Utc::now();
+        let now_s = now.to_rfc3339();
+        let stale_heartbeat = (now - chrono::Duration::seconds(60)).to_rfc3339();
         let n = self
             .conn
             .execute(
                 "UPDATE task_runs SET status='failed', finished_at=?1,
                    error_message=COALESCE(error_message,'应用启动时发现上次运行未正常结束（可能被强制关闭或崩溃）'),
                    duration_ms=CAST((julianday(?1)-julianday(started_at))*86400000 AS INTEGER)
-                 WHERE status='running'",
-                params![now],
+                 WHERE status='running'
+                   AND (heartbeat_at IS NULL OR heartbeat_at < ?2)",
+                params![now_s, stale_heartbeat],
             )
             .map_err(db_error)?;
         self.conn
@@ -381,7 +455,7 @@ impl Database {
                 "UPDATE task_run_stages SET status='failed', finished_at=?1,
                    message=COALESCE(message,'应用异常退出，阶段未正常结束')
                  WHERE status IN ('pending','running') AND run_id IN (SELECT run_id FROM task_runs WHERE status='failed')",
-                params![now],
+                params![now_s],
             )
             .map_err(db_error)?;
         Ok(n)
@@ -417,6 +491,7 @@ pub fn task_run_from_row(row: &TaskRunRow) -> Result<TaskRun> {
             "success" => TaskRunStatus::Success,
             "partial" => TaskRunStatus::Partial,
             "failed" => TaskRunStatus::Failed,
+            "cancelled" => TaskRunStatus::Cancelled,
             _ => TaskRunStatus::Running,
         },
         started_at: parse_time(&row.started_at)?,
@@ -425,6 +500,10 @@ pub fn task_run_from_row(row: &TaskRunRow) -> Result<TaskRun> {
         webdav_configured: row.webdav_configured,
         summary_json: row.summary_json.clone(),
         error_message: row.error_message.clone(),
+        runner_kind: row.runner_kind.clone(),
+        runner_pid: row.runner_pid,
+        cancel_requested: row.cancel_requested,
+        heartbeat_at: optional_time(row.heartbeat_at.as_deref())?,
     })
 }
 
@@ -495,7 +574,7 @@ mod tests {
     fn test_task_run_lifecycle() {
         let mut db = Database::open_in_memory().unwrap();
         let run_id = db
-            .start_task_run(TaskRunKind::Pipeline, "manual", false)
+            .start_task_run(TaskRunKind::Pipeline, "manual", false, "desktop")
             .unwrap();
 
         db.start_task_run_stage(&run_id, TaskRunStageName::Scan)
@@ -562,11 +641,24 @@ mod tests {
     fn test_mark_stale_and_purge() {
         let mut db = Database::open_in_memory().unwrap();
         let run_id = db
-            .start_task_run(TaskRunKind::Pipeline, "schedule", true)
+            .start_task_run(TaskRunKind::Pipeline, "schedule", true, "cli")
             .unwrap();
         db.start_task_run_stage(&run_id, TaskRunStageName::Scan)
             .unwrap();
 
+        // 新鲜心跳不应被清扫
+        let n = db.mark_stale_running_task_runs().unwrap();
+        assert_eq!(n, 0);
+        let run = db.get_task_run(&run_id).unwrap().unwrap();
+        assert_eq!(run.status, "running");
+
+        // 心跳过期后清扫
+        db.conn
+            .execute(
+                "UPDATE task_runs SET heartbeat_at='2000-01-01T00:00:00Z' WHERE run_id=?1",
+                params![run_id],
+            )
+            .unwrap();
         let n = db.mark_stale_running_task_runs().unwrap();
         assert_eq!(n, 1);
         let run = db.get_task_run(&run_id).unwrap().unwrap();
@@ -576,5 +668,21 @@ mod tests {
         let removed = db.purge_old_task_runs(50, 30).unwrap();
         assert_eq!(removed, 0);
         assert_eq!(db.list_task_runs(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_cancel_request_and_progress() {
+        let mut db = Database::open_in_memory().unwrap();
+        let run_id = db
+            .start_task_run(TaskRunKind::Pipeline, "schedule", true, "cli")
+            .unwrap();
+        db.start_task_run_stage(&run_id, TaskRunStageName::Archive)
+            .unwrap();
+        db.touch_task_run_progress(&run_id, TaskRunStageName::Archive, 3, 10, Some("a.pdf"))
+            .unwrap();
+        assert!(!db.task_run_cancel_requested(&run_id).unwrap());
+        assert!(db.request_cancel_task_run(&run_id).unwrap());
+        assert!(db.task_run_cancel_requested(&run_id).unwrap());
+        assert!(db.get_active_task_run().unwrap().is_some());
     }
 }

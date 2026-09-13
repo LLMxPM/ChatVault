@@ -432,7 +432,7 @@ impl TaskRunKind {
     }
 }
 
-/// 任务运行整体结果
+/// 运行整体结果
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskRunStatus {
@@ -444,6 +444,8 @@ pub enum TaskRunStatus {
     Partial,
     /// 阶段中断或应用异常退出
     Failed,
+    /// 用户请求取消且协作点已停止
+    Cancelled,
 }
 
 impl TaskRunStatus {
@@ -453,6 +455,7 @@ impl TaskRunStatus {
             TaskRunStatus::Success => "success",
             TaskRunStatus::Partial => "partial",
             TaskRunStatus::Failed => "failed",
+            TaskRunStatus::Cancelled => "cancelled",
         }
     }
 }
@@ -526,7 +529,7 @@ impl TaskRunItemStatus {
     }
 }
 
-/// 一次任务运行记录
+/// 一次运行记录
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskRun {
     pub run_id: String,
@@ -539,6 +542,10 @@ pub struct TaskRun {
     pub webdav_configured: bool,
     pub summary_json: Option<String>,
     pub error_message: Option<String>,
+    pub runner_kind: String,
+    pub runner_pid: Option<i64>,
+    pub cancel_requested: bool,
+    pub heartbeat_at: Option<DateTime<Utc>>,
 }
 
 /// 运行内阶段记录

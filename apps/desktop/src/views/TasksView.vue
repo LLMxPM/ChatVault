@@ -1,6 +1,6 @@
 <!--
   ChatVault 任务中枢
-  职责：采集范围、调度、立即运行流水线、上传队列与恢复。
+  职责：采集范围、调度、立即运行流水线、归档队列与恢复。
 -->
 <template>
   <div class="flex h-full flex-col gap-4 p-6">
@@ -174,13 +174,22 @@
               </span>
             </label>
             <UiButton
+              v-if="running || activeRun"
+              class="shrink-0"
+              variant="danger"
+              :loading="cancelling"
+              @click="requestCancelRun"
+            >
+              结束运行
+            </UiButton>
+            <UiButton
+              v-else
               class="shrink-0"
               variant="primary"
-              :loading="running"
-              :disabled="running || !canRun"
+              :disabled="!canRun"
               @click="startPipeline"
             >
-              {{ running ? "归档中…" : "立即归档" }}
+              立即运行
             </UiButton>
           </div>
 
@@ -191,7 +200,7 @@
                 :class="statusIndicatorClass"
                 aria-hidden="true"
               >
-                <span class="h-2 w-2 rounded-full bg-current" :class="running ? 'animate-pulse' : ''" />
+                <span class="h-2 w-2 rounded-full bg-current" :class="running || activeRun ? 'animate-pulse' : ''" />
               </span>
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
@@ -200,6 +209,11 @@
                   <template v-if="running && liveProgress.total > 0">
                     <span class="text-cv-caption text-cv-text-2">
                       {{ liveProgress.done }}/{{ liveProgress.total }}
+                    </span>
+                  </template>
+                  <template v-else-if="!running && activeRun?.total">
+                    <span class="text-cv-caption text-cv-text-2">
+                      {{ activeRun.done ?? 0 }}/{{ activeRun.total }}
                     </span>
                   </template>
                 </div>
@@ -211,10 +225,23 @@
                 >
                   当前：{{ liveProgress.currentName }}
                 </p>
+                <p
+                  v-else-if="!running && activeRun?.currentName"
+                  class="mt-0.5 max-w-2xl truncate font-mono text-cv-caption text-cv-text-2"
+                  :title="activeRun.currentName"
+                >
+                  当前：{{ activeRun.currentName }}
+                </p>
                 <div v-if="running && liveProgress.total > 0" class="mt-2 h-1.5 w-full max-w-md overflow-hidden rounded-full bg-cv-surface">
                   <div
                     class="h-full rounded-full bg-cv-accent transition-all"
                     :style="{ width: progressPercent + '%' }"
+                  />
+                </div>
+                <div v-else-if="!running && activeRun?.total" class="mt-2 h-1.5 w-full max-w-md overflow-hidden rounded-full bg-cv-surface">
+                  <div
+                    class="h-full rounded-full bg-cv-accent transition-all"
+                    :style="{ width: activeRunProgressPercent + '%' }"
                   />
                 </div>
               </div>
@@ -225,7 +252,7 @@
 
       <UiCard
         title="运行历史"
-        info="最近流水线运行；展开可看阶段与失败明细。保留最近 50 次或 30 天。"
+        info="最近运行（含定时 CLI）；展开可看阶段与失败明细。保留最近 50 次或 30 天。"
         class="xl:col-span-2"
       >
         <template #headerExtra>
@@ -343,8 +370,8 @@
       </UiCard>
 
       <UiCard
-        title="上传队列"
-        info="重试只改状态，上传由下次归档执行。列表每 5 秒自动刷新。"
+        title="归档队列"
+        info="重新入队只改状态，上传由下次运行执行。列表与进行中运行每 2 秒自动刷新。"
         class="xl:col-span-2"
       >
         <template #headerExtra>
@@ -352,7 +379,7 @@
             <div class="w-36">
               <UiSelect v-model="statusFilter" @change="() => refreshTasks()">
                 <option value="">全部状态</option>
-                <option value="queued">待上传</option>
+                <option value="queued">待归档</option>
                 <option value="retryable_failed">可重试失败</option>
                 <option value="missing">本地缺失</option>
                 <option value="paused">已暂停</option>
@@ -383,7 +410,7 @@
                 <td class="px-2.5 py-1.5 text-cv-text-2">{{ t.formattedSize }}</td>
                 <td class="px-2.5 py-1.5">
                   <div class="flex gap-1">
-                    <UiButton v-if="canRequeue(t.status)" size="sm" variant="secondary" @click="requeue(t.taskId)">重试</UiButton>
+                    <UiButton v-if="canRequeue(t.status)" size="sm" variant="secondary" @click="requeue(t.taskId)">重新入队</UiButton>
                     <UiButton v-if="canPause(t.status)" size="sm" variant="ghost" @click="pause(t.taskId)">暂停</UiButton>
                   </div>
                 </td>
@@ -427,6 +454,8 @@ import {
   runPipeline,
   setScheduleConfig,
   syncRestore,
+  getActiveRun,
+  cancelTaskRun,
 } from "../api/tauri";
 import { useCollectSources } from "../composables/useCollectSources";
 import { pushToast } from "../composables/useToast";
@@ -440,6 +469,7 @@ import type {
   TaskRunDto,
   TaskRunDetailDto,
   WebdavConfigDto,
+  ActiveRunDto,
 } from "../types";
 
 type StageId = "idle" | "scan" | "done" | "failed";
@@ -473,6 +503,8 @@ const maxScanIntervalHours = 168;
 const scheduleRegistered = ref(false);
 const fullScan = ref(false);
 const running = ref(false);
+const cancelling = ref(false);
+const activeRun = ref<ActiveRunDto | null>(null);
 const pipelineError = ref("");
 const pipelineResult = ref<PipelineResultDto | null>(null);
 const stage = ref<StageId>("idle");
@@ -503,6 +535,12 @@ const progressPercent = computed(() => {
   return Math.min(100, Math.round((liveProgress.value.done / liveProgress.value.total) * 100));
 });
 
+const activeRunProgressPercent = computed(() => {
+  const a = activeRun.value;
+  if (!a?.total) return 0;
+  return Math.min(100, Math.round(((a.done ?? 0) / a.total) * 100));
+});
+
 const scanIntervalHours = computed(() => {
   const hours = scanIntervalMinutes.value / 60;
   return Number.isFinite(hours) ? String(Number(hours.toFixed(2))) : "0.5";
@@ -511,13 +549,18 @@ const scanIntervalHours = computed(() => {
 const statusHeadline = computed(() => {
   if (running.value) {
     if (liveProgress.value.stage) return `${stageLabel(liveProgress.value.stage)}中`;
-    return "归档中";
+    return "运行中";
   }
-  if (stage.value === "failed") return "归档失败";
+  if (activeRun.value) {
+    const src = activeRun.value.runnerKind === "cli" ? "定时" : "手动";
+    const st = activeRun.value.currentStage ? stageLabel(activeRun.value.currentStage) : "运行";
+    return `${src}${st}中`;
+  }
+  if (stage.value === "failed") return "运行失败";
   if (stage.value === "done" && pipelineResult.value) {
-    return pipelineResult.value.webdavConfigured ? "归档完成" : "已本地扫描";
+    return pipelineResult.value.webdavConfigured ? "运行完成" : "已本地扫描";
   }
-  return "等待归档";
+  return "等待运行";
 });
 
 const statusDetail = computed(() => {
@@ -525,6 +568,18 @@ const statusDetail = computed(() => {
     const stageName = liveProgress.value.stageMessage
       || (liveProgress.value.stage ? stageLabel(liveProgress.value.stage) : "扫描 → 归档 → 同步");
     return stageName;
+  }
+  if (activeRun.value) {
+    const parts = [
+      activeRun.value.runnerKind === "cli" ? "系统计划任务" : "桌面立即运行",
+    ];
+    if (activeRun.value.currentStage) parts.push(stageLabel(activeRun.value.currentStage));
+    if (activeRun.value.total) {
+      parts.push(`${activeRun.value.done ?? 0}/${activeRun.value.total}`);
+    }
+    if (activeRun.value.currentName) parts.push(activeRun.value.currentName);
+    if (activeRun.value.cancelRequested) parts.push("正在取消…");
+    return parts.join(" · ");
   }
   if (stage.value === "failed") return pipelineError.value || "请检查网络与 WebDAV 配置后重试";
   if (stage.value === "done" && pipelineResult.value) {
@@ -535,13 +590,16 @@ const statusDetail = computed(() => {
 });
 
 const statusHeadlineClass = computed(() => {
-  if (running.value) return "font-medium text-cv-accent";
+  if (running.value || activeRun.value) return "font-medium text-cv-accent";
   if (stage.value === "failed") return "font-medium text-cv-danger";
   return "font-medium";
 });
 
 const statusBadge = computed(() => {
-  if (running.value) return "进行中";
+  if (running.value || activeRun.value) {
+    if (activeRun.value?.cancelRequested || cancelling.value) return "取消中";
+    return "进行中";
+  }
   if (stage.value === "failed") return "失败";
   if (stage.value === "done") return "已完成";
   if (!webdavReady.value) return "仅本地";
@@ -549,7 +607,7 @@ const statusBadge = computed(() => {
 });
 
 const statusBadgeTone = computed<"neutral" | "accent" | "success" | "warning" | "danger">(() => {
-  if (running.value) return "accent";
+  if (running.value || activeRun.value) return "accent";
   if (stage.value === "failed") return "danger";
   if (stage.value === "done") return "success";
   if (!webdavReady.value) return "warning";
@@ -557,7 +615,7 @@ const statusBadgeTone = computed<"neutral" | "accent" | "success" | "warning" | 
 });
 
 const statusIndicatorClass = computed(() => {
-  if (running.value) return "bg-cv-accent-soft text-cv-accent";
+  if (running.value || activeRun.value) return "bg-cv-accent-soft text-cv-accent";
   if (stage.value === "failed") return "bg-cv-surface-2 text-cv-danger";
   if (stage.value === "done") return "bg-cv-accent-soft text-cv-success";
   if (!webdavReady.value) return "bg-cv-surface-2 text-cv-warning";
@@ -571,7 +629,7 @@ async function onScheduleToggle(next: boolean) {
 }
 
 const statusMap: Record<string, string> = {
-  queued: "待上传",
+  queued: "待归档",
   retryable_failed: "可重试失败",
   missing: "本地缺失",
   paused: "已暂停",
@@ -746,7 +804,7 @@ async function refreshTasks(silent = false) {
 async function requeue(taskId: string) {
   try {
     await requeueUploadTask(taskId);
-    pushToast({ tone: "success", title: "已重新入队，待下次流水线上传" });
+    pushToast({ tone: "success", title: "已重新入队，待下次运行上传" });
     await refreshTasks();
   } catch (err) {
     pushToast({ tone: "danger", title: "重试失败", description: String(err) });
@@ -798,6 +856,7 @@ function runStatusLabel(s: string) {
     success: "成功",
     partial: "部分成功",
     failed: "失败",
+    cancelled: "已取消",
   };
   return map[s] || s;
 }
@@ -807,6 +866,7 @@ function runStatusTone(s: string): "neutral" | "accent" | "success" | "warning" 
   if (s === "partial") return "warning";
   if (s === "failed") return "danger";
   if (s === "running") return "accent";
+  if (s === "cancelled") return "neutral";
   return "neutral";
 }
 
@@ -886,14 +946,51 @@ async function toggleRunDetail(runId: string) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadSettings(), refreshTasks(), refreshHistory()]);
+  await Promise.all([loadSettings(), refreshTasks(), refreshHistory(), refreshActiveRun()]);
 });
+
+async function refreshActiveRun() {
+  try {
+    const next = await getActiveRun();
+    const prevId = activeRun.value?.runId;
+    activeRun.value = next;
+    if (prevId && (!next || next.runId !== prevId)) {
+      void refreshHistory(true);
+      void refreshTasks(true);
+    }
+  } catch {
+    /* 静默：轮询失败不打断页面 */
+  }
+}
+
+async function requestCancelRun() {
+  const runId = running.value ? liveProgress.value.runId : activeRun.value?.runId;
+  if (!runId) return;
+  const ok = await confirmAction({
+    title: "结束运行？",
+    description: "当前阶段将停止，已完成的归档保留，队列中的文件待下次运行继续上传。",
+    confirmLabel: "结束运行",
+    danger: true,
+  });
+  if (!ok) return;
+  cancelling.value = true;
+  try {
+    await cancelTaskRun(runId);
+    pushToast({ tone: "success", title: "已请求取消，等待运行停止" });
+    await refreshActiveRun();
+  } catch (err) {
+    pushToast({ tone: "danger", title: "取消失败", description: String(err) });
+  } finally {
+    cancelling.value = false;
+  }
+}
 
 function startPolling() {
   if (pollTimer) return;
   pollTimer = window.setInterval(() => {
     void refreshTasks(true);
-  }, 5000);
+    void refreshActiveRun();
+  }, 2000);
 }
 
 function stopPolling() {
@@ -908,6 +1005,7 @@ onActivated(() => {
   startPolling();
   void refreshTasks(true);
   void refreshHistory(true);
+  void refreshActiveRun();
 });
 
 onDeactivated(() => {

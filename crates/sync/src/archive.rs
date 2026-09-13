@@ -1,9 +1,13 @@
 // ChatVault 共享归档队列：桌面与计划任务采用相同重试、暂存和校验规则。
 use crate::progress::{ArchiveProgressSink, NoopProgressSink};
-use chatvault_core::models::TaskRunItemStatus;
+use chatvault_core::models::{TaskRunItemStatus, TaskRunStageName};
 use chatvault_core::{error::Result, models::VaultConfig};
 use chatvault_index::{Database, NewTaskRunItem};
 use chatvault_webdav::{ObjectPublisher, PublishResult, WebDavClient};
+use std::time::{Duration, Instant};
+
+/// 进度写库节流间隔
+const PROGRESS_THROTTLE: Duration = Duration::from_millis(500);
 
 /// 一轮归档结果；失败任务保留错误并按退避策略等待重试。
 #[derive(Default)]
@@ -13,6 +17,8 @@ pub struct ArchiveReport {
     pub failed: usize,
     /// 本轮实际尝试的文件数
     pub processed: usize,
+    /// 观察到 cancel_requested 后停止
+    pub cancelled: bool,
 }
 
 /// 归档当前可执行任务；limit 为 0 时持续取批次直到当前队列处理完。
@@ -36,7 +42,7 @@ pub async fn archive_pending(
 }
 
 /// 带进度回调与运行明细的归档。
-/// `run_id` 为 Some 时，失败/缺失项写入 `task_run_items`。
+/// `run_id` 为 Some 时：失败/缺失写入 `task_run_items`；进度节流写心跳；检查取消标志。
 /// 回调不要访问传入的 `db`（其可变借用仍被本函数持有）。
 pub async fn archive_pending_with_progress(
     client: &WebDavClient,
@@ -66,7 +72,17 @@ pub async fn archive_pending_with_progress(
     let mut processed = 0usize;
     // 本轮失败任务不再执行，避免慢速网络使重试时间在同一轮内到期。
     let mut attempted = std::collections::HashSet::new();
+    let mut last_progress_write = Instant::now()
+        .checked_sub(PROGRESS_THROTTLE)
+        .unwrap_or_else(Instant::now);
     loop {
+        if let Some(run_id) = run_id {
+            if db.task_run_cancel_requested(run_id)? {
+                report.cancelled = true;
+                progress.on_stage("archive", "skipped", Some("用户取消"));
+                return Ok(report);
+            }
+        }
         let tasks = db.pending_uploads()?;
         let tasks: Vec<_> = tasks
             .into_iter()
@@ -77,6 +93,13 @@ pub async fn archive_pending_with_progress(
         }
         let batch_total = processed + tasks.len();
         for task in tasks {
+            if let Some(run_id) = run_id {
+                if db.task_run_cancel_requested(run_id)? {
+                    report.cancelled = true;
+                    progress.on_stage("archive", "skipped", Some("用户取消"));
+                    return Ok(report);
+                }
+            }
             if limit != 0 && processed >= limit {
                 return Ok(report);
             }
@@ -93,6 +116,18 @@ pub async fn archive_pending_with_progress(
                 batch_total.max(processed),
                 Some(&task.original_name),
             );
+            if let Some(run_id) = run_id {
+                if last_progress_write.elapsed() >= PROGRESS_THROTTLE {
+                    let _ = db.touch_task_run_progress(
+                        run_id,
+                        TaskRunStageName::Archive,
+                        processed,
+                        batch_total.max(processed),
+                        Some(&task.original_name),
+                    );
+                    last_progress_write = Instant::now();
+                }
+            }
 
             let path = match db.upload_source(&task.task_id) {
                 Ok(path) => path,

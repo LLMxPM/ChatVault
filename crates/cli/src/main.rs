@@ -195,6 +195,7 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
                 &mut db,
                 &device_id,
                 &acc,
+                full,
                 scan_started_ms,
                 &mut indexed_count,
                 &mut skipped_count,
@@ -362,11 +363,14 @@ fn scan_cli_media_root(
 }
 
 /// 处理账号的聊天图片
+///
+/// `full` 为 true 时忽略检查点全量发现；失败重试始终由候选队列驱动。
 #[allow(clippy::too_many_arguments)]
 fn process_cli_images(
     db: &mut Database,
     device_id: &str,
     acc: &adapter_wechat_windows::WeChatAccount,
+    full: bool,
     scan_started_ms: i64,
     indexed_count: &mut usize,
     skipped_count: &mut usize,
@@ -374,7 +378,10 @@ fn process_cli_images(
     discovered_count: &mut usize,
     enable_images: bool,
 ) -> Result<()> {
-    use adapter_wechat_windows::media::{discover_image_candidates, prepare_image_candidates};
+    use adapter_wechat_windows::media::{
+        discover_image_candidates, image_candidate_from_disk, image_candidate_from_stored,
+        prepare_image_candidates, ImageCandidate,
+    };
 
     let _ = db.recover_pending_image_cache();
     if !enable_images {
@@ -386,8 +393,28 @@ fn process_cli_images(
         return Ok(());
     }
     let images_root_s = acc.images_dir.to_string_lossy().to_string();
-    let candidates = discover_image_candidates(&acc.images_dir, &acc.source_account_id);
-    for c in &candidates {
+    let since = resolve_scan_since(db, &images_root_s, full)?;
+    let mut to_upsert: Vec<ImageCandidate> =
+        discover_image_candidates(&acc.images_dir, &acc.source_account_id, since);
+    if since.is_some() {
+        for known in db.list_changed_known_files(&images_root_s)? {
+            if let Some(candidate) = image_candidate_from_disk(
+                &acc.images_dir,
+                &acc.source_account_id,
+                &std::path::Path::new(&known.original_path),
+            ) {
+                let key =
+                    chatvault_core::normalize_scan_key(&candidate.source_path.to_string_lossy());
+                let already = to_upsert.iter().any(|c| {
+                    chatvault_core::normalize_scan_key(&c.source_path.to_string_lossy()) == key
+                });
+                if !already {
+                    to_upsert.push(candidate);
+                }
+            }
+        }
+    }
+    for c in &to_upsert {
         db.upsert_image_candidate(
             &images_root_s,
             &acc.source_account_id,
@@ -400,24 +427,42 @@ fn process_cli_images(
             Some(&c.image_group_key),
         )?;
     }
-    println!("    [image] 本次候选 {} 个图片", candidates.len());
-    *discovered_count += candidates.len();
+    println!("    [image] 本次候选 {} 个图片", to_upsert.len());
+    *discovered_count += to_upsert.len();
+    db.mark_scan_started(
+        &images_root_s,
+        "wechat-windows-4",
+        Some(&acc.source_account_id),
+        scan_started_ms,
+    )?;
 
     db.recover_image_candidates(Some(&acc.source_account_id))?;
     let pending_rows =
         db.list_pending_image_candidates(&acc.source_account_id, Utc::now().timestamp_millis())?;
-    let pending_ids: std::collections::HashMap<String, String> = pending_rows
-        .iter()
-        .map(|row| (row.source_path.clone(), row.candidate_id.clone()))
-        .collect();
-    let pending_candidates: Vec<_> = candidates
-        .into_iter()
-        .filter(|candidate| {
-            pending_ids.contains_key(&candidate.source_path.to_string_lossy().to_string())
-        })
-        .collect();
+    let mut pending_candidates: Vec<ImageCandidate> = Vec::new();
+    let mut pending_ids: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for row in &pending_rows {
+        let Some(candidate) = image_candidate_from_stored(
+            &row.source_path,
+            row.source_size,
+            row.source_mtime_ms,
+            row.conv_hash.as_deref(),
+            row.month.as_deref(),
+            row.normalized_stem.as_deref(),
+            row.image_group_key.as_deref(),
+        ) else {
+            continue;
+        };
+        if !candidate.source_path.is_file() {
+            continue;
+        }
+        pending_ids.insert(row.source_path.clone(), row.candidate_id.clone());
+        pending_candidates.push(candidate);
+    }
     for candidate in &pending_candidates {
-        if let Some(id) = pending_ids.get(&candidate.source_path.to_string_lossy().to_string()) {
+        let path = candidate.source_path.to_string_lossy().to_string();
+        if let Some(id) = pending_ids.get(&path) {
             db.mark_candidate_preparing(id)?;
         }
     }
@@ -425,7 +470,6 @@ fn process_cli_images(
     let staging = db.staging_dir();
     let batch = prepare_image_candidates(pending_candidates, &acc.source_account_id, &staging, 64);
 
-    let mut all_complete = true;
     for item in &batch.prepared {
         let source_path = item.candidate.source_path.to_string_lossy().to_string();
         let candidate_id = pending_ids.get(&source_path).cloned();
@@ -441,7 +485,6 @@ fn process_cli_images(
                 *skipped_count += 1;
             }
             Err(e) => {
-                all_complete = false;
                 eprintln!("[-] 图片入库失败: {}", e);
                 if let Some(cid) = candidate_id.as_deref() {
                     let _ = db.mark_candidate_failed(
@@ -468,15 +511,6 @@ fn process_cli_images(
         batch.stats.invalid_image,
         batch.stats.waiting_stable
     );
-
-    if all_complete {
-        db.mark_scan_started(
-            &images_root_s,
-            "wechat-windows-4",
-            Some(&acc.source_account_id),
-            scan_started_ms,
-        )?;
-    }
 
     Ok(())
 }

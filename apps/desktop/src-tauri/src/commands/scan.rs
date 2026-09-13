@@ -3,7 +3,8 @@
 // 多媒体根：msg/file 与 msg/video 各自独立检查点；图片走候选准备流程。
 use super::*;
 use adapter_wechat_windows::media::{
-    discover_image_candidates, prepare_image_candidates, ImagePrepStats,
+    discover_image_candidates, image_candidate_from_disk, image_candidate_from_stored,
+    prepare_image_candidates, ImageCandidate, ImagePrepStats,
 };
 use chatvault_core::models::{
     CollectSource, GENERIC_FOLDER_SOURCE_TYPE, WECHAT_WINDOWS_4_SOURCE_TYPE,
@@ -50,7 +51,7 @@ fn wechat_account_dtos(
     for acc in accounts {
         let files = WeChat4Parser::parse_account_files(&acc).unwrap_or_default();
         let videos = WeChat4Parser::parse_account_videos(&acc).unwrap_or_default();
-        let images = discover_image_candidates(&acc.images_dir, &acc.source_account_id);
+        let images = discover_image_candidates(&acc.images_dir, &acc.source_account_id, None);
         dtos.push(WechatAccountDto {
             source_account_id: acc.source_account_id,
             source_dir: acc.files_dir.to_string_lossy().to_string(),
@@ -244,6 +245,7 @@ fn scan_wechat_source(
             db,
             device_id,
             &acc,
+            full_scan,
             scan_started_ms,
             enable_images,
             tally,
@@ -332,10 +334,15 @@ fn scan_media_root(
 }
 
 /// 处理账号的聊天图片：候选持久化 → 准备 → 入库
+///
+/// 增量策略：检查点只预筛「新/变源文件」；失败重试与缓存缺失由
+/// `image_candidates` 队列和 `local_files` 已知文件复检补齐。
+#[allow(clippy::too_many_arguments)]
 fn process_images(
     db: &mut chatvault_index::Database,
     device_id: &str,
     acc: &adapter_wechat_windows::WeChatAccount,
+    full_scan: bool,
     scan_started_ms: i64,
     enable_images: bool,
     tally: &mut ScanTally,
@@ -353,16 +360,42 @@ fn process_images(
         return Ok(());
     }
     let images_root_s = acc.images_dir.to_string_lossy().to_string();
+    let since = resolve_since(db, &images_root_s, full_scan)?;
 
-    // 1. 发现候选并持久化
-    let candidates = discover_image_candidates(&acc.images_dir, &acc.source_account_id);
-    let discovered_count = candidates.len();
-    let logical_groups = candidates
+    // 1. 发现候选（检查点预筛）并持久化
+    let discovered = discover_image_candidates(&acc.images_dir, &acc.source_account_id, since);
+    let mut to_upsert: Vec<ImageCandidate> = discovered;
+
+    // 已知文件复检：覆盖原地改写、缓存丢失等目录 mtime 无法表达的变化
+    if since.is_some() {
+        let changed_known = db
+            .list_changed_known_files(&images_root_s)
+            .map_err(|e| e.to_string())?;
+        for known in changed_known {
+            if let Some(candidate) = image_candidate_from_disk(
+                &acc.images_dir,
+                &acc.source_account_id,
+                Path::new(&known.original_path),
+            ) {
+                let key =
+                    chatvault_core::normalize_scan_key(&candidate.source_path.to_string_lossy());
+                let already = to_upsert.iter().any(|c| {
+                    chatvault_core::normalize_scan_key(&c.source_path.to_string_lossy()) == key
+                });
+                if !already {
+                    to_upsert.push(candidate);
+                }
+            }
+        }
+    }
+
+    let discovered_count = to_upsert.len();
+    let logical_groups = to_upsert
         .iter()
         .map(|candidate| candidate.image_group_key.clone())
         .collect::<std::collections::HashSet<_>>()
         .len();
-    for c in &candidates {
+    for c in &to_upsert {
         db.upsert_image_candidate(
             &images_root_s,
             &acc.source_account_id,
@@ -377,25 +410,46 @@ fn process_images(
         .map_err(|e| e.to_string())?;
     }
 
+    // 发现与候选落库完成后推进检查点：失败重试由候选队列独立驱动。
+    db.mark_scan_started(
+        &images_root_s,
+        WECHAT_WINDOWS_4_SOURCE_TYPE,
+        Some(&acc.source_account_id),
+        scan_started_ms,
+    )
+    .map_err(|e| e.to_string())?;
+
     db.recover_image_candidates(Some(&acc.source_account_id))
         .map_err(|e| e.to_string())?;
     let pending_rows = db
         .list_pending_image_candidates(&acc.source_account_id, Utc::now().timestamp_millis())
         .map_err(|e| e.to_string())?;
-    let pending_ids: std::collections::HashMap<String, String> = pending_rows
-        .iter()
-        .map(|row| (row.source_path.clone(), row.candidate_id.clone()))
-        .collect();
-    let pending_candidates: Vec<_> = candidates
-        .into_iter()
-        .filter(|candidate| {
-            pending_ids.contains_key(&candidate.source_path.to_string_lossy().to_string())
-        })
-        .collect();
+
+    // 以 DB 队列为准构建待准备集合，确保未本轮重发现的失败候选也能重试。
+    let mut pending_candidates: Vec<ImageCandidate> = Vec::new();
+    let mut pending_ids: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for row in &pending_rows {
+        let Some(candidate) = image_candidate_from_stored(
+            &row.source_path,
+            row.source_size,
+            row.source_mtime_ms,
+            row.conv_hash.as_deref(),
+            row.month.as_deref(),
+            row.normalized_stem.as_deref(),
+            row.image_group_key.as_deref(),
+        ) else {
+            continue;
+        };
+        if !candidate.source_path.is_file() {
+            continue;
+        }
+        pending_ids.insert(row.source_path.clone(), row.candidate_id.clone());
+        pending_candidates.push(candidate);
+    }
     for candidate in &pending_candidates {
-        if let Some(candidate_id) =
-            pending_ids.get(&candidate.source_path.to_string_lossy().to_string())
-        {
+        let path = candidate.source_path.to_string_lossy().to_string();
+        if let Some(candidate_id) = pending_ids.get(&path) {
             db.mark_candidate_preparing(candidate_id)
                 .map_err(|e| e.to_string())?;
         }
@@ -422,10 +476,8 @@ fn process_images(
     tally.discovered += discovered_count;
 
     // 3. 入库成功的明文
-    let mut all_complete = true;
     for item in &batch.prepared {
         let source_path = item.candidate.source_path.to_string_lossy().to_string();
-        // 找到候选 ID
         let candidate_id = pending_ids.get(&source_path).cloned();
 
         match db.ingest_prepared_content(&item.prepared, device_id, candidate_id.as_deref()) {
@@ -440,7 +492,6 @@ fn process_images(
                 tally.skipped += 1;
             }
             Err(e) => {
-                all_complete = false;
                 tracing::warn!("图片入库失败 {}: {}", source_path, e);
                 if let Some(cid) = candidate_id.as_deref() {
                     let _ = db.mark_candidate_failed(
@@ -458,18 +509,6 @@ fn process_images(
         if let Some(candidate_id) = pending_ids.get(&source_path) {
             let _ = db.mark_candidate_failed(candidate_id, failure.error_code);
         }
-    }
-
-    // 5. 目录枚举完成且候选落库后推进图片根检查点
-    // 注意：检查点只表示「已发现」，不代表「全部成功备份」
-    if all_complete {
-        db.mark_scan_started(
-            &images_root_s,
-            WECHAT_WINDOWS_4_SOURCE_TYPE,
-            Some(&acc.source_account_id),
-            scan_started_ms,
-        )
-        .map_err(|e| e.to_string())?;
     }
 
     Ok(())

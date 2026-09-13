@@ -11,8 +11,9 @@ pub mod v2;
 
 pub(crate) use images::is_link_or_reparse;
 pub use images::{
-    conv_hash_for_path, discover_image_candidates, normalize_stem, variant_hint_from_filename,
-    ImageCandidate, MediaVariant,
+    conv_hash_for_path, discover_image_candidates, image_candidate_from_disk,
+    image_candidate_from_stored, normalize_stem, variant_hint_from_filename, ImageCandidate,
+    MediaVariant,
 };
 pub use parameters::{
     account_identity_variants, default_kvcomm_dirs, derive_key_material, normalize_account_id,

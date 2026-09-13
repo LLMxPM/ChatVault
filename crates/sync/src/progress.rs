@@ -21,7 +21,7 @@ pub trait ArchiveProgressSink: Send {
     }
 }
 
-/// 空实现：CLI 默认不推送
+/// 空实现：无 UI 时使用
 pub struct NoopProgressSink;
 
 impl ArchiveProgressSink for NoopProgressSink {}

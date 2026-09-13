@@ -48,7 +48,7 @@ pub struct ScanRequestDto {
 }
 
 /// 扫描总结报告
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanResultDto {
     pub total_discovered: usize,

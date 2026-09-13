@@ -28,6 +28,7 @@ import type {
   PipelineResultDto,
   TaskRunDto,
   TaskRunDetailDto,
+  ActiveRunDto,
 } from "../types";
 
 /**
@@ -266,4 +267,14 @@ export async function listTaskRuns(limit?: number): Promise<TaskRunDto[]> {
 /** 读取运行详情（阶段 + 明细）。 */
 export async function getTaskRunDetail(runId: string): Promise<TaskRunDetailDto> {
   return await invoke<TaskRunDetailDto>("get_task_run_detail", { runId });
+}
+
+/** 读取当前正在执行的运行（含 CLI 定时运行）。 */
+export async function getActiveRun(): Promise<ActiveRunDto | null> {
+  return await invoke<ActiveRunDto | null>("get_active_run");
+}
+
+/** 请求取消运行中的流水线（含 CLI 定时运行）。 */
+export async function cancelTaskRun(runId: string): Promise<boolean> {
+  return await invoke<boolean>("cancel_task_run", { runId });
 }

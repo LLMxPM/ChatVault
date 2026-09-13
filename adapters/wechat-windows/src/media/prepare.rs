@@ -615,7 +615,7 @@ mod tests {
         std::fs::create_dir_all(&image_dir).unwrap();
         let source = image_dir.join("plain.dat");
         std::fs::write(&source, minimal_png()).unwrap();
-        let candidates = crate::media::discover_image_candidates(&root, "wxid_test");
+        let candidates = crate::media::discover_image_candidates(&root, "wxid_test", None);
         let staging = root.join("objects");
         let batch = prepare_image_candidates(candidates, "wxid_test", &staging, 64);
         assert_eq!(batch.prepared.len(), 1);

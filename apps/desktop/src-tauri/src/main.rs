@@ -37,6 +37,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::pipeline::run_pipeline,
             commands::pipeline::list_task_runs,
             commands::pipeline::get_task_run_detail,
+            commands::pipeline::get_active_run,
+            commands::pipeline::cancel_task_run,
             commands::library::search_objects,
             commands::library::list_object_sources,
             commands::library::get_vault_stats,

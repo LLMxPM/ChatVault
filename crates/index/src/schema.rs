@@ -208,7 +208,7 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_image_candidates_status ON image_candidates(status, next_retry_ms);
         CREATE INDEX IF NOT EXISTS idx_image_candidates_group ON image_candidates(image_group_key);
 
-        -- 15. 任务运行实体：一次流水线/恢复
+        -- 15. 运行实体：一次流水线/恢复
         CREATE TABLE IF NOT EXISTS task_runs (
             run_id TEXT PRIMARY KEY,
             kind TEXT NOT NULL,
@@ -219,7 +219,11 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             duration_ms INTEGER,
             webdav_configured INTEGER NOT NULL DEFAULT 0,
             summary_json TEXT,
-            error_message TEXT
+            error_message TEXT,
+            runner_kind TEXT NOT NULL DEFAULT 'desktop',
+            runner_pid INTEGER,
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            heartbeat_at TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_task_runs_started ON task_runs(started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);

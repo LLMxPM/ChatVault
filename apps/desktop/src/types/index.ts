@@ -279,7 +279,7 @@ export interface PipelineResultDto {
 }
 
 /**
- * 上传任务列表项
+ * 归档单元列表项（upload_tasks，跨运行单文件归档队列项）
  */
 export interface UploadTaskDto {
   taskId: string;
@@ -306,7 +306,7 @@ export interface SyncResultDto {
   message: string;
 }
 
-/** 任务运行列表项 */
+/** 运行列表项（task_runs，一次手动/定时执行） */
 export interface TaskRunDto {
   runId: string;
   kind: string;
@@ -319,9 +319,13 @@ export interface TaskRunDto {
   summaryJson?: string | null;
   errorMessage?: string | null;
   failedItems: number;
+  /** 执行方：desktop | cli */
+  runnerKind?: string;
+  /** 是否已请求取消 */
+  cancelRequested?: boolean;
 }
 
-/** 运行阶段 */
+/** 运行阶段（task_run_stages：scan/archive/publish/pull） */
 export interface TaskRunStageDto {
   stage: string;
   status: string;
@@ -332,7 +336,7 @@ export interface TaskRunStageDto {
   message?: string | null;
 }
 
-/** 运行关键明细 */
+/** 运行关键明细（task_run_items，仅异常文件） */
 export interface TaskRunItemDto {
   itemId: string;
   stage: string;
@@ -351,6 +355,23 @@ export interface TaskRunDetailDto {
   run: TaskRunDto;
   stages: TaskRunStageDto[];
   items: TaskRunItemDto[];
+}
+
+/** 运行中的实时阶段信息（来自 DB 轮询或 Tauri 事件） */
+export interface ActiveRunDto {
+  runId: string;
+  kind: string;
+  triggerSource: string;
+  runnerKind: string;
+  status: string;
+  startedAt: string;
+  heartbeatAt?: string | null;
+  cancelRequested: boolean;
+  currentStage?: string | null;
+  stageStatus?: string | null;
+  done?: number | null;
+  total?: number | null;
+  currentName?: string | null;
 }
 
 /** 运行进度事件载荷 */

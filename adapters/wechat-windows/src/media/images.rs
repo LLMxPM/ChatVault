@@ -1,10 +1,11 @@
 //! # 聊天图片候选发现、路径解析与变体识别
 //!
 //! 枚举 `msg/attach/<conv_hash>/<YYYY-MM>/Img/` 下的普通文件，
-//! 解析 `conv_hash` 与月份，识别变体类型并计算分组键。
+//! 解析 `conv_hash` 与月份，识别变体类型并计算分组键；
+//! 支持按扫描检查点对 `Img` 目录与文件 mtime 做增量预筛。
 
 use chatvault_core::models::{DiscoveredFile, WECHAT_WINDOWS_4_SOURCE_TYPE};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -214,12 +215,90 @@ pub fn compute_image_group_key(
     hasher.finalize().to_hex().to_string()
 }
 
-/// 枚举账号图片根下 `attach/<conv_hash>/<YYYY-MM>/Img/` 的全部普通文件。
+/// 从已持久化的候选字段重建内存候选（用于重试队列，无需再次目录发现）。
 ///
-/// 首期完整枚举（不使用月份 mtime 裁剪）；严格限制在账号根内。
+/// `file_name` 从源路径推导；`filename_variant` 仅作提示，解密后仍按尺寸判定。
+pub fn image_candidate_from_stored(
+    source_path: &str,
+    source_size: i64,
+    source_mtime_ms: i64,
+    conv_hash: Option<&str>,
+    month: Option<&str>,
+    normalized_stem: Option<&str>,
+    image_group_key: Option<&str>,
+) -> Option<ImageCandidate> {
+    let path = PathBuf::from(source_path);
+    let file_name = path.file_name()?.to_str()?.to_string();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    let filename_variant = variant_hint_from_filename(&stem);
+    Some(ImageCandidate {
+        source_path: path,
+        file_name,
+        file_size: source_size.max(0) as u64,
+        modified_time: Utc
+            .timestamp_millis_opt(source_mtime_ms)
+            .single()
+            .unwrap_or_else(Utc::now),
+        conv_hash: conv_hash.map(|s| s.to_string()),
+        month: month.map(|s| s.to_string()).unwrap_or_default(),
+        normalized_stem: normalized_stem
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| normalize_stem(&stem)),
+        filename_variant,
+        image_group_key: image_group_key.unwrap_or_default().to_string(),
+    })
+}
+
+/// 从磁盘上的源路径构建图片候选；路径布局非法时返回 None。
+///
+/// 职责: 统一目录发现与已知文件复检的候选构造，避免两处解析分叉。
+pub fn image_candidate_from_disk(
+    images_root: &Path,
+    source_account_id: &str,
+    source_path: &Path,
+) -> Option<ImageCandidate> {
+    let metadata = std::fs::metadata(source_path).ok()?;
+    if metadata.len() == 0 || !metadata.is_file() {
+        return None;
+    }
+    let conv_name = conv_hash_for_path(images_root, source_path)?;
+    let month = month_for_path(images_root, source_path)?;
+    let file_name = source_path.file_name()?.to_str()?.to_string();
+    let stem = source_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    let normalized = normalize_stem(&stem);
+    let filename_variant = variant_hint_from_filename(&stem);
+    let group_key = compute_image_group_key(source_account_id, &conv_name, &month, &normalized);
+    let modified_time: DateTime<Utc> = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
+    Some(ImageCandidate {
+        source_path: source_path.to_path_buf(),
+        file_name,
+        file_size: metadata.len(),
+        modified_time,
+        conv_hash: Some(conv_name),
+        month,
+        normalized_stem: normalized,
+        filename_variant,
+        image_group_key: group_key,
+    })
+}
+
+/// 枚举账号图片根下 `attach/<conv_hash>/<YYYY-MM>/Img/` 的普通文件。
+///
+/// `since` 为检查点预筛：跳过 `Img` 目录 mtime 不晚于检查点的子树，并跳过
+/// mtime 不晚于检查点的文件。目录 mtime 无法覆盖「原地改写」，已知文件复检
+/// 与候选重试队列负责补齐；`None` 表示全量发现。严格限制在账号根内。
 pub fn discover_image_candidates(
     images_dir: &Path,
     source_account_id: &str,
+    since: Option<SystemTime>,
 ) -> Vec<ImageCandidate> {
     if !images_dir.is_dir() || is_link_or_reparse(images_dir) {
         return Vec::new();
@@ -256,10 +335,6 @@ pub fn discover_image_candidates(
         };
         if !conv_path.is_dir() {
             continue;
-        }
-        let conv_name = match conv_entry.file_name().to_str() {
-            Some(n) if !n.is_empty() => n.to_string(),
-            _ => continue,
         };
         let Ok(month_entries) = std::fs::read_dir(&conv_path) else {
             continue;
@@ -271,17 +346,30 @@ pub fn discover_image_candidates(
             };
             if !month_path.is_dir() {
                 continue;
-            }
-            let month_name = match month_entry.file_name().to_str() {
-                Some(n) if is_month_directory(n) => n.to_string(),
-                _ => continue,
             };
+            let is_month = month_entry
+                .file_name()
+                .to_str()
+                .is_some_and(is_month_directory);
+            if !is_month {
+                continue;
+            }
             let img_dir = month_path.join("Img");
             let Some(img_dir) = canonical_child(&canonical_root, &img_dir) else {
                 continue;
             };
             if !img_dir.is_dir() {
                 continue;
+            }
+            // 新增/删除会更新 Img 目录 mtime；原地改写不会，交给已知文件复检。
+            if let Some(since) = since {
+                let dir_changed = std::fs::metadata(&img_dir)
+                    .and_then(|m| m.modified())
+                    .map(|modified| modified > since)
+                    .unwrap_or(true);
+                if !dir_changed {
+                    continue;
+                }
             }
             let Ok(file_entries) = std::fs::read_dir(&img_dir) else {
                 continue;
@@ -294,44 +382,20 @@ pub fn discover_image_candidates(
                 if !path.is_file() || !path.starts_with(&img_dir) {
                     continue;
                 }
-                let metadata = match std::fs::metadata(&path) {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-                if metadata.len() == 0 {
-                    continue;
+                if let Some(since) = since {
+                    let file_changed = std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .map(|modified| modified > since)
+                        .unwrap_or(true);
+                    if !file_changed {
+                        continue;
+                    }
                 }
-                let file_name = match path.file_name().and_then(|s| s.to_str()) {
-                    Some(n) => n.to_string(),
-                    None => continue,
-                };
-                let stem = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                let normalized = normalize_stem(&stem);
-                let filename_variant = variant_hint_from_filename(&stem);
-                let group_key = compute_image_group_key(
-                    source_account_id,
-                    &conv_name,
-                    &month_name,
-                    &normalized,
-                );
-                let modified_time: DateTime<Utc> =
-                    metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
-
-                candidates.push(ImageCandidate {
-                    source_path: path,
-                    file_name,
-                    file_size: metadata.len(),
-                    modified_time,
-                    conv_hash: Some(conv_name.clone()),
-                    month: month_name.clone(),
-                    normalized_stem: normalized,
-                    filename_variant,
-                    image_group_key: group_key,
-                });
+                if let Some(candidate) =
+                    image_candidate_from_disk(&canonical_root, source_account_id, &path)
+                {
+                    candidates.push(candidate);
+                }
             }
         }
     }
@@ -382,6 +446,7 @@ pub fn resolve_variant(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn extracts_conv_hash_and_month() {
@@ -442,7 +507,7 @@ mod tests {
         std::fs::write(img_dir.join("photo_thumb.dat"), b"encrypted-thumb").unwrap();
         std::fs::write(img_dir.join("empty.dat"), b"").unwrap();
 
-        let candidates = discover_image_candidates(&base, "wxid_test");
+        let candidates = discover_image_candidates(&base, "wxid_test", None);
         assert_eq!(candidates.len(), 2);
         let names: Vec<_> = candidates.iter().map(|c| c.file_name.as_str()).collect();
         assert!(names.contains(&"photo.dat"));
@@ -463,6 +528,32 @@ mod tests {
             .find(|c| c.file_name == "photo_thumb.dat")
             .unwrap();
         assert_eq!(photo.image_group_key, thumb.image_group_key);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn discover_filters_by_checkpoint_since() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("cv_img_since_{unique}"));
+        let img_dir = base.join("conv1").join("2026-09").join("Img");
+        std::fs::create_dir_all(&img_dir).unwrap();
+        std::fs::write(img_dir.join("old.dat"), b"encrypted-old").unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let since = SystemTime::now();
+
+        // 检查点晚于旧文件：应被预筛跳过
+        let candidates = discover_image_candidates(&base, "wxid_test", Some(since));
+        assert!(candidates.is_empty());
+
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(img_dir.join("new.dat"), b"encrypted-new").unwrap();
+        let candidates = discover_image_candidates(&base, "wxid_test", Some(since));
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].file_name, "new.dat");
 
         let _ = std::fs::remove_dir_all(&base);
     }
