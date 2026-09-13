@@ -94,6 +94,22 @@ impl Database {
         })
     }
 
+    /// 进程启动时的运行历史维护：异常退出的 running 标记失败，并清理过期记录。
+    ///
+    /// 必须只在应用/CLI 启动时调用一次。禁止在 `open`/`get_db` 中调用——
+    /// 桌面端每次命令都会新开连接，若在此清理会把进行中的流水线误标为失败。
+    pub fn maintain_task_runs_on_startup(&mut self) -> Result<()> {
+        let stale = self.mark_stale_running_task_runs()?;
+        if stale > 0 {
+            tracing::warn!("发现 {stale} 个未正常结束的任务运行，已标记为失败");
+        }
+        let purged = self.purge_old_task_runs(50, 30)?;
+        if purged > 0 {
+            tracing::info!("清理过期任务运行记录 {purged} 条");
+        }
+        Ok(())
+    }
+
     /// 获取数据库底层路径（内存数据库为 None）
     pub fn path(&self) -> Option<&Path> {
         self.db_path.as_deref()

@@ -251,6 +251,49 @@ impl Database {
         Ok(out)
     }
 
+    /// 列出失败候选（用于运行明细：解密失败）；`updated_after` 为 Some 时仅返回该时间之后更新的。
+    pub fn list_failed_image_candidates(
+        &self,
+        limit: usize,
+        updated_after: Option<&str>,
+    ) -> Result<Vec<ImageCandidateRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT candidate_id, source_root, source_account_id, source_path,
+                        source_size, source_mtime_ms, source_digest, conv_hash, month,
+                        normalized_stem, image_group_key, status, error_code,
+                        attempt_count, record_id
+                 FROM image_candidates
+                 WHERE status='failed' AND (?2 IS NULL OR updated_at >= ?2)
+                 ORDER BY updated_at DESC LIMIT ?1",
+            )
+            .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![limit.min(500) as i64, updated_after], |row| {
+                Ok(ImageCandidateRow {
+                    candidate_id: row.get(0)?,
+                    source_root: row.get(1)?,
+                    source_account_id: row.get(2)?,
+                    source_path: row.get(3)?,
+                    source_size: row.get(4)?,
+                    source_mtime_ms: row.get(5)?,
+                    source_digest: row.get(6)?,
+                    conv_hash: row.get(7)?,
+                    month: row.get(8)?,
+                    normalized_stem: row.get(9)?,
+                    image_group_key: row.get(10)?,
+                    status: row.get(11)?,
+                    error_code: row.get(12)?,
+                    attempt_count: row.get(13)?,
+                    record_id: row.get(14)?,
+                })
+            })
+            .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        rows.map(|r| r.map_err(|e| ChatVaultError::Database(e.to_string())))
+            .collect()
+    }
+
     /// 统计候选状态分布
     pub fn count_image_candidates_by_status(
         &self,

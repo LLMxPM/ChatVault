@@ -1,5 +1,6 @@
 // ChatVault 采集源状态与交互逻辑
 // 负责微信 4.x/通用附件目录的选择、校验、持久化、账号选择和状态刷新。
+// 首屏用上次探测快照秒开，仅做目录存在性轻量校验；完整账号识别按需触发。
 
 import { computed, ref } from "vue";
 import {
@@ -7,17 +8,21 @@ import {
   detectWechatAccounts,
   inspectWechatDirectory,
   pickDirectory,
+  setCollectSelectedAccounts,
+  setCollectSourceCache,
   setCollectSources,
 } from "../api/tauri";
 import { pushToast } from "./useToast";
 import type {
+  CollectSourceCacheDto,
   CollectSourceDto,
+  CollectSourceStatus,
   CollectSourceType,
   WechatAccountDto,
   WechatAccountTargetDto,
 } from "../types";
 
-type SourceStatus = "checking" | "ready" | "empty" | "missing" | "error";
+type SourceStatus = CollectSourceStatus;
 
 type CollectSourceItem = CollectSourceDto & {
   accounts: WechatAccountDto[];
@@ -26,7 +31,7 @@ type CollectSourceItem = CollectSourceDto & {
   inspecting: boolean;
 };
 
-/** 提供采集源列表、目录操作和微信账号临时选择状态。 */
+/** 提供采集源列表、目录操作和微信账号选择状态。 */
 export function useCollectSources() {
   const selectedAccounts = ref<WechatAccountTargetDto[]>([]);
   const detecting = ref(false);
@@ -95,11 +100,11 @@ export function useCollectSources() {
   }
 
   function accountKey(account: WechatAccountDto) {
-    return `${normalizePath(account.sourceRoot)}\u0000${account.sourceAccountId}`;
+    return `${normalizePath(account.sourceRoot)}|${account.sourceAccountId}`;
   }
 
   function targetKey(target: WechatAccountTargetDto) {
-    return `${normalizePath(target.sourceRoot)}\u0000${target.sourceAccountId}`;
+    return `${normalizePath(target.sourceRoot)}|${target.sourceAccountId}`;
   }
 
   function createSourceItem(source: CollectSourceDto): CollectSourceItem {
@@ -124,6 +129,34 @@ export function useCollectSources() {
       path,
       enableImages: sourceType === "wechat-windows-4" ? enableImages === true : true,
     }));
+  }
+
+  /** 将当前源状态序列化为探测快照。 */
+  function sourceCachePayload(): CollectSourceCacheDto[] {
+    const now = Date.now();
+    return collectSources.value.map((source) => ({
+      path: source.path,
+      status: source.status,
+      errorMessage: source.errorMessage,
+      accounts: [...source.accounts],
+      inspectedAt: now,
+    }));
+  }
+
+  async function persistSourceCache() {
+    try {
+      await setCollectSourceCache(sourceCachePayload());
+    } catch {
+      // 快照失败不影响主流程；下次进页会退回全量识别。
+    }
+  }
+
+  async function persistSelectedAccounts() {
+    try {
+      await setCollectSelectedAccounts(selectedAccounts.value.map((target) => ({ ...target })));
+    } catch (err) {
+      pushToast({ tone: "warning", title: "保存账号勾选失败", description: String(err) });
+    }
   }
 
   function hasPathConflict(path: string, ignoredIndex = -1) {
@@ -151,6 +184,7 @@ export function useCollectSources() {
     const index = selectedAccounts.value.findIndex((target) => targetKey(target) === key);
     if (index >= 0) selectedAccounts.value.splice(index, 1);
     else selectedAccounts.value.push(toAccountTarget(account));
+    void persistSelectedAccounts();
   }
 
   /** 切换微信采集源的聊天图片解密开关并持久化。 */
@@ -164,11 +198,15 @@ export function useCollectSources() {
     }
   }
 
-  /** 根据当前已识别账号清理失效的临时勾选项。 */
+  /** 根据当前已识别账号清理失效的勾选项。 */
   function syncSelectedAccounts() {
     if (!selectionsInitialized) return;
     const available = new Set(allWechatAccounts.value.map(accountKey));
-    selectedAccounts.value = selectedAccounts.value.filter((target) => available.has(targetKey(target)));
+    const next = selectedAccounts.value.filter((target) => available.has(targetKey(target)));
+    if (next.length !== selectedAccounts.value.length) {
+      selectedAccounts.value = next;
+      void persistSelectedAccounts();
+    }
   }
 
   /** 选择并添加微信 4.x 根目录；目录校验成功后才写入配置。 */
@@ -258,7 +296,7 @@ export function useCollectSources() {
     });
   }
 
-  /** 保存采集源；保存失败时恢复列表和临时账号选择。 */
+  /** 保存采集源；保存失败时恢复列表和账号选择。 */
   async function addSource(source: CollectSourceItem) {
     const previousSources = cloneSources(collectSources.value);
     const previousSelections = selectedAccounts.value.map((target) => ({ ...target }));
@@ -273,11 +311,13 @@ export function useCollectSources() {
           .filter((account) => !selected.has(accountKey(account)))
           .map(toAccountTarget),
       ];
+      void persistSelectedAccounts();
     }
     selectionsInitialized = true;
+    await persistSourceCache();
   }
 
-  /** 检查并刷新一个采集源的可用状态与微信账号。 */
+  /** 全量检查一个采集源：目录存在性 + 微信账号识别，并写回快照。 */
   async function refreshSource(index: number) {
     const source = collectSources.value[index];
     if (!source) return;
@@ -304,6 +344,50 @@ export function useCollectSources() {
     } finally {
       source.inspecting = false;
       syncSelectedAccounts();
+      await persistSourceCache();
+    }
+  }
+
+  /**
+   * 轻量校验：仅确认目录是否仍存在。
+   * 有可用快照（ready/empty）时不再重扫账号，避免进页卡顿。
+   */
+  async function validateSourceLightly(index: number) {
+    const source = collectSources.value[index];
+    if (!source || source.inspecting) return;
+
+    let exists = false;
+    try {
+      exists = await checkDirectory(source.path);
+    } catch {
+      exists = false;
+    }
+
+    if (!exists) {
+      if (source.status !== "missing" || source.accounts.length) {
+        source.accounts = [];
+        source.status = "missing";
+        source.errorMessage = "";
+        await persistSourceCache();
+      }
+      syncSelectedAccounts();
+      return;
+    }
+
+    if (source.sourceType === "generic-folder") {
+      if (source.status !== "ready") {
+        source.status = "ready";
+        source.errorMessage = "";
+        await persistSourceCache();
+      }
+      return;
+    }
+
+    // 微信源：无缓存/失败/刚恢复时才全量识别
+    const needsFullInspect =
+      source.status === "checking" || source.status === "error" || source.status === "missing";
+    if (needsFullInspect) {
+      await refreshSource(index);
     }
   }
 
@@ -359,15 +443,46 @@ export function useCollectSources() {
         .filter((account) => !selected.has(accountKey(account)))
         .map(toAccountTarget),
     ];
+    void persistSelectedAccounts();
+    await persistSourceCache();
   }
 
-  /** 加载并检查设置中的全部采集源，首次默认勾选所有微信账号。 */
-  async function loadSources(sources: CollectSourceDto[]) {
-    collectSources.value = sources.map(createSourceItem);
+  /**
+   * 用配置 + 探测快照恢复列表并秒开首屏。
+   * persistedSelections 为 null 表示从未配置，默认全选。
+   */
+  async function loadSources(
+    sources: CollectSourceDto[],
+    cache: CollectSourceCacheDto[] = [],
+    persistedSelections: WechatAccountTargetDto[] | null = null,
+  ) {
+    const cacheByPath = new Map(
+      cache.map((entry) => [normalizePath(entry.path), entry] as const),
+    );
+    collectSources.value = sources.map((source) => {
+      const item = createSourceItem(source);
+      const cached = cacheByPath.get(normalizePath(source.path));
+      if (cached) {
+        item.status = cached.status;
+        item.errorMessage = cached.errorMessage || "";
+        item.accounts = Array.isArray(cached.accounts) ? [...cached.accounts] : [];
+      }
+      return item;
+    });
+
     selectionsInitialized = false;
-    await Promise.all(collectSources.value.map((_, index) => refreshSource(index)));
-    selectedAccounts.value = allWechatAccounts.value.map(toAccountTarget);
+    if (persistedSelections === null) {
+      selectedAccounts.value = allWechatAccounts.value.map(toAccountTarget);
+    } else {
+      const available = new Set(allWechatAccounts.value.map(accountKey));
+      selectedAccounts.value = persistedSelections.filter((target) =>
+        available.has(targetKey(target)),
+      );
+    }
     selectionsInitialized = true;
+
+    // 后台轻量校验，不阻塞首屏
+    void Promise.all(collectSources.value.map((_, index) => validateSourceLightly(index)));
   }
 
   async function removeSource(index: number) {
@@ -375,10 +490,16 @@ export function useCollectSources() {
     const previousSelections = selectedAccounts.value.map((target) => ({ ...target }));
     collectSources.value = collectSources.value.filter((_, sourceIndex) => sourceIndex !== index);
     syncSelectedAccounts();
-    await persistSources(previousSources, previousSelections);
+    if (await persistSources(previousSources, previousSelections)) {
+      void persistSelectedAccounts();
+      await persistSourceCache();
+    }
   }
 
-  async function persistSources(previousSources: CollectSourceItem[], previousSelections: WechatAccountTargetDto[]) {
+  async function persistSources(
+    previousSources: CollectSourceItem[],
+    previousSelections: WechatAccountTargetDto[],
+  ) {
     try {
       await setCollectSources(sourcePayload(collectSources.value));
       return true;

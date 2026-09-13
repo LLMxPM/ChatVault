@@ -4,7 +4,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   WechatAccountDto,
+  WechatAccountTargetDto,
   CollectSourceDto,
+  CollectSourceCacheDto,
   ScanRequestDto,
   ScanResultDto,
   FileObjectViewDto,
@@ -24,6 +26,8 @@ import type {
   UpdateSourceConversationDto,
   PipelineRequestDto,
   PipelineResultDto,
+  TaskRunDto,
+  TaskRunDetailDto,
 } from "../types";
 
 /**
@@ -56,6 +60,34 @@ export async function runPipeline(request: PipelineRequestDto): Promise<Pipeline
 /** 保存带适配器类型的持久采集源。 */
 export async function setCollectSources(sources: CollectSourceDto[]): Promise<void> {
   return await invoke<void>("set_collect_sources", { sources });
+}
+
+/** 读取采集源探测快照（首屏秒开）。 */
+export async function getCollectSourceCache(): Promise<CollectSourceCacheDto[]> {
+  return await invoke<CollectSourceCacheDto[]>("get_collect_source_cache");
+}
+
+/** 写入采集源探测快照。 */
+export async function setCollectSourceCache(
+  cache: CollectSourceCacheDto[],
+): Promise<void> {
+  return await invoke<void>("set_collect_source_cache", { cache });
+}
+
+/** 读取立即运行勾选的微信账号；null 表示从未配置。 */
+export async function getCollectSelectedAccounts(): Promise<
+  WechatAccountTargetDto[] | null
+> {
+  return await invoke<WechatAccountTargetDto[] | null>(
+    "get_collect_selected_accounts",
+  );
+}
+
+/** 持久化立即运行勾选的微信账号。 */
+export async function setCollectSelectedAccounts(
+  accounts: WechatAccountTargetDto[],
+): Promise<void> {
+  return await invoke<void>("set_collect_selected_accounts", { accounts });
 }
 
 /** 保存定时扫描开关与周期。 */
@@ -224,4 +256,14 @@ export async function updateSourceAccount(request: UpdateSourceAccountDto): Prom
 /** 更新来源聊天的自定义名称和收藏状态。 */
 export async function updateSourceConversation(request: UpdateSourceConversationDto): Promise<void> {
   return invoke<void>("update_source_conversation", { request });
+}
+
+/** 列出最近任务运行。 */
+export async function listTaskRuns(limit?: number): Promise<TaskRunDto[]> {
+  return await invoke<TaskRunDto[]>("list_task_runs", { limit });
+}
+
+/** 读取运行详情（阶段 + 明细）。 */
+export async function getTaskRunDetail(runId: string): Promise<TaskRunDetailDto> {
+  return await invoke<TaskRunDetailDto>("get_task_run_detail", { runId });
 }

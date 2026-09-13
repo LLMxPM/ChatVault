@@ -12,6 +12,23 @@ export interface CollectSourceDto {
   enableImages?: boolean;
 }
 
+/** 采集源探测快照状态。 */
+export type CollectSourceStatus =
+  | "checking"
+  | "ready"
+  | "empty"
+  | "missing"
+  | "error";
+
+/** 采集源上次探测快照：任务页首屏直接渲染。 */
+export interface CollectSourceCacheDto {
+  path: string;
+  status: CollectSourceStatus;
+  errorMessage: string;
+  accounts: WechatAccountDto[];
+  inspectedAt: number;
+}
+
 /** 微信 4.x 账号探测信息。 */
 export interface WechatAccountDto {
   sourceAccountId: string;
@@ -251,12 +268,14 @@ export interface PipelineRequestDto {
 
 /** 流水线结果。 */
 export interface PipelineResultDto {
+  runId: string;
   webdavConfigured: boolean;
   scan: ScanResultDto;
   archive: ArchiveResultDto | null;
   syncMessage: string | null;
   message: string;
   durationMs: number;
+  status: string;
 }
 
 /**
@@ -285,4 +304,87 @@ export interface SyncResultDto {
   totalRecords: number;
   totalObjects: number;
   message: string;
+}
+
+/** 任务运行列表项 */
+export interface TaskRunDto {
+  runId: string;
+  kind: string;
+  triggerSource: string;
+  status: string;
+  startedAt: string;
+  finishedAt?: string | null;
+  durationMs?: number | null;
+  webdavConfigured: boolean;
+  summaryJson?: string | null;
+  errorMessage?: string | null;
+  failedItems: number;
+}
+
+/** 运行阶段 */
+export interface TaskRunStageDto {
+  stage: string;
+  status: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  durationMs?: number | null;
+  statsJson?: string | null;
+  message?: string | null;
+}
+
+/** 运行关键明细 */
+export interface TaskRunItemDto {
+  itemId: string;
+  stage: string;
+  recordId?: string | null;
+  taskId?: string | null;
+  name: string;
+  status: string;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  size?: number | null;
+  updatedAt: string;
+}
+
+/** 运行详情 */
+export interface TaskRunDetailDto {
+  run: TaskRunDto;
+  stages: TaskRunStageDto[];
+  items: TaskRunItemDto[];
+}
+
+/** 运行进度事件载荷 */
+export interface RunProgressEvent {
+  runId: string;
+  stage: string;
+  done: number;
+  total: number;
+  currentName?: string | null;
+}
+
+/** 运行阶段事件载荷 */
+export interface RunStageEvent {
+  runId: string;
+  stage: string;
+  status: string;
+  message?: string | null;
+}
+
+/** 运行关键项事件载荷 */
+export interface RunItemEvent {
+  runId: string;
+  stage: string;
+  taskId?: string | null;
+  recordId?: string | null;
+  name: string;
+  status: string;
+  error?: string | null;
+  size?: number | null;
+}
+
+/** 运行结束事件载荷 */
+export interface RunFinishedEvent {
+  runId: string;
+  status: string;
+  message?: string | null;
 }

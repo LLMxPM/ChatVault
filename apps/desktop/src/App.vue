@@ -60,9 +60,11 @@
       </aside>
 
       <main class="h-full min-w-0 flex-1 overflow-hidden">
-        <LibraryView v-if="currentTab === 'library'" />
-        <TasksView v-else-if="currentTab === 'tasks'" />
-        <SettingsView v-else-if="currentTab === 'settings'" />
+        <keep-alive>
+          <LibraryView v-if="currentTab === 'library'" key="library" />
+          <TasksView v-else-if="currentTab === 'tasks'" key="tasks" />
+          <SettingsView v-else-if="currentTab === 'settings'" key="settings" />
+        </keep-alive>
       </main>
     </div>
 

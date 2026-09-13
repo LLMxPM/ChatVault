@@ -256,7 +256,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, type Component } from "vue";
+import { ref, onMounted, onActivated, onBeforeUnmount, watch, type Component } from "vue";
 import {
   Search,
   RefreshCw,
@@ -289,7 +289,7 @@ import {
   getVaultStats,
 } from "../api/tauri";
 import { pushToast } from "../composables/useToast";
-import { navigateTo } from "../composables/useNav";
+import { navigateTo, libraryFocusQuery } from "../composables/useNav";
 import { formatDateTime } from "../utils/format";
 import type {
   FileObjectViewDto,
@@ -574,6 +574,25 @@ async function onSourcesChanged() {
 onMounted(() => {
   fetchObjects();
   loadMeta();
+  if (libraryFocusQuery.value) {
+    keyword.value = libraryFocusQuery.value;
+    libraryFocusQuery.value = null;
+    void fetchObjects();
+  }
+});
+
+// keep-alive 切回时静默刷新，避免看到过期文件列表
+onActivated(() => {
+  void fetchObjects(false);
+  void loadMeta();
+});
+
+// 从任务历史跳转时按关键词检索
+watch(libraryFocusQuery, (q) => {
+  if (!q) return;
+  keyword.value = q;
+  libraryFocusQuery.value = null;
+  void fetchObjects();
 });
 
 onBeforeUnmount(() => {

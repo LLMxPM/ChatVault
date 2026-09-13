@@ -207,6 +207,53 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_image_candidates_status ON image_candidates(status, next_retry_ms);
         CREATE INDEX IF NOT EXISTS idx_image_candidates_group ON image_candidates(image_group_key);
+
+        -- 15. 任务运行实体：一次流水线/恢复
+        CREATE TABLE IF NOT EXISTS task_runs (
+            run_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            trigger_source TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            duration_ms INTEGER,
+            webdav_configured INTEGER NOT NULL DEFAULT 0,
+            summary_json TEXT,
+            error_message TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_runs_started ON task_runs(started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
+
+        -- 16. 运行内阶段：scan → archive → publish → pull
+        CREATE TABLE IF NOT EXISTS task_run_stages (
+            stage_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES task_runs(run_id) ON DELETE CASCADE,
+            stage TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            duration_ms INTEGER,
+            stats_json TEXT,
+            message TEXT,
+            UNIQUE(run_id, stage)
+        );
+
+        -- 17. 运行文件级关键明细（失败/跳过/缺失等）
+        CREATE TABLE IF NOT EXISTS task_run_items (
+            item_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES task_runs(run_id) ON DELETE CASCADE,
+            stage TEXT NOT NULL,
+            record_id TEXT,
+            object_id TEXT,
+            task_id TEXT,
+            name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error_code TEXT,
+            error_message TEXT,
+            size INTEGER,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_run_items_run ON task_run_items(run_id, stage, status);
         "#,
     )
     .map_err(|e| ChatVaultError::Database(format!("执行表结构初始化失败: {}", e)))?;

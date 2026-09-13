@@ -222,6 +222,77 @@ pub async fn set_collect_sources(
         .map_err(|e| e.to_string())
 }
 
+/// 采集源上次探测快照：供任务页首屏直接渲染，避免每次进页全量重扫。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectSourceCacheDto {
+    /// 与 collect_sources 中 path 对齐的绝对路径
+    pub path: String,
+    /// checking / ready / empty / missing / error
+    pub status: String,
+    #[serde(default)]
+    pub error_message: String,
+    #[serde(default)]
+    pub accounts: Vec<WechatAccountDto>,
+    /// 探测完成时间（Unix 毫秒）
+    #[serde(default)]
+    pub inspected_at: i64,
+}
+
+/// 读取采集源探测快照。
+#[tauri::command]
+pub async fn get_collect_source_cache(
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<CollectSourceCacheDto>, String> {
+    let db = state.get_db().map_err(|e| e.to_string())?;
+    let raw = db
+        .get_setting(setting_keys::COLLECT_SOURCE_CACHE)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "[]".to_string());
+    serde_json::from_str(&raw).map_err(|e| e.to_string())
+}
+
+/// 写入采集源探测快照；仅缓存 UI 展示，不参与扫描编排。
+#[tauri::command]
+pub async fn set_collect_source_cache(
+    cache: Vec<CollectSourceCacheDto>,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    let mut db = state.get_db().map_err(|e| e.to_string())?;
+    let raw = serde_json::to_string(&cache).map_err(|e| e.to_string())?;
+    db.set_setting(setting_keys::COLLECT_SOURCE_CACHE, &raw)
+        .map_err(|e| e.to_string())
+}
+
+/// 读取立即运行勾选的微信账号；None 表示从未配置（前端默认全选）。
+#[tauri::command]
+pub async fn get_collect_selected_accounts(
+    state: State<'_, AppState>,
+) -> std::result::Result<Option<Vec<WechatAccountTargetDto>>, String> {
+    let db = state.get_db().map_err(|e| e.to_string())?;
+    let Some(raw) = db
+        .get_setting(setting_keys::COLLECT_SELECTED_ACCOUNTS)
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+    serde_json::from_str(&raw)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+/// 持久化立即运行勾选的微信账号；空数组表示用户明确取消全部。
+#[tauri::command]
+pub async fn set_collect_selected_accounts(
+    accounts: Vec<WechatAccountTargetDto>,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    let mut db = state.get_db().map_err(|e| e.to_string())?;
+    let raw = serde_json::to_string(&accounts).map_err(|e| e.to_string())?;
+    db.set_setting(setting_keys::COLLECT_SELECTED_ACCOUNTS, &raw)
+        .map_err(|e| e.to_string())
+}
+
 /// 更新定时扫描开关与周期，并注册/注销系统计划任务。
 #[tauri::command]
 pub async fn set_schedule_config(

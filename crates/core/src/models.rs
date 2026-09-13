@@ -413,6 +413,165 @@ pub struct SyncCursor {
     pub last_contiguous_seq: u64,
 }
 
+/// 一次流水线/恢复运行的类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRunKind {
+    /// 扫描 → 归档 → 同步
+    Pipeline,
+    /// 从远端恢复索引
+    Restore,
+}
+
+impl TaskRunKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TaskRunKind::Pipeline => "pipeline",
+            TaskRunKind::Restore => "restore",
+        }
+    }
+}
+
+/// 任务运行整体结果
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRunStatus {
+    /// 执行中
+    Running,
+    /// 全部阶段成功且无失败明细
+    Success,
+    /// 流水线跑完但存在失败/跳过项
+    Partial,
+    /// 阶段中断或应用异常退出
+    Failed,
+}
+
+impl TaskRunStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TaskRunStatus::Running => "running",
+            TaskRunStatus::Success => "success",
+            TaskRunStatus::Partial => "partial",
+            TaskRunStatus::Failed => "failed",
+        }
+    }
+}
+
+/// 运行阶段标识
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRunStageName {
+    Scan,
+    Archive,
+    Publish,
+    Pull,
+}
+
+impl TaskRunStageName {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TaskRunStageName::Scan => "scan",
+            TaskRunStageName::Archive => "archive",
+            TaskRunStageName::Publish => "publish",
+            TaskRunStageName::Pull => "pull",
+        }
+    }
+}
+
+/// 阶段执行状态
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRunStageStatus {
+    Pending,
+    Running,
+    Success,
+    Failed,
+    Skipped,
+}
+
+impl TaskRunStageStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TaskRunStageStatus::Pending => "pending",
+            TaskRunStageStatus::Running => "running",
+            TaskRunStageStatus::Success => "success",
+            TaskRunStageStatus::Failed => "failed",
+            TaskRunStageStatus::Skipped => "skipped",
+        }
+    }
+}
+
+/// 运行明细项状态（仅关键项入库）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRunItemStatus {
+    /// 上传/处理失败（可重试）
+    Failed,
+    /// 本地文件缺失
+    Missing,
+    /// 图片解密失败
+    DecryptFailed,
+    /// 主动跳过（暂停等）
+    Skipped,
+}
+
+impl TaskRunItemStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TaskRunItemStatus::Failed => "failed",
+            TaskRunItemStatus::Missing => "missing",
+            TaskRunItemStatus::DecryptFailed => "decrypt_failed",
+            TaskRunItemStatus::Skipped => "skipped",
+        }
+    }
+}
+
+/// 一次任务运行记录
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskRun {
+    pub run_id: String,
+    pub kind: TaskRunKind,
+    pub trigger_source: String,
+    pub status: TaskRunStatus,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub duration_ms: Option<i64>,
+    pub webdav_configured: bool,
+    pub summary_json: Option<String>,
+    pub error_message: Option<String>,
+}
+
+/// 运行内阶段记录
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskRunStage {
+    pub stage_id: String,
+    pub run_id: String,
+    pub stage: TaskRunStageName,
+    pub status: TaskRunStageStatus,
+    pub started_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub duration_ms: Option<i64>,
+    pub stats_json: Option<String>,
+    pub message: Option<String>,
+}
+
+/// 运行文件级关键明细
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskRunItem {
+    pub item_id: String,
+    pub run_id: String,
+    pub stage: TaskRunStageName,
+    pub record_id: Option<String>,
+    pub object_id: Option<String>,
+    pub task_id: Option<String>,
+    pub name: String,
+    pub status: TaskRunItemStatus,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub size: Option<i64>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// 远端设备注册信息
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceInfo {

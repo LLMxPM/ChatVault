@@ -5,8 +5,11 @@
 
 pub mod apply;
 pub mod archive;
+pub mod progress;
 pub mod publish;
 mod validation;
 
 pub use apply::{pull_and_apply, restore_from_remote};
+pub use archive::{archive_pending, archive_pending_with_progress, ArchiveReport};
+pub use progress::{ArchiveProgressSink, NoopProgressSink};
 pub use publish::{publish_pending_events, JournalPublisher};

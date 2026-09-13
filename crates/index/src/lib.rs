@@ -26,12 +26,18 @@ mod journal;
 pub mod scan_state;
 mod settings;
 mod source_mappings;
+mod task_runs;
 mod task_status;
 mod tasks;
-mod upload_queue;
+pub mod upload_queue;
 
 pub use identity::VaultResetReport;
 pub use scan_state::{
     chrono_ms, system_time_from_ms, system_time_to_ms, utc_from_ms, KnownLocalFile,
 };
 pub use source_mappings::{SourceAccountRow, SourceConversationRow};
+pub use task_runs::{
+    item_from_row, stage_from_row, task_run_from_row, NewTaskRunItem, TaskRunItemRow, TaskRunRow,
+    TaskRunStageRow,
+};
+pub use upload_queue::PendingUpload;

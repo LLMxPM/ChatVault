@@ -16,6 +16,10 @@ pub mod setting_keys {
     pub const SCAN_INTERVAL_MINUTES: &str = "scan_interval_minutes";
     pub const SCHEDULE_ENABLED: &str = "schedule_enabled";
     pub const COLLECT_SOURCES: &str = "collect_sources";
+    /// 采集源上次探测快照：路径 → 状态/账号，用于任务页首屏秒开
+    pub const COLLECT_SOURCE_CACHE: &str = "collect_source_cache";
+    /// 立即运行时勾选的微信账号；None 表示尚未配置（默认全选）
+    pub const COLLECT_SELECTED_ACCOUNTS: &str = "collect_selected_accounts";
     pub const DOWNLOAD_DIR: &str = "download_dir";
 }
 
@@ -69,6 +73,15 @@ impl AppState {
         if db.get_setting(setting_keys::COLLECT_SOURCES)?.is_none() {
             db.set_setting(setting_keys::COLLECT_SOURCES, "[]")?;
         }
+        if db
+            .get_setting(setting_keys::COLLECT_SOURCE_CACHE)?
+            .is_none()
+        {
+            db.set_setting(setting_keys::COLLECT_SOURCE_CACHE, "[]")?;
+        }
+
+        // 仅启动时清理一次；后续 get_db 不得再做此维护，否则会中断进行中的流水线。
+        db.maintain_task_runs_on_startup()?;
 
         Ok(Self { db_path })
     }

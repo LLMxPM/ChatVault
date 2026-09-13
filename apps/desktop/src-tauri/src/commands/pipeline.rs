@@ -1,7 +1,14 @@
-// ChatVault 桌面命令：与定时任务同构的流水线（扫描 → 归档 → 同步）。
+// ChatVault 桌面命令：与定时任务同构的流水线（扫描 → 归档 → 同步），并写入运行日志。
 use super::scan::execute_scan;
 use super::webdav::resolve_webdav_password;
 use super::*;
+use chatvault_core::models::{
+    TaskRunItemStatus, TaskRunKind, TaskRunStageName, TaskRunStageStatus, TaskRunStatus,
+};
+use chatvault_index::{item_from_row, stage_from_row, NewTaskRunItem, TaskRunRow};
+use chatvault_sync::{archive_pending_with_progress, ArchiveProgressSink};
+use serde_json::json;
+use tauri::{AppHandle, Emitter};
 
 /// 流水线请求：None 账号表示扫描全部已配置微信账号。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,17 +23,267 @@ pub struct PipelineRequestDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineResultDto {
+    pub run_id: String,
     pub webdav_configured: bool,
     pub scan: ScanResultDto,
     pub archive: Option<ArchiveResultDto>,
     pub sync_message: Option<String>,
     pub message: String,
     pub duration_ms: u128,
+    pub status: String,
 }
 
-/// 立即运行：与 CLI scheduled-run 同构——扫描、归档、发布并拉取元数据。
+/// 运行列表项 DTO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRunDto {
+    pub run_id: String,
+    pub kind: String,
+    pub trigger_source: String,
+    pub status: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub webdav_configured: bool,
+    pub summary_json: Option<String>,
+    pub error_message: Option<String>,
+    pub failed_items: i64,
+}
+
+/// 阶段 DTO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRunStageDto {
+    pub stage: String,
+    pub status: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub stats_json: Option<String>,
+    pub message: Option<String>,
+}
+
+/// 明细 DTO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRunItemDto {
+    pub item_id: String,
+    pub stage: String,
+    pub record_id: Option<String>,
+    pub task_id: Option<String>,
+    pub name: String,
+    pub status: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub size: Option<i64>,
+    pub updated_at: String,
+}
+
+/// 运行详情
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRunDetailDto {
+    pub run: TaskRunDto,
+    pub stages: Vec<TaskRunStageDto>,
+    pub items: Vec<TaskRunItemDto>,
+}
+
+/// 将任务运行阶段进度推送到前端。
+struct TauriProgressSink {
+    app: AppHandle,
+    run_id: String,
+}
+
+impl TauriProgressSink {
+    fn emit(&self, event: &str, payload: serde_json::Value) {
+        let _ = self.app.emit(event, payload);
+    }
+}
+
+impl ArchiveProgressSink for TauriProgressSink {
+    fn on_stage(&mut self, stage: &str, status: &str, message: Option<&str>) {
+        self.emit(
+            "run://stage",
+            json!({
+                "runId": self.run_id,
+                "stage": stage,
+                "status": status,
+                "message": message,
+            }),
+        );
+    }
+
+    fn on_progress(&mut self, stage: &str, done: usize, total: usize, current: Option<&str>) {
+        self.emit(
+            "run://progress",
+            json!({
+                "runId": self.run_id,
+                "stage": stage,
+                "done": done,
+                "total": total,
+                "currentName": current,
+            }),
+        );
+    }
+
+    fn on_item(
+        &mut self,
+        stage: &str,
+        task_id: Option<&str>,
+        record_id: Option<&str>,
+        name: &str,
+        status: &str,
+        error: Option<&str>,
+        size: Option<u64>,
+    ) {
+        self.emit(
+            "run://item",
+            json!({
+                "runId": self.run_id,
+                "stage": stage,
+                "taskId": task_id,
+                "recordId": record_id,
+                "name": name,
+                "status": status,
+                "error": error,
+                "size": size,
+            }),
+        );
+    }
+}
+
+/// 扫描后写入图片解密关键失败明细（仅本轮扫描期间更新的失败候选）。
+fn record_scan_decrypt_items(
+    db: &mut chatvault_index::Database,
+    run_id: &str,
+) -> std::result::Result<(), String> {
+    let run = db
+        .get_task_run(run_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "运行记录不存在".to_string())?;
+    let failed = db
+        .list_failed_image_candidates(200, Some(&run.started_at))
+        .map_err(|e| e.to_string())?;
+    for cand in failed {
+        db.add_task_run_item(
+            run_id,
+            &NewTaskRunItem {
+                stage: "scan",
+                record_id: cand.record_id.as_deref(),
+                object_id: None,
+                task_id: None,
+                name: cand
+                    .source_path
+                    .rsplit(['\\', '/'])
+                    .next()
+                    .unwrap_or(&cand.source_path),
+                status: TaskRunItemStatus::DecryptFailed.as_str(),
+                error_code: cand.error_code.as_deref(),
+                error_message: None,
+                size: Some(cand.source_size),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn run_row_to_dto(db: &chatvault_index::Database, row: &TaskRunRow) -> Result<TaskRunDto, String> {
+    let counts = db
+        .count_task_run_items_by_status(&row.run_id)
+        .map_err(|e| e.to_string())?;
+    let failed_items: i64 = counts
+        .iter()
+        .filter(|(s, _)| s != "skipped")
+        .map(|(_, c)| *c)
+        .sum();
+    Ok(TaskRunDto {
+        run_id: row.run_id.clone(),
+        kind: row.kind.clone(),
+        trigger_source: row.trigger_source.clone(),
+        status: row.status.clone(),
+        started_at: row.started_at.clone(),
+        finished_at: row.finished_at.clone(),
+        duration_ms: row.duration_ms,
+        webdav_configured: row.webdav_configured,
+        summary_json: row.summary_json.clone(),
+        error_message: row.error_message.clone(),
+        failed_items,
+    })
+}
+
+/// 列出最近任务运行
+#[tauri::command]
+pub async fn list_task_runs(
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<TaskRunDto>, String> {
+    let db = state.get_db().map_err(|e| e.to_string())?;
+    let rows = db
+        .list_task_runs(limit.unwrap_or(50))
+        .map_err(|e| e.to_string())?;
+    rows.iter().map(|row| run_row_to_dto(&db, row)).collect()
+}
+
+/// 读取运行详情（阶段 + 明细）
+#[tauri::command]
+pub async fn get_task_run_detail(
+    run_id: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<TaskRunDetailDto, String> {
+    let db = state.get_db().map_err(|e| e.to_string())?;
+    let row = db
+        .get_task_run(&run_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "运行记录不存在".to_string())?;
+    let stages = db
+        .list_task_run_stages(&run_id)
+        .map_err(|e| e.to_string())?;
+    let items = db
+        .list_task_run_items(&run_id, None, None, 500)
+        .map_err(|e| e.to_string())?;
+
+    let mut stage_dtos = Vec::with_capacity(stages.len());
+    for s in &stages {
+        let stage = stage_from_row(s).map_err(|e| e.to_string())?;
+        stage_dtos.push(TaskRunStageDto {
+            stage: stage.stage.as_str().to_string(),
+            status: stage.status.as_str().to_string(),
+            started_at: s.started_at.clone(),
+            finished_at: s.finished_at.clone(),
+            duration_ms: s.duration_ms,
+            stats_json: s.stats_json.clone(),
+            message: s.message.clone(),
+        });
+    }
+    let mut item_dtos = Vec::with_capacity(items.len());
+    for i in &items {
+        let item = item_from_row(i).map_err(|e| e.to_string())?;
+        item_dtos.push(TaskRunItemDto {
+            item_id: item.item_id.clone(),
+            stage: item.stage.as_str().to_string(),
+            record_id: item.record_id.clone(),
+            task_id: item.task_id.clone(),
+            name: item.name.clone(),
+            status: item.status.as_str().to_string(),
+            error_code: item.error_code.clone(),
+            error_message: item.error_message.clone(),
+            size: item.size,
+            updated_at: i.updated_at.clone(),
+        });
+    }
+
+    Ok(TaskRunDetailDto {
+        run: run_row_to_dto(&db, &row)?,
+        stages: stage_dtos,
+        items: item_dtos,
+    })
+}
+
+/// 立即运行：与 CLI scheduled-run 同构——扫描、归档、发布并拉取元数据，并记录运行日志。
 #[tauri::command]
 pub async fn run_pipeline(
+    app: AppHandle,
     request: PipelineRequestDto,
     state: State<'_, AppState>,
 ) -> std::result::Result<PipelineResultDto, String> {
@@ -36,67 +293,369 @@ pub async fn run_pipeline(
     let vault_id = state.vault_id().map_err(|e| e.to_string())?;
     let target = request.target_accounts.as_deref();
 
-    let scan = execute_scan(&mut db, &device_id, target, request.full_scan)?;
-
     let webdav_url = db
         .get_setting(setting_keys::WEBDAV_URL)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
-    let webdav_username = db
-        .get_setting(setting_keys::WEBDAV_USERNAME)
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
+    let webdav_configured = !webdav_url.trim().is_empty();
 
-    if webdav_url.trim().is_empty() {
-        let new_objects = scan.total_new_objects;
+    let run_id = db
+        .start_task_run(TaskRunKind::Pipeline, "manual", webdav_configured)
+        .map_err(|e| e.to_string())?;
+    let mut sink = TauriProgressSink {
+        app: app.clone(),
+        run_id: run_id.clone(),
+    };
+    sink.emit(
+        "run://started",
+        json!({ "runId": run_id, "trigger": "manual", "kind": "pipeline" }),
+    );
+
+    // 扫描阶段
+    db.start_task_run_stage(&run_id, TaskRunStageName::Scan)
+        .map_err(|e| e.to_string())?;
+    sink.on_stage("scan", "running", Some("扫描中"));
+    let scan = match execute_scan(&mut db, &device_id, target, request.full_scan) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = db.finish_task_run_stage(
+                &run_id,
+                TaskRunStageName::Scan,
+                TaskRunStageStatus::Failed,
+                None,
+                Some(&e),
+            );
+            let _ = db.finish_task_run(
+                &run_id,
+                TaskRunStatus::Failed,
+                None,
+                Some(&format!("扫描失败：{e}")),
+            );
+            sink.emit(
+                "run://finished",
+                json!({ "runId": run_id, "status": "failed", "message": e }),
+            );
+            return Err(e);
+        }
+    };
+    let _ = record_scan_decrypt_items(&mut db, &run_id);
+    let scan_stats = json!({
+        "discovered": scan.total_discovered,
+        "newObjects": scan.total_new_objects,
+        "skipped": scan.total_skipped,
+        "imagesDiscovered": scan.images_discovered,
+        "imagesPrepared": scan.images_prepared,
+    });
+    db.finish_task_run_stage(
+        &run_id,
+        TaskRunStageName::Scan,
+        TaskRunStageStatus::Success,
+        Some(&scan_stats.to_string()),
+        Some(&format!(
+            "发现 {} · 新增 {} · 跳过 {}",
+            scan.total_discovered, scan.total_new_objects, scan.total_skipped
+        )),
+    )
+    .map_err(|e| e.to_string())?;
+    sink.on_stage(
+        "scan",
+        "success",
+        Some(&format!(
+            "发现 {} · 新增 {}",
+            scan.total_discovered, scan.total_new_objects
+        )),
+    );
+
+    if !webdav_configured {
+        let message = format!(
+            "本地扫描完成：新增 {}。未配置 WebDAV，已跳过归档与同步。",
+            scan.total_new_objects
+        );
+        db.finish_task_run_stage(
+            &run_id,
+            TaskRunStageName::Archive,
+            TaskRunStageStatus::Skipped,
+            None,
+            Some("未配置 WebDAV"),
+        )
+        .map_err(|e| e.to_string())?;
+        let summary = json!({
+            "scan": scan_stats,
+            "archive": null,
+            "sync": null,
+        });
+        db.finish_task_run(
+            &run_id,
+            TaskRunStatus::Success,
+            Some(&summary.to_string()),
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        sink.emit(
+            "run://finished",
+            json!({ "runId": run_id, "status": "success", "message": message }),
+        );
         return Ok(PipelineResultDto {
+            run_id,
             webdav_configured: false,
             scan,
             archive: None,
             sync_message: None,
-            message: format!("本地扫描完成：新增 {new_objects}。未配置 WebDAV，已跳过归档与同步。"),
+            message,
             duration_ms: start.elapsed().as_millis(),
+            status: "success".into(),
         });
     }
 
-    let password = resolve_webdav_password(&webdav_url, &webdav_username, None);
+    let username = webdav_username_from_db(&db)?;
+    let password = resolve_webdav_password(&webdav_url, &username, None);
     let cfg = WebDavConfig {
         base_url: webdav_url.clone(),
-        username: Some(webdav_username.clone()),
+        username: Some(username),
         password,
     };
     let client = WebDavClient::new(cfg).map_err(|e| e.to_string())?;
 
-    let report =
-        chatvault_sync::archive::archive_pending(&client, &mut db, &vault_id, &device_id, 0)
-            .await
-            .map_err(|e| e.to_string())?;
+    // 归档阶段
+    db.start_task_run_stage(&run_id, TaskRunStageName::Archive)
+        .map_err(|e| e.to_string())?;
+    sink.on_stage("archive", "running", Some("归档上传中"));
+    let report = match archive_pending_with_progress(
+        &client,
+        &mut db,
+        &vault_id,
+        &device_id,
+        0,
+        &mut sink,
+        Some(&run_id),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = db.finish_task_run_stage(
+                &run_id,
+                TaskRunStageName::Archive,
+                TaskRunStageStatus::Failed,
+                None,
+                Some(&msg),
+            );
+            let _ = db.finish_task_run(
+                &run_id,
+                TaskRunStatus::Failed,
+                None,
+                Some(&format!("归档失败：{msg}")),
+            );
+            sink.emit(
+                "run://finished",
+                json!({ "runId": run_id, "status": "failed", "message": msg }),
+            );
+            return Err(msg);
+        }
+    };
     let archive = ArchiveResultDto {
         uploaded_count: report.uploaded,
         verified_count: report.verified,
         failed_count: report.failed,
         duration_ms: 0,
     };
+    let archive_stats = json!({
+        "uploaded": archive.uploaded_count,
+        "verified": archive.verified_count,
+        "failed": archive.failed_count,
+        "processed": report.processed,
+    });
+    db.finish_task_run_stage(
+        &run_id,
+        TaskRunStageName::Archive,
+        TaskRunStageStatus::Success,
+        Some(&archive_stats.to_string()),
+        Some(&format!(
+            "上传 {} · 失败 {}",
+            archive.uploaded_count, archive.failed_count
+        )),
+    )
+    .map_err(|e| e.to_string())?;
 
-    let published = chatvault_sync::publish_pending_events(&client, &mut db, &vault_id, &device_id)
-        .await
+    // 同步阶段：发布 + 拉取
+    db.start_task_run_stage(&run_id, TaskRunStageName::Publish)
         .map_err(|e| e.to_string())?;
-    let applied = chatvault_sync::pull_and_apply(&client, &mut db, &vault_id, &device_id)
-        .await
+    sink.on_stage("publish", "running", Some("发布元数据"));
+    let published =
+        match chatvault_sync::publish_pending_events(&client, &mut db, &vault_id, &device_id).await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                let msg = e.to_string();
+                let _ = db.finish_task_run_stage(
+                    &run_id,
+                    TaskRunStageName::Publish,
+                    TaskRunStageStatus::Failed,
+                    None,
+                    Some(&msg),
+                );
+                let _ = db.finish_task_run(
+                    &run_id,
+                    TaskRunStatus::Partial,
+                    Some(
+                        &json!({
+                            "scan": scan_stats,
+                            "archive": archive_stats,
+                            "error": msg,
+                        })
+                        .to_string(),
+                    ),
+                    Some(&format!("发布失败：{msg}")),
+                );
+                sink.emit(
+                    "run://finished",
+                    json!({ "runId": run_id, "status": "partial", "message": msg }),
+                );
+                let message = format!(
+                    "扫描新增 {}，归档成功 {} / 失败 {}。发布失败：{msg}",
+                    scan.total_new_objects, archive.uploaded_count, archive.failed_count
+                );
+                return Ok(PipelineResultDto {
+                    run_id,
+                    webdav_configured: true,
+                    scan,
+                    archive: Some(archive),
+                    sync_message: Some(msg),
+                    message,
+                    duration_ms: start.elapsed().as_millis(),
+                    status: "partial".into(),
+                });
+            }
+        };
+    db.finish_task_run_stage(
+        &run_id,
+        TaskRunStageName::Publish,
+        TaskRunStageStatus::Success,
+        Some(&json!({ "publishedSeq": published }).to_string()),
+        Some(&format!("已发布 seq={published}")),
+    )
+    .map_err(|e| e.to_string())?;
+    sink.on_stage(
+        "publish",
+        "success",
+        Some(&format!("已发布 seq={published}")),
+    );
+
+    db.start_task_run_stage(&run_id, TaskRunStageName::Pull)
         .map_err(|e| e.to_string())?;
+    sink.on_stage("pull", "running", Some("拉取远端事件"));
+    let applied =
+        match chatvault_sync::pull_and_apply(&client, &mut db, &vault_id, &device_id).await {
+            Ok(a) => a,
+            Err(e) => {
+                let msg = e.to_string();
+                let _ = db.finish_task_run_stage(
+                    &run_id,
+                    TaskRunStageName::Pull,
+                    TaskRunStageStatus::Failed,
+                    None,
+                    Some(&msg),
+                );
+                let _ = db.finish_task_run(
+                    &run_id,
+                    TaskRunStatus::Partial,
+                    Some(
+                        &json!({
+                            "scan": scan_stats,
+                            "archive": archive_stats,
+                            "publishedSeq": published,
+                            "error": msg,
+                        })
+                        .to_string(),
+                    ),
+                    Some(&format!("拉取失败：{msg}")),
+                );
+                sink.emit(
+                    "run://finished",
+                    json!({ "runId": run_id, "status": "partial", "message": msg }),
+                );
+                let message = format!(
+                    "扫描新增 {}，归档成功 {} / 失败 {}。已发布 seq={published}，拉取失败：{msg}",
+                    scan.total_new_objects, archive.uploaded_count, archive.failed_count
+                );
+                return Ok(PipelineResultDto {
+                    run_id,
+                    webdav_configured: true,
+                    scan,
+                    archive: Some(archive),
+                    sync_message: Some(msg),
+                    message,
+                    duration_ms: start.elapsed().as_millis(),
+                    status: "partial".into(),
+                });
+            }
+        };
     let sync_message = format!("已发布 seq={published}，应用远端事件 {applied} 条");
+    db.finish_task_run_stage(
+        &run_id,
+        TaskRunStageName::Pull,
+        TaskRunStageStatus::Success,
+        Some(&json!({ "applied": applied }).to_string()),
+        Some(&sync_message),
+    )
+    .map_err(|e| e.to_string())?;
+    sink.on_stage("pull", "success", Some(&sync_message));
+
+    let item_counts = db
+        .count_task_run_items_by_status(&run_id)
+        .map_err(|e| e.to_string())?;
+    let failed_items: i64 = item_counts
+        .iter()
+        .filter(|(s, _)| s != "skipped")
+        .map(|(_, c)| *c)
+        .sum();
+
+    let status = if archive.failed_count > 0 || failed_items > 0 {
+        "partial"
+    } else {
+        "success"
+    };
+    let status_enum = if status == "partial" {
+        TaskRunStatus::Partial
+    } else {
+        TaskRunStatus::Success
+    };
+
+    let summary = json!({
+        "scan": scan_stats,
+        "archive": archive_stats,
+        "publishedSeq": published,
+        "applied": applied,
+        "failedItems": failed_items,
+    });
+    db.finish_task_run(&run_id, status_enum, Some(&summary.to_string()), None)
+        .map_err(|e| e.to_string())?;
 
     let message = format!(
         "流水线完成：扫描新增 {}，归档成功 {} / 失败 {}。{}",
         scan.total_new_objects, archive.uploaded_count, archive.failed_count, sync_message
     );
+    sink.emit(
+        "run://finished",
+        json!({ "runId": run_id, "status": status, "message": message }),
+    );
 
     Ok(PipelineResultDto {
+        run_id,
         webdav_configured: true,
         scan,
         archive: Some(archive),
         sync_message: Some(sync_message),
         message,
         duration_ms: start.elapsed().as_millis(),
+        status: status.into(),
     })
+}
+
+fn webdav_username_from_db(db: &chatvault_index::Database) -> std::result::Result<String, String> {
+    Ok(db
+        .get_setting(setting_keys::WEBDAV_USERNAME)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default())
 }

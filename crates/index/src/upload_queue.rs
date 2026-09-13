@@ -7,13 +7,18 @@ use std::path::PathBuf;
 pub struct PendingUpload {
     pub task_id: String,
     pub hash: String,
+    pub record_id: String,
+    pub original_name: String,
+    pub size: u64,
 }
 
 impl Database {
     /// 返回所有当前可执行任务；按更新时间排序以免失败任务阻塞新文件。
     pub fn pending_uploads(&self) -> Result<Vec<PendingUpload>> {
         let mut stmt = self.conn.prepare(
-            "SELECT t.task_id,o.hash FROM upload_tasks t JOIN file_objects o ON t.object_id=o.object_id
+            "SELECT t.task_id,o.hash,t.record_id,r.original_name,o.size FROM upload_tasks t
+             JOIN file_objects o ON t.object_id=o.object_id
+             JOIN file_records r ON t.record_id=r.record_id
              WHERE t.status='queued' OR (t.status='retryable_failed' AND
              (julianday('now')-julianday(t.updated_at))*86400 >= MIN(3600,30*(1 << MIN(t.retry_count-1,7))))
              ORDER BY t.updated_at,t.task_id").map_err(db_error)?;
@@ -22,6 +27,9 @@ impl Database {
                 Ok(PendingUpload {
                     task_id: r.get(0)?,
                     hash: r.get(1)?,
+                    record_id: r.get(2)?,
+                    original_name: r.get(3)?,
+                    size: r.get::<_, i64>(4)? as u64,
                 })
             })
             .map_err(db_error)?;

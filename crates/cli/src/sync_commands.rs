@@ -1,13 +1,18 @@
 // ChatVault CLI 定时运行与元数据同步入口：使用持久化身份和共享核心。
 use super::*;
 use chatvault_core::models::{
-    CollectSource, GENERIC_FOLDER_SOURCE_TYPE, WECHAT_WINDOWS_4_SOURCE_TYPE,
+    CollectSource, TaskRunItemStatus, TaskRunKind, TaskRunStageName, TaskRunStageStatus,
+    TaskRunStatus, GENERIC_FOLDER_SOURCE_TYPE, WECHAT_WINDOWS_4_SOURCE_TYPE,
 };
+use chatvault_index::NewTaskRunItem;
+use chatvault_sync::{archive_pending_with_progress, NoopProgressSink};
 
-/// 定时任务：读取本地设置，增量扫描采集目录并归档到 WebDAV
+/// 定时任务：读取本地设置，增量扫描采集目录并归档到 WebDAV，并写入运行日志
 pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
     println!("=== ChatVault 定时增量扫描与归档 ===");
     let mut db = Database::open(db_path)?;
+    // 定时进程独立启动：仅在此清理一次，避免与桌面端并发时误标进行中运行。
+    db.maintain_task_runs_on_startup()?;
 
     let device_id = db.ensure_device_identity()?;
     let vault_id = db
@@ -21,6 +26,10 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
     let collect_sources: Vec<CollectSource> =
         serde_json::from_str(&collect_sources_raw).context("解析采集源配置失败")?;
     let scan_started_ms = Utc::now().timestamp_millis();
+
+    let webdav_configured = !webdav_url.trim().is_empty();
+    let run_id = db.start_task_run(TaskRunKind::Pipeline, "schedule", webdav_configured)?;
+    db.start_task_run_stage(&run_id, TaskRunStageName::Scan)?;
 
     let mut indexed = 0usize;
     let mut skipped = 0usize;
@@ -57,9 +66,70 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
         discovered, skipped, indexed
     );
 
+    // 扫描阶段明细：失败图片候选（仅本轮更新）
+    let run_row = db.get_task_run(&run_id)?.context("运行记录丢失")?;
+    let failed_cands = db.list_failed_image_candidates(200, Some(&run_row.started_at))?;
+    for cand in &failed_cands {
+        db.add_task_run_item(
+            &run_id,
+            &NewTaskRunItem {
+                stage: "scan",
+                record_id: cand.record_id.as_deref(),
+                object_id: None,
+                task_id: None,
+                name: cand
+                    .source_path
+                    .rsplit(['\\', '/'])
+                    .next()
+                    .unwrap_or(&cand.source_path),
+                status: TaskRunItemStatus::DecryptFailed.as_str(),
+                error_code: cand.error_code.as_deref(),
+                error_message: None,
+                size: Some(cand.source_size),
+            },
+        )?;
+    }
+
+    db.finish_task_run_stage(
+        &run_id,
+        TaskRunStageName::Scan,
+        TaskRunStageStatus::Success,
+        Some(
+            &serde_json::json!({
+                "discovered": discovered,
+                "newObjects": indexed,
+                "skipped": skipped,
+            })
+            .to_string(),
+        ),
+        Some(&format!(
+            "候选 {discovered} · 新增 {indexed} · 跳过 {skipped}"
+        )),
+    )?;
+
     // 3. 若未配置 WebDAV 则仅完成本地扫描
-    if webdav_url.is_empty() {
+    if !webdav_configured {
         println!("[-] 未配置 WebDAV，跳过归档");
+        db.finish_task_run_stage(
+            &run_id,
+            TaskRunStageName::Archive,
+            TaskRunStageStatus::Skipped,
+            None,
+            Some("未配置 WebDAV"),
+        )?;
+        db.finish_task_run(
+            &run_id,
+            TaskRunStatus::Success,
+            Some(
+                &serde_json::json!({
+                    "discovered": discovered,
+                    "newObjects": indexed,
+                    "skipped": skipped,
+                })
+                .to_string(),
+            ),
+            None,
+        )?;
         return Ok(());
     }
 
@@ -75,29 +145,185 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
             .ok()
     };
 
-    handle_archive(
-        &webdav_url,
-        Some(webdav_user.clone()),
-        password.clone(),
+    let cfg = WebDavConfig {
+        base_url: webdav_url.clone(),
+        username: Some(webdav_user.clone()),
+        password: password.clone(),
+    };
+    let client = WebDavClient::new(cfg).context("创建 WebDAV 客户端失败")?;
+
+    db.start_task_run_stage(&run_id, TaskRunStageName::Archive)?;
+    let archive = match archive_pending_with_progress(
+        &client,
+        &mut db,
         &vault_id,
-        db_path,
+        &device_id,
         0,
+        &mut NoopProgressSink,
+        Some(&run_id),
     )
-    .await?;
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = db.finish_task_run_stage(
+                &run_id,
+                TaskRunStageName::Archive,
+                TaskRunStageStatus::Failed,
+                None,
+                Some(&msg),
+            );
+            let _ = db.finish_task_run(
+                &run_id,
+                TaskRunStatus::Failed,
+                None,
+                Some(&format!("归档失败：{msg}")),
+            );
+            return Err(e.into());
+        }
+    };
+    println!(
+        "归档完成：新上传 {}，已校验 {}，失败 {}",
+        archive.uploaded, archive.verified, archive.failed
+    );
+    db.finish_task_run_stage(
+        &run_id,
+        TaskRunStageName::Archive,
+        TaskRunStageStatus::Success,
+        Some(
+            &serde_json::json!({
+                "uploaded": archive.uploaded,
+                "verified": archive.verified,
+                "failed": archive.failed,
+            })
+            .to_string(),
+        ),
+        Some(&format!(
+            "上传 {} · 失败 {}",
+            archive.uploaded, archive.failed
+        )),
+    )?;
 
     // 归档后发布本机元数据日志，并拉取其他设备
-    if !webdav_url.is_empty() {
-        let cfg = WebDavConfig {
-            base_url: webdav_url.clone(),
-            username: Some(webdav_user.clone()),
-            password: password.clone(),
+    db.start_task_run_stage(&run_id, TaskRunStageName::Publish)?;
+    let published =
+        match chatvault_sync::publish_pending_events(&client, &mut db, &vault_id, &device_id).await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                let msg = e.to_string();
+                let _ = db.finish_task_run_stage(
+                    &run_id,
+                    TaskRunStageName::Publish,
+                    TaskRunStageStatus::Failed,
+                    None,
+                    Some(&msg),
+                );
+                let _ = finish_partial_scheduled_run(
+                    &mut db, &run_id, discovered, indexed, skipped, &archive, &msg,
+                );
+                return Err(e.into());
+            }
         };
-        if let Ok(client) = WebDavClient::new(cfg) {
-            chatvault_sync::publish_pending_events(&client, &mut db, &vault_id, &device_id).await?;
-            chatvault_sync::pull_and_apply(&client, &mut db, &vault_id, &device_id).await?;
-        }
-    }
+    db.finish_task_run_stage(
+        &run_id,
+        TaskRunStageName::Publish,
+        TaskRunStageStatus::Success,
+        Some(&serde_json::json!({ "publishedSeq": published }).to_string()),
+        Some(&format!("已发布 seq={published}")),
+    )?;
 
+    db.start_task_run_stage(&run_id, TaskRunStageName::Pull)?;
+    let applied =
+        match chatvault_sync::pull_and_apply(&client, &mut db, &vault_id, &device_id).await {
+            Ok(a) => a,
+            Err(e) => {
+                let msg = e.to_string();
+                let _ = db.finish_task_run_stage(
+                    &run_id,
+                    TaskRunStageName::Pull,
+                    TaskRunStageStatus::Failed,
+                    None,
+                    Some(&msg),
+                );
+                let _ = finish_partial_scheduled_run(
+                    &mut db, &run_id, discovered, indexed, skipped, &archive, &msg,
+                );
+                return Err(e.into());
+            }
+        };
+    db.finish_task_run_stage(
+        &run_id,
+        TaskRunStageName::Pull,
+        TaskRunStageStatus::Success,
+        Some(&serde_json::json!({ "applied": applied }).to_string()),
+        Some(&format!("应用远端事件 {applied} 条")),
+    )?;
+
+    let item_counts = db.count_task_run_items_by_status(&run_id)?;
+    let failed_items: i64 = item_counts
+        .iter()
+        .filter(|(s, _)| s != "skipped")
+        .map(|(_, c)| *c)
+        .sum();
+    let status = if archive.failed > 0 || failed_items > 0 {
+        TaskRunStatus::Partial
+    } else {
+        TaskRunStatus::Success
+    };
+    db.finish_task_run(
+        &run_id,
+        status,
+        Some(
+            &serde_json::json!({
+                "discovered": discovered,
+                "newObjects": indexed,
+                "skipped": skipped,
+                "uploaded": archive.uploaded,
+                "failed": archive.failed,
+                "publishedSeq": published,
+                "applied": applied,
+                "failedItems": failed_items,
+            })
+            .to_string(),
+        ),
+        None,
+    )?;
+
+    if archive.failed > 0 {
+        anyhow::bail!("存在归档失败任务，已保存失败原因并等待重试");
+    }
+    Ok(())
+}
+
+/// 发布/拉取失败时仍把已有扫描与归档结果记为 partial。
+#[allow(clippy::too_many_arguments)]
+fn finish_partial_scheduled_run(
+    db: &mut Database,
+    run_id: &str,
+    discovered: usize,
+    indexed: usize,
+    skipped: usize,
+    archive: &chatvault_sync::ArchiveReport,
+    error: &str,
+) -> Result<()> {
+    db.finish_task_run(
+        run_id,
+        TaskRunStatus::Partial,
+        Some(
+            &serde_json::json!({
+                "discovered": discovered,
+                "newObjects": indexed,
+                "skipped": skipped,
+                "uploaded": archive.uploaded,
+                "failed": archive.failed,
+                "error": error,
+            })
+            .to_string(),
+        ),
+        Some(error),
+    )?;
     Ok(())
 }
 
