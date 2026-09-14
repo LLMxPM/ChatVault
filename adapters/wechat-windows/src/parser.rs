@@ -77,10 +77,7 @@ impl WeChat4Parser {
     ) -> Result<Vec<DiscoveredFile>> {
         let video_dir = video_dir.as_ref();
         if !video_dir.exists() {
-            tracing::info!(
-                "视频目录尚未生成: {}",
-                video_dir.display()
-            );
+            tracing::info!("视频目录尚未生成: {}", video_dir.display());
             return Ok(Vec::new());
         }
 

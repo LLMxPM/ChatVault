@@ -2,16 +2,41 @@
 
 把散落在聊天里的文件，变成属于自己的长期资料库。
 
-ChatVault 是桌面端聊天附件归档与检索工具。优先实现 Windows 微信附件采集、本地检索、WebDAV 归档和多台电脑之间的同步恢复，随后适配 macOS。
+ChatVault 是桌面端聊天附件归档与检索工具。在授权目录内发现微信/企业微信附件，本地索引与检索，再将内容与元数据归档到你自己的 WebDAV；换电脑后可先恢复目录，再按需取回文件。
 
-- [产品与实施规划](docs/产品与实施规划.md)：产品定位、桌面功能、技术栈、阶段任务及验收标准。
-- [架构与同步设计](docs/架构与同步设计.md)：模块划分、数据模型、WebDAV 格式、同步与恢复。
-- [微信 4.x 媒体备份完整方案](docs/compose/spec/wechat-4x-media-backup.md)：`msg/video` 下 `.mp4` 本体增量扫描与备份。
-- [开发与构建](docs/开发与构建.md)：本地依赖、开发命令、Windows 构建和 GitHub Actions 流程。
-- [Windows 安装与发布](docs/Windows安装与发布.md)：安装包构建、数据位置、首次使用与卸载。
+## 能做什么
 
-Storage 采用 WebDAV；本地 SQLite 保存索引，文件暂存和缓存支持上传重试、离线检索及按需取回。
+- **采集**：Windows 微信 4.x 附件与视频、企业微信 Cache 文件/视频，以及任意本地文件夹。
+- **检索**：本地 SQLite 索引，支持文件名、类型、日期与来源组合筛选，离线可用。
+- **归档**：按内容哈希去重后上传 WebDAV；上传重试、完整校验，失败可续。
+- **同步**：多台电脑通过同一 Vault 交换元数据；新设备恢复索引后即可搜索，再按需下载。
+- **文件库**：按内容对象折叠展示，详情查看多来源；支持打开/定位、批量下载、隐藏与删除（多端同步）。
 
-常用命令：`pnpm dev:web` 启动前端，`pnpm dev:desktop` 启动 Tauri，`pnpm check:frontend` 检查前端，`pnpm check:rust`/`pnpm lint:rust` 检查 Rust，`pnpm test:rust` 运行 Rust 测试，`pnpm test:installer` 验证安装钩子，`pnpm build:desktop` 编译桌面端。
+## 怎么工作
 
-Windows x64 安装包构建：`pnpm release:windows`。完整依赖和构建流程见 [开发与构建](docs/开发与构建.md)。
+1. 在任务页配置采集范围（微信 / 企业微信 / 文件夹），立即或按计划运行流水线。
+2. 流水线依次完成扫描 → 归档 → 发布日志 → 拉取日志；本地索引不依赖云也可检索。
+3. 可选：设置中绑定 WebDAV Vault，启用跨设备归档与恢复。
+
+内容对象存储在 WebDAV，元数据通过事件日志与快照同步；本地暂存与缓存支持断线重试和按需打开。详见[架构与同步设计](docs/架构与同步设计.md)。
+
+## 平台与形态
+
+| 项目 | 当前状态 |
+| --- | --- |
+| Windows x64 桌面（Tauri 2 + Vue 3 + Rust） | 发布准备 |
+| macOS | 后续适配 |
+| 安装包 | NSIS 当前用户安装；暂无代码签名、自动更新与 ARM64 |
+
+数据默认位于 `%LOCALAPPDATA%\com.chatvault.desktop\`（索引、附件副本与日志）。卸载默认保留资料，可选清理应用数据。详见[Windows 安装与发布](docs/Windows安装与发布.md)。
+
+## 文档
+
+| 文档 | 说明 |
+| --- | --- |
+| [产品与实施规划](docs/产品与实施规划.md) | 定位、功能范围、阶段与验收 |
+| [架构与同步设计](docs/架构与同步设计.md) | 模块、数据模型、WebDAV 与同步 |
+| [开发与构建](docs/开发与构建.md) | 依赖、命令、构建与 CI |
+| [Windows 安装与发布](docs/Windows安装与发布.md) | 打包、数据位置、卸载与发布边界 |
+
+功能规格见 `docs/compose/spec/`。仓库结构、协作与验证约束见 [AGENTS.md](AGENTS.md)。

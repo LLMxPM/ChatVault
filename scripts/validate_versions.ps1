@@ -1,4 +1,5 @@
 # 校验根 package.json、桌面包和 Cargo workspace 的版本，并可选校验 Git tag。
+# 支持正式版 vX.Y.Z 与预发布 vX.Y.Z-<pre>（如 v0.1.0-alpha.1）。
 [CmdletBinding()]
 param(
     [string]$Tag
@@ -6,6 +7,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+
+# 预发布段允许 alpha/test/rc.1 等；版本与 tag 去掉 v 后必须完全一致。
+$script:SemVerTagPattern = '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$'
+$script:SemVerVersionPattern = '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$'
 
 function Get-CargoWorkspaceVersion {
     param([string]$ManifestPath)
@@ -32,6 +37,13 @@ function Assert-VersionEqual {
     }
 }
 
+function Test-PrereleaseVersion {
+    param([string]$Version)
+
+    # 含预发布段（主版本号后的 -alpha / -rc.1 等）视为预发布。
+    return $Version -match '-'
+}
+
 Push-Location $repoRoot
 try {
     $rootPackage = Get-Content -LiteralPath 'package.json' -Raw | ConvertFrom-Json
@@ -43,17 +55,21 @@ try {
     if ([string]::IsNullOrWhiteSpace($rootVersion)) {
         throw '根 package.json 未定义有效版本'
     }
+    if ($rootVersion -notmatch $script:SemVerVersionPattern) {
+        throw "发行版本必须符合 SemVer（可选 -预发布段）：$rootVersion"
+    }
     Assert-VersionEqual 'apps/desktop/package.json' $rootVersion $desktopVersion
     Assert-VersionEqual 'Cargo.toml' $rootVersion $cargoVersion
 
     if ($Tag) {
-        if ($Tag -notmatch '^v\d+\.\d+\.\d+$') {
-            throw "发布 tag 必须符合 vX.Y.Z：$Tag"
+        if ($Tag -notmatch $script:SemVerTagPattern) {
+            throw "发布 tag 必须符合 vX.Y.Z 或 vX.Y.Z-<pre>：$Tag"
         }
         Assert-VersionEqual 'Git tag' $rootVersion $Tag.Substring(1)
     }
 
-    Write-Output "版本校验通过：$rootVersion"
+    $channel = if (Test-PrereleaseVersion $rootVersion) { '预发布' } else { '正式' }
+    Write-Output "版本校验通过：$rootVersion（$channel）"
 }
 finally {
     Pop-Location

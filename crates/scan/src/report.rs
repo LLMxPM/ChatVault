@@ -2,6 +2,9 @@
 use crate::accounts::AccountTarget;
 use crate::events::ScanEvent;
 
+/// 单个采集源扫描完成后的累计报告回调。
+pub type SourceDoneCallback<'a> = &'a dyn Fn(&str, ScanReport);
+
 /// 一轮扫描汇总。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ScanReport {
@@ -38,7 +41,7 @@ pub struct ScanRequest<'a> {
     /// 进度事件回调。
     pub on_event: Option<&'a dyn Fn(ScanEvent)>,
     /// 单个采集源扫描完成后的累计报告回调。
-    pub on_source_done: Option<&'a dyn Fn(&str, ScanReport)>,
+    pub on_source_done: Option<SourceDoneCallback<'a>>,
 }
 
 impl<'a> ScanRequest<'a> {

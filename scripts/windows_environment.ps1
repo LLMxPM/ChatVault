@@ -14,16 +14,41 @@ function Require-Command {
     }
 }
 
+function Resolve-ProgramFilesRoot {
+    # 某些精简宿主进程会丢失 ProgramFiles* 环境变量；按标准路径回退，保证本机与 CI 都能找到 VS。
+    param([ValidateSet('ProgramFiles', 'ProgramFilesX86')][string]$Which)
+
+    $envName = if ($Which -eq 'ProgramFilesX86') { 'ProgramFiles(x86)' } else { 'ProgramFiles' }
+    $fromEnv = [Environment]::GetEnvironmentVariable($envName)
+    if ([string]::IsNullOrWhiteSpace($fromEnv)) {
+        $fromEnv = if ($Which -eq 'ProgramFilesX86') { ${env:ProgramFiles(x86)} } else { $env:ProgramFiles }
+    }
+    if ($fromEnv -and (Test-Path -LiteralPath $fromEnv)) {
+        return $fromEnv
+    }
+
+    $fallbacks = if ($Which -eq 'ProgramFilesX86') {
+        @('C:\Program Files (x86)', 'C:\Program Files')
+    } else {
+        @('C:\Program Files')
+    }
+    foreach ($candidate in $fallbacks) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
 function Import-VisualStudioEnvironment {
     # 查找完整的 Visual Studio C++ 工具链，并把 vcvars64 的环境导入当前 PowerShell 进程。
     $vswhereCandidates = @()
-    if (${env:ProgramFiles(x86)}) {
-        $vswhereCandidates += (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe')
+    foreach ($root in @((Resolve-ProgramFilesRoot 'ProgramFilesX86'), (Resolve-ProgramFilesRoot 'ProgramFiles'))) {
+        if ($root) {
+            $vswhereCandidates += (Join-Path $root 'Microsoft Visual Studio\Installer\vswhere.exe')
+        }
     }
-    if ($env:ProgramFiles) {
-        $vswhereCandidates += (Join-Path $env:ProgramFiles 'Microsoft Visual Studio\Installer\vswhere.exe')
-    }
-    $vswhere = $vswhereCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $vswhere = $vswhereCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
     if (-not $vswhere) {
         throw '未找到 vswhere.exe。请安装 Visual Studio Build Tools，并勾选 C++ 构建工具。'
     }

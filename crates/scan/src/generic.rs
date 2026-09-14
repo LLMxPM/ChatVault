@@ -48,7 +48,12 @@ pub fn scan_generic_source(
 
     let complete = ingest_candidates(db, req.device_id, candidates, &mut report)?;
     if complete {
-        db.mark_scan_started(&root_s, GENERIC_FOLDER_SOURCE_TYPE, None, req.scan_started_ms)?;
+        db.mark_scan_started(
+            &root_s,
+            GENERIC_FOLDER_SOURCE_TYPE,
+            None,
+            req.scan_started_ms,
+        )?;
     } else {
         req.emit(ScanEvent::MediaRootIncomplete { path: root_s });
     }

@@ -128,9 +128,7 @@ fn scan_media_root(
 }
 
 /// 探测企业微信账号统计。
-pub fn inspect_wxwork_accounts(
-    root: &Path,
-) -> Result<Vec<crate::accounts::SourceAccountInfo>> {
+pub fn inspect_wxwork_accounts(root: &Path) -> Result<Vec<crate::accounts::SourceAccountInfo>> {
     let accounts = WxWorkDetector::find_accounts(root)?;
     let root_s = root.to_string_lossy().to_string();
     Ok(accounts

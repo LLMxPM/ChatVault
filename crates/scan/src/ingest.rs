@@ -8,12 +8,11 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+/// 对已知文件路径尝试提取会话 ID 的回调。
+pub type ConversationResolver<'a> = &'a dyn Fn(&Path, &Path) -> Option<String>;
+
 /// 解析扫描根的增量起点；full_scan 或无检查点时返回 None。
-pub fn resolve_since(
-    db: &Database,
-    root: &str,
-    full_scan: bool,
-) -> Result<Option<SystemTime>> {
+pub fn resolve_since(db: &Database, root: &str, full_scan: bool) -> Result<Option<SystemTime>> {
     if full_scan {
         return Ok(None);
     }
@@ -32,7 +31,7 @@ pub fn merge_candidates(
     source_account_id: Option<&str>,
     fallback_conversation_id: Option<String>,
     source_root_for_conversation: Option<&Path>,
-    resolve_conversation: Option<&dyn Fn(&Path, &Path) -> Option<String>>,
+    resolve_conversation: Option<ConversationResolver<'_>>,
 ) -> Vec<DiscoveredFile> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut merged = Vec::with_capacity(walked.len() + changed_known.len());
@@ -49,9 +48,7 @@ pub fn merge_candidates(
         }
         let conversation_id = source_root_for_conversation
             .zip(resolve_conversation)
-            .and_then(|(root, resolve)| {
-                resolve(root, Path::new(&known.original_path))
-            })
+            .and_then(|(root, resolve)| resolve(root, Path::new(&known.original_path)))
             .or_else(|| fallback_conversation_id.clone());
         if let Some(file) = known.to_discovered(source_type, source_account_id, conversation_id) {
             seen.insert(key);

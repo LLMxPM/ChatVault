@@ -8,6 +8,7 @@ mod connection;
 mod runtime;
 mod schedule;
 mod state;
+mod update;
 
 use state::AppState;
 use tauri::Manager;
@@ -88,6 +89,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             runtime::open_data_directory,
             runtime::open_log_directory,
             runtime::open_repository_homepage,
+            update::check_for_update,
+            update::download_and_install_update,
+            update::open_release_page,
         ])
         .build(tauri::generate_context!())?;
     let data_dir = app.path().app_local_data_dir()?;

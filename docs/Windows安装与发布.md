@@ -24,7 +24,7 @@ pnpm release:windows
 
 ## 安装行为
 
-- 产品显示名：**拾文 ChatVault**；发布者：`ChatVault Team`。
+- 产品名：**ChatVault**（安装包与程序文件名使用 ASCII，窗口标题为「拾文」）；发布者：`ChatVault Team`。
 - 安装格式：Windows x64 NSIS `.exe`，简体中文，当前用户安装。
 - 安装器负责创建开始菜单入口，完成页可选择桌面快捷方式与立即启动。
 - WebView2 缺失时联网下载引导程序；当前安装包不承诺缺少 WebView2 的完全离线安装。
@@ -65,6 +65,15 @@ pnpm release:windows
 
 重装后，同结构资料库可继续使用；数据结构发生变化时按开发阶段约束重新初始化或重建，不提供版本迁移分支。
 
+## 应用内升级
+
+设置 → 关于 可检查更新并安装：
+
+- 仅检测 GitHub 上的**正式版** Release（`/releases/latest`），不含 alpha/rc 等预发布。
+- 发现新版本后可「下载并安装」：拉取 NSIS 安装包到本地 `updates` 目录，校验 `.sha256`（若提供）后启动安装器。
+- 下载地址限制为本仓库 `github.com/LLMxPM/ChatVault/releases/download/`。
+- 手动入口与 GitHub [Releases](https://github.com/LLMxPM/ChatVault/releases) 页仍可用；无自动更新服务。
+
 ## 图标维护
 
 应用图标已通过内置 imagegen 生成，并接入侧栏、页面图标、EXE 和安装器资源。母版、最终提示词和重新导出命令见 [图标说明](../apps/desktop/src-tauri/icons/README.md)。
@@ -73,6 +82,8 @@ pnpm release:windows
 
 ## 发布边界
 
+- 支持正式 tag（`vX.Y.Z`）与预发布 tag（`vX.Y.Z-alpha` / `-alpha.1` / `-rc.1` 等）；预发布在 GitHub 上标记为 Pre-release。
+- 预发布发版前需将 `package.json`、桌面包与 Cargo workspace 版本改为与 tag 一致的预发布号。
 - 当前安装包为本地测试发行产物；尚未配置代码签名证书、公开下载渠道或自动更新。
 - 尚待真实环境验收：干净系统首次安装、WebView2 缺失、普通用户权限、实际安装/卸载、覆盖安装、不同启动入口、高 DPI 缩放。
 - MSI、ARM64、完全离线安装器和 macOS 分发不在当前范围。

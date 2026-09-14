@@ -34,3 +34,29 @@ export async function openLogDirectory(): Promise<void> {
 export async function openRepositoryHomepage(): Promise<void> {
   await invoke("open_repository_homepage");
 }
+
+/** GitHub 正式 Release 更新检测结果。 */
+export interface UpdateCheckResult {
+  currentVersion: string;
+  latestVersion: string;
+  hasUpdate: boolean;
+  releaseUrl: string;
+  releaseTitle: string;
+  installerName: string | null;
+  installerSize: number | null;
+}
+
+/** 检查 GitHub 最新正式 Release（不含预发布）。 */
+export async function checkForUpdate(): Promise<UpdateCheckResult> {
+  return invoke<UpdateCheckResult>("check_for_update");
+}
+
+/** 下载最新正式版安装包并启动安装。 */
+export async function downloadAndInstallUpdate(): Promise<void> {
+  await invoke("download_and_install_update");
+}
+
+/** 打开 GitHub Releases 页面。 */
+export async function openReleasePage(): Promise<void> {
+  await invoke("open_release_page");
+}

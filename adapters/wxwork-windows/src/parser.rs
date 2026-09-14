@@ -265,7 +265,11 @@ mod tests {
             .as_nanos();
         let base = std::env::temp_dir().join(format!("chatvault_wxwork_miss_{unique}"));
         let account = make_account(&base);
-        assert!(WxWorkParser::parse_account_files(&account).unwrap().is_empty());
-        assert!(WxWorkParser::parse_account_videos(&account).unwrap().is_empty());
+        assert!(WxWorkParser::parse_account_files(&account)
+            .unwrap()
+            .is_empty());
+        assert!(WxWorkParser::parse_account_videos(&account)
+            .unwrap()
+            .is_empty());
     }
 }

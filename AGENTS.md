@@ -6,6 +6,8 @@
 
 ChatVault 是桌面端聊天附件归档与检索工具，当前优先支持 Windows 微信/企业微信附件采集、本地检索、WebDAV 归档及多设备同步恢复。项目采用 Rust Cargo workspace 与 pnpm workspace；桌面端使用 Tauri 2、Vue 3、TypeScript 和 Vite，本地索引使用 SQLite，远端存储使用 WebDAV。
 
+当前阶段：Windows 桌面端功能开发阶段性结束，进入发布准备（安装包、验收与文档核对）。macOS 适配、标签/收藏/会话别名等仍属后续阶段，不在本次发布范围。
+
 ## 项目结构
 
 | 路径 | 职责 |
@@ -23,20 +25,33 @@ ChatVault 是桌面端聊天附件归档与检索工具，当前优先支持 Win
 | `adapters/wechat-windows/` | Windows 微信 4.x 来源适配：目录/账号探测、附件与视频媒体根解析。 |
 | `adapters/wxwork-windows/` | Windows 企业微信来源适配：WXWork 根/账号探测、Cache/File 与 Cache/Video 解析。 |
 | `adapters/generic-folder/` | 通用文件夹来源适配。 |
-| `docs/` | 产品与实施规划、架构与同步设计、开发构建与安装发布说明、功能规格。 |
+| `docs/` | 产品与实施规划、架构与同步设计、开发构建与安装发布说明；`docs/compose/spec/` 为已实现功能的结论性契约。 |
 | `scripts/` | 构建等辅助脚本。 |
 | `libs/` | 本地原生依赖，目前包含 Windows x64 SQLite 链接库。 |
 
 根目录 `Cargo.toml` 管理 Rust workspace 与共享依赖，`pnpm-workspace.yaml` 和 `package.json` 管理前端 workspace 与常用命令。`target/`、`node_modules/` 属于构建产物或依赖目录。
 
-## 开发阶段与兼容性约束
+## 文档地图
 
-- 项目当前处于开发阶段，不需要任何面向历史版本或假设中的未来版本的兼容性设计，也不承诺向前或向后兼容。
+| 文档 | 用途 |
+| --- | --- |
+| [产品与实施规划](docs/产品与实施规划.md) | 产品定位、功能范围、分阶段交付与验收目标。 |
+| [架构与同步设计](docs/架构与同步设计.md) | 模块边界、数据模型、WebDAV 格式、扫描/归档/同步与恢复。 |
+| [开发与构建](docs/开发与构建.md) | 本地依赖、开发命令、Windows 构建与 GitHub Actions。 |
+| [Windows 安装与发布](docs/Windows安装与发布.md) | 安装包、数据位置、首次使用、卸载与发布边界。 |
+| `docs/compose/spec/*.md` | 单项功能的历史结论契约（status: implemented/delivered），实现细节以代码与上述主文档为准。 |
+
+改架构、数据格式、同步协议或业务行为时，同步更新对应主文档；已实现规格一般不必再改，除非契约与实现再次分叉。
+
+## 版本与兼容性约束
+
+- 发行版本真值为根目录 `package.json` 的 `version`（当前 `0.1.0`）；Cargo workspace 与桌面包版本必须一致，由 `scripts/validate_versions.ps1` 校验。打 `vX.Y.Z` 或 `vX.Y.Z-<预发布>`（如 `v0.1.0-alpha.1`）tag 前先对齐版本；预发布版本号需包含 `-` 后缀，发布工作流会将其标为 GitHub Pre-release。
+- 项目尚未对外承诺数据格式稳定性：不为历史开发库、旧 WebDAV 结构或假设中的未来版本增加兼容层、双格式读写或迁移分支。
 - 修改接口、配置、数据模型、本地数据库结构或 WebDAV 存储格式时，直接采用当前设计，并同步更新所有调用方、测试和相关文档。
-- 不新增为兼容旧实现而存在的兼容层、旧接口别名、双格式读写、版本分支、历史数据迁移或降级回退逻辑，也不为假设中的未来版本预留兼容分支。
-- 修改涉及的模块中若已有上述兼容性设计，应直接删除，同时清理对应的废弃代码、配置、测试及文档描述，不保留过渡实现。
-- 开发数据可通过重新初始化、重建索引或重新导入适配当前结构，无需为保留历史开发数据设计升级路径。删除兼容逻辑不等于直接删除用户原始附件或远端归档数据。
+- 修改涉及的模块中若仍有上述兼容设计，应直接删除，同时清理废弃代码、配置、测试及文档描述。
+- 开发数据可通过重新初始化、重建索引或重新导入适配当前结构。删除兼容逻辑不等于删除用户原始附件或远端归档数据。
 - 正常的错误处理、完整性校验、上传重试、离线支持和同步恢复属于业务可靠性要求，不能以取消兼容为由删除。
+- 对外发布后再破坏本地库或 WebDAV 格式，需在发布说明中明确，并评估是否引入迁移；在此之前仍按上述规则直接改结构。
 
 ## 基础规范
 
@@ -55,4 +70,5 @@ ChatVault 是桌面端聊天附件归档与检索工具，当前优先支持 Win
 - 前端类型检查与构建：`pnpm check:frontend`、`pnpm build:frontend`。
 - 前端开发服务：`pnpm dev:web`；完整 Tauri 桌面开发：`pnpm dev:desktop`。
 - 桌面端 Rust 编译：`pnpm build:desktop`；安装钩子隔离测试：`pnpm test:installer`。
-- 更改架构、数据格式或业务行为时，同步维护 `docs/` 中对应文档。
+- Windows 安装包：`pnpm release:windows`（产出 NSIS setup 与 `.sha256`）。
+- 发布相关改动至少跑通：前端检查、Rust 检查/Lint/测试、安装钩子测试；触及打包流程时再执行 `pnpm release:windows`。

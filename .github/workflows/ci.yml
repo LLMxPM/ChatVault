@@ -14,19 +14,19 @@ concurrency:
 jobs:
   validate:
     name: Windows x64 全量校验
-    runs-on: windows-2022
+    runs-on: windows-2025
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22.x
 
       - name: 安装 pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 10.30.3
           run_install: false
@@ -42,7 +42,7 @@ jobs:
         run: Add-Content $env:GITHUB_OUTPUT ("path=" + (pnpm store path --silent))
 
       - name: 缓存构建依赖
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ steps.pnpm-store.outputs.path }}
@@ -80,3 +80,60 @@ jobs:
 
       - name: 安装钩子测试
         run: pnpm test:installer
+
+  package-smoke:
+    name: Windows 安装包冒烟
+    # 发布工作流（tag）会完整打包并上传 Release，这里跳过以免重复构建。
+    if: github.ref_type != 'tag'
+    runs-on: windows-2025
+    needs: validate
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.30.3
+          run_install: false
+
+      - name: 安装 stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 获取 pnpm 缓存目录
+        id: pnpm-store
+        shell: pwsh
+        run: Add-Content $env:GITHUB_OUTPUT ("path=" + (pnpm store path --silent))
+
+      - name: 缓存构建依赖
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ steps.pnpm-store.outputs.path }}
+            ~\.cargo\registry
+            ~\.cargo\git
+            target
+          key: ${{ runner.os }}-chatvault-release-${{ hashFiles('pnpm-lock.yaml', 'Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-chatvault-release-
+            ${{ runner.os }}-chatvault-
+
+      - name: 构建 Windows 安装包
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release_windows.ps1
+
+      - name: 上传安装包产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: chatvault-windows-installer
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/*.exe.sha256
+          if-no-files-found: error
+          retention-days: 7

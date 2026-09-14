@@ -93,9 +93,7 @@ fn scan_media_root(
     let root_s = media_root.to_string_lossy().to_string();
     let since = resolve_since(db, &root_s, req.full_scan)?;
     let walked = match kind {
-        MediaKind::Files => {
-            WeChat4Parser::parse_folder_since(media_root, account_id, since)?
-        }
+        MediaKind::Files => WeChat4Parser::parse_folder_since(media_root, account_id, since)?,
         MediaKind::Videos => {
             WeChat4Parser::parse_videos_folder_since(media_root, account_id, since)?
         }
@@ -132,12 +130,7 @@ fn scan_media_root(
 
     let complete = ingest_candidates(db, req.device_id, candidates, report)?;
     if complete {
-        db.mark_scan_started(
-            &root_s,
-            source_type,
-            account_id,
-            req.scan_started_ms,
-        )?;
+        db.mark_scan_started(&root_s, source_type, account_id, req.scan_started_ms)?;
     } else {
         req.emit(ScanEvent::MediaRootIncomplete {
             path: root_s.clone(),
@@ -168,9 +161,7 @@ pub fn inspect_wechat_accounts(root: &Path) -> Result<Vec<crate::accounts::Sourc
 
 /// 将微信账号结构转为共享媒体根描述（供探测统计复用）。
 #[allow(dead_code)]
-pub(crate) fn wechat_media_roots(
-    acc: &adapter_wechat_windows::WeChatAccount,
-) -> AccountMediaRoots {
+pub(crate) fn wechat_media_roots(acc: &adapter_wechat_windows::WeChatAccount) -> AccountMediaRoots {
     AccountMediaRoots {
         source_account_id: acc.source_account_id.clone(),
         root_dir: acc.root_dir.clone(),

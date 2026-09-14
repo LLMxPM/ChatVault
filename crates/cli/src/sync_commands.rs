@@ -2,12 +2,11 @@
 use super::*;
 use chatvault_core::models::{
     CollectSource, TaskRunKind, TaskRunStageName, TaskRunStageStatus, TaskRunStatus,
-    GENERIC_FOLDER_SOURCE_TYPE, WECHAT_WINDOWS_4_SOURCE_TYPE,
-    WXWORK_WINDOWS_SOURCE_TYPE,
+    GENERIC_FOLDER_SOURCE_TYPE, WECHAT_WINDOWS_4_SOURCE_TYPE, WXWORK_WINDOWS_SOURCE_TYPE,
 };
 use chatvault_scan::{
     scan_generic_source, scan_wechat_source, scan_wxwork_source, AccountTarget, ScanEvent,
-    ScanRequest, ScanReport,
+    ScanReport, ScanRequest,
 };
 use chatvault_sync::archive_pending_with_progress;
 use chatvault_sync::NoopProgressSink;
@@ -337,11 +336,7 @@ fn print_scan_event(event: &ScanEvent) {
             println!("    [{}] {}", kind.as_str(), path);
         }
         ScanEvent::MediaRootCandidates { kind, path, count } => {
-            println!(
-                "    [{}] 候选 {} 个文件 ({path})",
-                kind.as_str(),
-                count
-            );
+            println!("    [{}] 候选 {} 个文件 ({path})", kind.as_str(), count);
         }
         ScanEvent::MediaRootIncomplete { path } => {
             println!("[-] 媒体根 {path} 存在未完成候选，保留原扫描检查点");
@@ -597,11 +592,8 @@ pub(super) fn scan_path_with_shared(
     } else if target.eq_ignore_ascii_case("wxwork") {
         // 企业微信：作为通用路径扫描账号型根
         let root = chatvault_scan::detect_wxwork_root().context("探测企业微信根目录失败")?;
-        let enable_videos = load_source_video_setting(
-            db,
-            &root.to_string_lossy(),
-            WXWORK_WINDOWS_SOURCE_TYPE,
-        );
+        let enable_videos =
+            load_source_video_setting(db, &root.to_string_lossy(), WXWORK_WINDOWS_SOURCE_TYPE);
         let req = ScanRequest {
             device_id,
             full_scan: full,
@@ -633,11 +625,7 @@ pub(super) fn scan_path_with_shared(
 
     // 可能是企业微信手动路径
     if adapter_wxwork_windows::WxWorkDetector::validate_root(target).is_ok() {
-        let enable_videos = load_source_video_setting(
-            db,
-            target,
-            WXWORK_WINDOWS_SOURCE_TYPE,
-        );
+        let enable_videos = load_source_video_setting(db, target, WXWORK_WINDOWS_SOURCE_TYPE);
         let root = PathBuf::from(target);
         let req = ScanRequest {
             device_id,
@@ -683,4 +671,3 @@ fn load_source_video_setting(db: &Database, root: &str, source_type: &str) -> bo
         .map(|source| source.enable_videos)
         .unwrap_or(true)
 }
-
