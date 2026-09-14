@@ -1,5 +1,6 @@
 // ChatVault Windows 计划任务注册
-// 使用 schtasks 创建/删除按周期拉起 chatvault-cli scheduled-run 的系统任务
+// 用 schtasks 注册，任务动作经 PowerShell -WindowStyle Hidden 拉起 CLI，避免控制台弹窗。
+// 删除/查询仍用 schtasks，与安装生命周期脚本约定一致。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,22 +26,30 @@ pub fn find_cli_path() -> Option<PathBuf> {
     None
 }
 
+/// 将路径转成可在 PowerShell 单引号字符串中安全嵌入的字面量。
+fn ps_single_quote(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
 /// 注册 Windows 计划任务
 ///
 /// 输入:
 ///   - `cli_path`: chatvault-cli.exe 绝对路径
 ///   - `db_path`: 本地 SQLite 路径
 ///   - `interval_minutes`: 间隔分钟数
+///
+/// 任务动作经 `powershell -WindowStyle Hidden` 启动 CLI：计划任务拉起控制台程序时
+/// 不再直接弹出黑色窗口；PowerShell 仍以当前用户交互令牌运行，可读用户凭据与目录。
 pub fn register_scheduled_task(
     cli_path: &Path,
     db_path: &Path,
     interval_minutes: u32,
 ) -> Result<(), String> {
     let minutes = interval_minutes.clamp(5, MAX_INTERVAL_MINUTES);
+    let cli = ps_single_quote(&cli_path.display().to_string());
+    let db = ps_single_quote(&db_path.display().to_string());
     let tr = format!(
-        "\"{}\" scheduled-run --db \"{}\"",
-        cli_path.display(),
-        db_path.display()
+        "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"& '{cli}' scheduled-run --db '{db}'\""
     );
 
     let output = Command::new("schtasks")

@@ -47,11 +47,16 @@ try {
         }
         'desktop-build' {
             # 前端构建逻辑由桌面 package.json 维护，脚本只负责编排前端与 Rust 两个阶段。
+            # 计划任务通过桌面程序同目录定位 CLI，因此必须与桌面端一起编译。
             Invoke-CheckedCommand 'pnpm' @('--filter', 'chatvault-desktop', 'build') '桌面端前端构建'
+            $cliArguments = @('build', '-p', 'chatvault-cli', '--locked') + @($RemainingArgs)
+            Invoke-CheckedCommand 'cargo' $cliArguments 'CLI 编译'
             $arguments = @('build', '-p', 'chatvault-desktop', '--locked') + @($RemainingArgs)
             Invoke-CheckedCommand 'cargo' $arguments '桌面端 Rust 编译'
         }
         'desktop-dev' {
+            # 先编译 CLI，保证 target/debug 与桌面 exe 同目录，定时任务才能在开发环境注册。
+            Invoke-CheckedCommand 'cargo' @('build', '-p', 'chatvault-cli', '--locked') 'CLI 编译'
             # 让 Tauri 及其 Vite/Cargo 子进程继承已校验的 MSVC、SDK 和 SQLite 环境。
             $arguments = @('--filter', 'chatvault-desktop', 'tauri', 'dev') + @($RemainingArgs)
             Invoke-CheckedCommand 'pnpm' $arguments '桌面端开发服务'

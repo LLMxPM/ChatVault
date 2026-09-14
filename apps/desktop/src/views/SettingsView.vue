@@ -58,7 +58,7 @@
             {{ form.boundVaultId }}
           </p>
           <p v-else class="mt-1 text-cv-caption text-cv-text-3">
-            填好 Vault ID 与 WebDAV 并保存后，首次归档会自动建立关联。
+            填好 Vault ID 与 WebDAV 并保存后，首次运行任务会自动建立关联。
           </p>
         </div>
 

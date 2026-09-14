@@ -1,7 +1,7 @@
 <!-- UiBadge：状态徽章 -->
 <template>
   <span
-    class="inline-flex items-center rounded-cv px-1.5 py-0.5 text-cv-caption font-medium"
+    class="inline-flex shrink-0 items-center whitespace-nowrap rounded-cv px-1.5 py-0.5 text-cv-caption font-medium"
     :class="toneClass"
   >
     <slot />

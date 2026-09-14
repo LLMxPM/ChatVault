@@ -6,6 +6,7 @@ use chatvault_core::models::{
 };
 use chatvault_sync::archive_pending_with_progress;
 use chatvault_sync::NoopProgressSink;
+use std::path::Path;
 
 /// 定时任务：读取本地设置，增量扫描采集目录并归档到 WebDAV，并写入运行日志
 pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
@@ -25,6 +26,8 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
         .unwrap_or_else(|| "[]".to_string());
     let collect_sources: Vec<CollectSource> =
         serde_json::from_str(&collect_sources_raw).context("解析采集源配置失败")?;
+    // 与桌面「立即运行」共用账号勾选：None=从未配置（全选）；空数组=全部取消。
+    let selected_accounts = load_selected_accounts(&db)?;
     let scan_started_ms = Utc::now().timestamp_millis();
 
     let webdav_configured = !webdav_url.trim().is_empty();
@@ -52,6 +55,7 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
                 &mut db,
                 &device_id,
                 &source.path,
+                selected_accounts.as_deref(),
                 scan_started_ms,
                 source.enable_videos,
                 &mut indexed,
@@ -417,12 +421,51 @@ fn finish_partial_scheduled_run(
     Ok(())
 }
 
+/// 桌面持久化的微信账号勾选项；字段与前端 collect_selected_accounts 一致。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectedAccount {
+    source_root: String,
+    source_account_id: String,
+}
+
+/// 读取账号勾选：设置缺失或 null 表示从未配置（全选）。
+fn load_selected_accounts(db: &Database) -> Result<Option<Vec<SelectedAccount>>> {
+    let Some(raw) = db.get_setting("collect_selected_accounts")? else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "null" {
+        return Ok(None);
+    }
+    let accounts: Vec<SelectedAccount> =
+        serde_json::from_str(trimmed).context("解析账号勾选配置失败")?;
+    Ok(Some(accounts))
+}
+
+/// 判断微信账号是否在勾选范围内；selected 为 None 时全选。
+fn is_selected_account(
+    selected: Option<&[SelectedAccount]>,
+    root: &Path,
+    account_id: &str,
+) -> bool {
+    let Some(targets) = selected else {
+        return true;
+    };
+    let root_key = chatvault_core::normalize_scan_key(&root.to_string_lossy());
+    targets.iter().any(|target| {
+        target.source_account_id == account_id
+            && chatvault_core::normalize_scan_key(&target.source_root) == root_key
+    })
+}
+
 /// 按微信 4.x 适配器扫描一个配置的根目录。
 #[allow(clippy::too_many_arguments)]
 fn scan_wechat_source(
     db: &mut Database,
     device_id: &str,
     root_path: &str,
+    selected_accounts: Option<&[SelectedAccount]>,
     scan_started_ms: i64,
     enable_videos: bool,
     indexed: &mut usize,
@@ -436,6 +479,13 @@ fn scan_wechat_source(
     }
     let accounts = WeChat4Detector::find_accounts(&root)?;
     for acc in accounts {
+        if !is_selected_account(selected_accounts, &root, &acc.source_account_id) {
+            println!(
+                "[*] 跳过未勾选微信账号 [{}]",
+                acc.source_account_id
+            );
+            continue;
+        }
         println!("[*] 扫描微信账号 [{}]", acc.source_account_id);
 
         // 媒体根 1: msg/file
