@@ -78,9 +78,7 @@ export function useCollectSources() {
     if (source.status === "missing") return "目录可能已被移动或删除，可重新选择目录。";
     if (source.status === "error") return source.errorMessage || "请确认目录类型正确后重试。";
     if (source.sourceType === "wechat-windows-4") {
-      return source.accounts.length
-        ? `识别到 ${source.accounts.length} 个微信账号`
-        : "目录有效，但暂未发现微信账号。";
+      return source.accounts.length ? "" : "目录有效，但暂未发现微信账号。";
     }
     return "递归扫描该目录中的附件文件。";
   }

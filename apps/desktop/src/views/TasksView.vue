@@ -149,17 +149,11 @@
                   <p class="mt-1 truncate font-mono text-cv-caption text-cv-text" :title="displayPath(source.path)">
                     {{ displayPath(source.path) }}
                   </p>
-                  <p class="mt-0.5 text-cv-caption text-cv-text-3">{{ sourceStatusDetail(source) }}</p>
+                  <p v-if="sourceStatusDetail(source)" class="mt-0.5 text-cv-caption text-cv-text-3">
+                    {{ sourceStatusDetail(source) }}
+                  </p>
                 </div>
                 <div class="flex shrink-0 items-center gap-1">
-                  <UiButton
-                    v-if="source.sourceType === 'wechat-windows-4' && source.accounts.length"
-                    size="sm"
-                    variant="ghost"
-                    @click="toggleAccountsExpanded(sourceKey(source))"
-                  >
-                    {{ isAccountsExpanded(sourceKey(source)) ? "收起账号" : "勾选账号" }}
-                  </UiButton>
                   <UiButton
                     size="sm"
                     variant="ghost"
@@ -189,7 +183,7 @@
               </div>
 
               <div
-                v-if="source.sourceType === 'wechat-windows-4' && source.accounts.length && isAccountsExpanded(sourceKey(source))"
+                v-if="source.sourceType === 'wechat-windows-4' && source.accounts.length"
                 class="border-t border-cv-border px-3 py-2"
               >
                 <div class="grid gap-1 sm:grid-cols-2">
@@ -273,16 +267,11 @@
                 :disabled="running"
               />
               <span class="min-w-0">
-                <span class="block text-cv-body font-medium text-cv-text-2">本次强制全量扫描</span>
+                <span class="block text-cv-body font-medium text-cv-text-2">执行一次全量扫描</span>
                 <span class="mt-0.5 block text-cv-caption text-cv-text-3">忽略增量记录，重新检查全部附件</span>
               </span>
             </label>
 
-            <div class="border-t border-cv-border pt-3">
-              <p class="text-cv-caption text-cv-text-3">
-                主操作在页头「立即运行」；运行中可在此页随时结束。
-              </p>
-            </div>
           </div>
         </UiCard>
       </div>
@@ -352,126 +341,154 @@
           >
             暂无运行记录，执行一次「立即运行」后可在此回看。
           </p>
-          <div v-else class="space-y-2">
-            <div
-              v-for="run in runs"
-              :key="run.runId"
-              class="rounded-cv border border-cv-border"
-            >
-              <button
-                type="button"
-                class="grid w-full grid-cols-[minmax(0,1fr)] items-center gap-2 px-3 py-2 text-left hover:bg-cv-surface-2 md:grid-cols-[7.5rem_5rem_3.5rem_minmax(0,1fr)_4rem_4rem_2.5rem]"
-                @click="toggleRunDetail(run.runId)"
-              >
-                <span class="text-cv-caption text-cv-text-2">{{ formatDateTime(run.startedAt, { compact: true }) }}</span>
-                <span>
-                  <UiBadge :tone="runStatusTone(run.status)">{{ runStatusLabel(run.status) }}</UiBadge>
-                </span>
-                <span class="text-cv-caption text-cv-text-3">
-                  {{ run.triggerSource === "schedule" ? "定时" : "手动" }}
-                </span>
-                <span
-                  class="min-w-0 truncate text-cv-caption text-cv-text"
-                  :title="run.errorMessage || runSummaryText(run)"
-                >
-                  {{ runSummaryText(run) }}
-                </span>
-                <span v-if="run.failedItems > 0" class="text-cv-caption text-cv-danger">
-                  失败 {{ run.failedItems }}
-                </span>
-                <span v-else class="hidden md:block" />
-                <span class="text-cv-caption text-cv-text-3">
-                  {{ run.durationMs != null ? formatDurationMs(run.durationMs) : "—" }}
-                </span>
-                <span class="text-right text-cv-caption text-cv-text-3">
-                  {{ expandedRunId === run.runId ? "收起" : "详情" }}
-                </span>
-              </button>
-
-              <div v-if="expandedRunId === run.runId" class="border-t border-cv-border px-3 py-2.5">
-                <p v-if="detailLoading" class="text-cv-caption text-cv-text-3">加载中…</p>
-                <template v-else-if="detail">
-                  <div class="mb-3 flex flex-wrap items-center gap-1.5">
-                    <template v-for="st in visibleStages(detail.stages)" :key="st.stage">
-                      <span
-                        class="inline-flex items-center gap-1 rounded-cv bg-cv-surface-2 px-2 py-1 text-cv-caption"
-                        :title="st.message || ''"
-                      >
-                        <span class="text-cv-text-2">{{ stageLabel(st.stage) }}</span>
-                        <span :class="stageStatusClass(st.status)">{{ stageStatusLabel(st.status) }}</span>
-                        <span v-if="st.durationMs != null" class="text-cv-text-3">
-                          · {{ formatDurationMs(st.durationMs) }}
-                        </span>
-                      </span>
-                    </template>
-                  </div>
-
-                  <div class="mb-2 flex flex-wrap items-center gap-2">
-                    <span class="text-cv-caption text-cv-text-2">异常明细</span>
-                    <div class="w-32">
-                      <UiSelect v-model="itemStatusFilter">
-                        <option value="">全部</option>
-                        <option value="failed">上传失败</option>
-                        <option value="missing">本地缺失</option>
-                      </UiSelect>
-                    </div>
-                    <span class="text-cv-caption text-cv-text-3">共 {{ filteredDetailItems.length }} 条</span>
-                  </div>
-
-                  <div v-if="filteredDetailItems.length" class="max-h-48 overflow-auto rounded-cv border border-cv-border">
-                    <table class="w-full text-left text-cv-caption">
-                      <thead class="sticky top-0 border-b border-cv-border bg-cv-surface-2 text-cv-text-2">
-                        <tr>
-                          <th class="px-2 py-1.5 font-medium">文件</th>
-                          <th class="w-24 px-2 py-1.5 font-medium">状态</th>
-                          <th class="px-2 py-1.5 font-medium">原因</th>
-                          <th class="w-36 px-2 py-1.5 font-medium">操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr
-                          v-for="item in filteredDetailItems"
-                          :key="item.itemId"
-                          class="border-b border-cv-border/60 last:border-0"
+          <div v-else class="max-h-80 overflow-auto rounded-cv border border-cv-border">
+            <table class="w-full table-fixed text-left text-cv-caption">
+              <thead class="sticky top-0 border-b border-cv-border bg-cv-surface-2 text-cv-text-2">
+                <tr>
+                  <th class="w-20 px-2.5 py-2 font-medium">时间</th>
+                  <th class="w-24 px-2.5 py-2 font-medium">状态</th>
+                  <th class="w-16 px-2.5 py-2 font-medium">触发</th>
+                  <th class="px-2.5 py-2 font-medium">结果</th>
+                  <th class="w-16 px-2.5 py-2 font-medium">失败</th>
+                  <th class="w-20 px-2.5 py-2 font-medium">耗时</th>
+                  <th class="w-14 px-2.5 py-2 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <template v-for="run in runs" :key="run.runId">
+                  <tr
+                    class="cursor-pointer border-b border-cv-border/60 hover:bg-cv-surface-2"
+                    :class="expandedRunId === run.runId ? 'bg-cv-surface-2' : ''"
+                    @click="toggleRunDetail(run.runId)"
+                  >
+                    <td class="truncate px-2.5 py-2 text-cv-text-2">
+                      {{ formatDateTime(run.startedAt, { compact: true }) }}
+                    </td>
+                    <td class="px-2.5 py-2">
+                      <UiBadge :tone="runStatusTone(run.status)">{{ runStatusLabel(run.status) }}</UiBadge>
+                    </td>
+                    <td class="px-2.5 py-2 text-cv-text-3">
+                      {{ run.triggerSource === "schedule" ? "定时" : "手动" }}
+                    </td>
+                    <td
+                      class="truncate px-2.5 py-2 text-cv-text"
+                      :title="run.errorMessage || runSummaryText(run)"
+                    >
+                      {{ runSummaryText(run) }}
+                    </td>
+                    <td class="px-2.5 py-2" :class="run.failedItems > 0 ? 'text-cv-danger' : 'text-cv-text-3'">
+                      {{ run.failedItems > 0 ? run.failedItems : "—" }}
+                    </td>
+                    <td class="px-2.5 py-2 text-cv-text-3">
+                      {{ run.durationMs != null ? formatDurationMs(run.durationMs) : "—" }}
+                    </td>
+                    <td class="px-2.5 py-2 text-right text-cv-text-3">
+                      <ChevronDown
+                        v-if="expandedRunId === run.runId"
+                        class="ml-auto h-3.5 w-3.5"
+                      />
+                      <ChevronRight v-else class="ml-auto h-3.5 w-3.5" />
+                    </td>
+                  </tr>
+                  <tr v-if="expandedRunId === run.runId">
+                    <td colspan="7" class="border-b border-cv-border bg-cv-surface px-2.5 py-2.5">
+                      <p v-if="detailLoading" class="text-cv-caption text-cv-text-3">加载中…</p>
+                      <template v-else-if="detail">
+                        <!-- 行上已有总状态/耗时；这里只补充阶段耗时与非成功状态 -->
+                        <div
+                          v-if="visibleStages(detail.stages).length"
+                          class="flex flex-wrap items-center gap-x-3 gap-y-1 text-cv-caption text-cv-text-3"
                         >
-                          <td class="max-w-[220px] truncate px-2 py-1.5 text-cv-text" :title="item.name">
-                            {{ item.name }}
-                          </td>
-                          <td class="px-2 py-1.5">
-                            <UiBadge :tone="itemStatusTone(item.status)">
-                              {{ itemStatusLabel(item.status) }}
-                            </UiBadge>
-                          </td>
-                          <td
-                            class="max-w-[240px] truncate px-2 py-1.5 text-cv-text-3"
-                            :title="item.errorMessage || item.errorCode || ''"
+                          <span
+                            v-for="st in visibleStages(detail.stages)"
+                            :key="st.stage"
+                            :title="st.message || ''"
                           >
-                            {{ item.errorMessage || item.errorCode || "—" }}
-                          </td>
-                          <td class="px-2 py-1.5">
-                            <div class="flex gap-1">
-                              <UiButton
-                                v-if="item.taskId"
-                                size="sm"
-                                variant="secondary"
-                                @click="requeue(item.taskId!)"
-                              >
-                                重新入队
-                              </UiButton>
-                              <UiButton size="sm" variant="ghost" @click="goToLibraryWithQuery(item.name)">
-                                文件库
-                              </UiButton>
+                            <span class="text-cv-text-2">{{ stageLabel(st.stage) }}</span>
+                            <template v-if="st.status !== 'success'">
+                              <span class="mx-0.5">·</span>
+                              <span :class="stageStatusClass(st.status)">{{ stageStatusLabel(st.status) }}</span>
+                            </template>
+                            <span v-if="st.durationMs != null" class="ml-1">{{ formatDurationMs(st.durationMs) }}</span>
+                          </span>
+                        </div>
+
+                        <template v-if="detail.items.length">
+                          <div class="mt-2.5 mb-1.5 flex flex-wrap items-center gap-2">
+                            <span class="text-cv-text-2">异常明细</span>
+                            <div class="w-28">
+                              <UiSelect v-model="itemStatusFilter">
+                                <option value="">全部</option>
+                                <option value="failed">上传失败</option>
+                                <option value="missing">本地缺失</option>
+                              </UiSelect>
                             </div>
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                  <p v-else class="text-cv-caption text-cv-text-3">无异常明细</p>
+                            <span class="text-cv-text-3">共 {{ filteredDetailItems.length }} 条</span>
+                          </div>
+                          <div v-if="filteredDetailItems.length" class="max-h-40 overflow-auto rounded-cv border border-cv-border">
+                            <table class="w-full text-left text-cv-caption">
+                              <thead class="sticky top-0 border-b border-cv-border bg-cv-surface-2 text-cv-text-2">
+                                <tr>
+                                  <th class="px-2 py-1.5 font-medium">文件</th>
+                                  <th class="w-24 px-2 py-1.5 font-medium">状态</th>
+                                  <th class="px-2 py-1.5 font-medium">原因</th>
+                                  <th class="w-36 px-2 py-1.5 font-medium">操作</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                <tr
+                                  v-for="item in filteredDetailItems"
+                                  :key="item.itemId"
+                                  class="border-b border-cv-border/60 last:border-0"
+                                >
+                                  <td class="max-w-[220px] truncate px-2 py-1.5 text-cv-text" :title="item.name">
+                                    {{ item.name }}
+                                  </td>
+                                  <td class="px-2 py-1.5">
+                                    <UiBadge :tone="itemStatusTone(item.status)">
+                                      {{ itemStatusLabel(item.status) }}
+                                    </UiBadge>
+                                  </td>
+                                  <td
+                                    class="max-w-[240px] truncate px-2 py-1.5 text-cv-text-3"
+                                    :title="item.errorMessage || item.errorCode || ''"
+                                  >
+                                    {{ item.errorMessage || item.errorCode || "—" }}
+                                  </td>
+                                  <td class="px-2 py-1.5">
+                                    <div class="flex gap-1">
+                                      <UiButton
+                                        v-if="item.taskId"
+                                        size="sm"
+                                        variant="secondary"
+                                        @click="requeue(item.taskId!)"
+                                      >
+                                        重新入队
+                                      </UiButton>
+                                      <UiButton size="sm" variant="ghost" @click="goToLibraryWithQuery(item.name)">
+                                        文件库
+                                      </UiButton>
+                                    </div>
+                                  </td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </div>
+                          <p v-else class="text-cv-caption text-cv-text-3">无匹配明细</p>
+                        </template>
+                        <p
+                          v-else-if="!visibleStages(detail.stages).length"
+                          class="text-cv-caption text-cv-text-3"
+                        >
+                          无阶段记录
+                        </p>
+                      </template>
+                      <p v-else-if="detailError" class="text-cv-caption text-cv-danger">{{ detailError }}</p>
+                    </td>
+                  </tr>
                 </template>
-                <p v-else-if="detailError" class="text-cv-caption text-cv-danger">{{ detailError }}</p>
-              </div>
-            </div>
+              </tbody>
+            </table>
           </div>
         </div>
 
@@ -542,6 +559,7 @@
 
 <script setup lang="ts">
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from "vue";
+import { ChevronDown, ChevronRight } from "lucide-vue-next";
 import UiButton from "../components/ui/UiButton.vue";
 import UiCard from "../components/ui/UiCard.vue";
 import UiInput from "../components/ui/UiInput.vue";
@@ -623,7 +641,6 @@ const webdavReady = ref(false);
 const webdavConfig = ref<WebdavConfigDto>({ url: "", username: "", password: "", vaultId: "chatvault-default" });
 
 const activeTab = ref<"history" | "queue">("history");
-const expandedSourceKeys = ref<Set<string>>(new Set());
 
 const tasks = ref<UploadTaskDto[]>([]);
 const statusFilter = ref("pending");
@@ -786,17 +803,6 @@ function queueNoteTitle(t: UploadTaskDto) {
   if (t.errorMessage) parts.push(t.errorMessage);
   if (t.retryCount > 0) parts.push(`重试 ${t.retryCount} 次`);
   return parts.join(" · ") || t.originalPath || "";
-}
-
-function isAccountsExpanded(key: string) {
-  return expandedSourceKeys.value.has(key);
-}
-
-function toggleAccountsExpanded(key: string) {
-  const next = new Set(expandedSourceKeys.value);
-  if (next.has(key)) next.delete(key);
-  else next.add(key);
-  expandedSourceKeys.value = next;
 }
 
 function selectedCountInSource(source: CollectSourceLike) {
