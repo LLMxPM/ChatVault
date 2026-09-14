@@ -132,7 +132,8 @@ impl Database {
                 .execute("DELETE FROM known_devices", [])
                 .map_err(|e| ChatVaultError::Database(e.to_string()))?;
 
-            // 新 Vault 尚无远端对象，原 backed_up/paused 之外的任务全部重新排队归档。
+            // 新 Vault 尚无远端对象：除 paused 外全部重新排队（含原先 backed_up），
+            // 避免在新 Vault 上误以为已完成备份。
             let requeued_uploads = db
                 .conn
                 .execute(

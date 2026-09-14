@@ -92,6 +92,26 @@ fn purge_requires_hidden_and_removes_records() {
     assert!(db.restore_object("dev-a", &object_id).is_err());
 }
 
+/// purge 后默认进入待远端清理列表；标记成功后不再重复。
+#[test]
+fn purge_tracks_pending_remote_cleanup() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut db, object_id) = ingest_one(dir.path(), "r.txt", b"residual");
+    db.hide_object("dev-a", &object_id).unwrap();
+    db.purge_object("dev-a", &object_id).unwrap();
+    assert_eq!(db.count_pending_remote_purges().unwrap(), 1);
+    let pending = db.list_pending_remote_purges(10).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].object_id, object_id);
+    assert!(!pending[0].hash.is_empty());
+
+    db.mark_remote_purged_cleaned(&object_id).unwrap();
+    assert_eq!(db.count_pending_remote_purges().unwrap(), 0);
+    assert!(db.list_pending_remote_purges(10).unwrap().is_empty());
+    // 幂等：重复标记不报错
+    db.mark_remote_purged_cleaned(&object_id).unwrap();
+}
+
 #[test]
 fn purge_allows_reingest_same_content() {
     let dir = tempfile::tempdir().unwrap();

@@ -40,6 +40,13 @@ impl<'a> RemoteVerifier<'a> {
     pub async fn verify_remote_size(&self, remote_path: &str, expected_hex: &str) -> Result<u64> {
         let clean_expected = expected_hex.trim_start_matches("blake3:");
         let resp = self.client.get_stream(remote_path).await?;
+        if !resp.status().is_success() {
+            return Err(ChatVaultError::WebDav(format!(
+                "回读远端对象 {} 失败: 状态码 {}",
+                remote_path,
+                resp.status()
+            )));
+        }
         let mut stream = resp.bytes_stream();
 
         let mut hasher = blake3::Hasher::new();

@@ -53,6 +53,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::library::library_hide_objects,
             commands::library::library_restore_objects,
             commands::library::library_purge_objects,
+            commands::library::count_pending_remote_purges,
+            commands::library::cleanup_purge_remote,
             commands::library::reclaim_cache_now,
             commands::sources::list_source_accounts,
             commands::sources::list_source_conversations,

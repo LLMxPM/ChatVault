@@ -1,7 +1,12 @@
 // ChatVault 缓存回收：保护未完成归档的引用，仅删除受控目录内的内容对象。
 use crate::{cache_policy::MIB, Database};
 use chatvault_core::error::{ChatVaultError, Result};
-use std::{fs, time::SystemTime};
+use chatvault_core::is_under_root;
+use chatvault_core::models::CollectSource;
+use std::{fs, path::Path, time::SystemTime};
+
+/// 采集源设置键，与桌面端 setting_keys::COLLECT_SOURCES 一致。
+const COLLECT_SOURCES_KEY: &str = "collect_sources";
 
 impl Database {
     /// 清理崩溃后遗留的系统打开副本；只处理超过一天的普通文件，避免误删正在打开的内容。
@@ -217,14 +222,44 @@ impl Database {
         Ok((true, released))
     }
 
+    /// 读取已配置采集源根目录（空路径忽略）。
+    fn collect_source_roots(&self) -> Result<Vec<String>> {
+        let raw = self
+            .get_setting(COLLECT_SOURCES_KEY)?
+            .unwrap_or_else(|| "[]".to_string());
+        let sources: Vec<CollectSource> =
+            serde_json::from_str(&raw).map_err(|e| ChatVaultError::Internal(e.to_string()))?;
+        Ok(sources
+            .into_iter()
+            .map(|s| s.path)
+            .filter(|p| !p.trim().is_empty())
+            .collect())
+    }
+
     /// 删除内容对象对应的本机原文件与缓存副本，并移除 local_files 映射。
+    ///
+    /// 职责: 在完成远端归档与元数据发布的前提下，清理本机原文件与受控副本。
     /// 返回 (deleted_originals, deleted_cache, released_bytes)。路径不存在视为成功清理。
+    ///
+    /// 关键约束:
+    ///   - 未完成归档/未发布元数据时拒绝删除，避免唯一副本丢失
+    ///   - 原路径必须落在已配置采集源根之下（有采集源配置时）
+    ///   - 缓存路径必须落在受控 staging 目录之下
+    ///   - 先全量校验再删除；删除失败时已删文件对应映射仍会提交，避免索引悬空
     pub fn delete_object_local_files(&mut self, object_id: &str) -> Result<(usize, usize, u64)> {
         let staging_dir = self.staging_dir.clone();
+        let allowed_roots = self.collect_source_roots()?;
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(db_error)?;
+
+        if !Self::object_cache_releasable(&tx, object_id)? {
+            return Err(ChatVaultError::Internal(
+                "尚未完成远端归档与元数据同步，拒绝删除本机原文件".into(),
+            ));
+        }
+
         let mut rows = {
             let mut stmt = tx
                 .prepare(
@@ -250,9 +285,44 @@ impl Database {
             list
         };
 
+        // 路径白名单校验：在触碰磁盘前全部完成，任一越界即中止。
+        let staging_str = staging_dir.to_string_lossy().to_string();
+        for (_, original_path, cache_path) in &rows {
+            let original = original_path.trim();
+            if !original.is_empty() {
+                if is_under_root(original, &staging_str) {
+                    return Err(ChatVaultError::Internal(
+                        "原文件路径落在受控缓存目录内，拒绝删除".into(),
+                    ));
+                }
+                if !allowed_roots.is_empty()
+                    && !allowed_roots
+                        .iter()
+                        .any(|root| is_under_root(original, root))
+                {
+                    return Err(ChatVaultError::Internal(format!(
+                        "原文件路径不在已配置采集目录内，拒绝删除: {original}"
+                    )));
+                }
+            }
+            if let Some(cache) = cache_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if !Self::is_under_staging(cache, &staging_dir) {
+                    return Err(ChatVaultError::Internal(format!(
+                        "缓存路径不在受控目录内，拒绝删除: {cache}"
+                    )));
+                }
+            }
+        }
+
         let mut deleted_originals = 0usize;
         let mut deleted_cache = 0usize;
         let mut released = 0u64;
+        let mut errors: Vec<String> = Vec::new();
+        let mut cleaned_record_ids: Vec<String> = Vec::new();
 
         let hash: Option<String> = tx
             .query_row(
@@ -263,54 +333,111 @@ impl Database {
             .map_err(db_error)?;
         if let Some(hash) = hash {
             let path = staging_dir.join(&hash);
-            if let Ok(meta) = fs::symlink_metadata(&path) {
-                if meta.file_type().is_file() && !meta.file_type().is_symlink() {
-                    match fs::remove_file(&path) {
-                        Ok(()) => {
-                            deleted_cache += 1;
-                            released = released.saturating_add(meta.len());
+            if Self::is_under_staging(&path.to_string_lossy(), &staging_dir) {
+                if let Ok(meta) = fs::symlink_metadata(&path) {
+                    if meta.file_type().is_file() && !meta.file_type().is_symlink() {
+                        match fs::remove_file(&path) {
+                            Ok(()) => {
+                                deleted_cache += 1;
+                                released = released.saturating_add(meta.len());
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(e) => {
+                                errors.push(format!("删除缓存副本失败 {}: {e}", path.display()))
+                            }
                         }
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => return Err(e.into()),
                     }
                 }
             }
         }
 
         for (record_id, original_path, cache_path) in rows.drain(..) {
-            if !original_path.trim().is_empty() {
-                match fs::symlink_metadata(&original_path) {
+            let mut record_ok = true;
+            let original = original_path.trim();
+            if !original.is_empty() {
+                match fs::symlink_metadata(original) {
                     Ok(meta) if meta.file_type().is_file() && !meta.file_type().is_symlink() => {
-                        match fs::remove_file(&original_path) {
+                        match fs::remove_file(original) {
                             Ok(()) => {
                                 deleted_originals += 1;
                                 released = released.saturating_add(meta.len());
                             }
                             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                            Err(e) => return Err(e.into()),
+                            Err(e) => {
+                                record_ok = false;
+                                errors.push(format!("删除原文件失败 {original}: {e}"));
+                            }
                         }
                     }
                     Ok(_) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e.into()),
+                    Err(e) => {
+                        record_ok = false;
+                        errors.push(format!("读取原文件失败 {original}: {e}"));
+                    }
                 }
             }
-            if let Some(cache) = cache_path {
-                if !cache.trim().is_empty() {
-                    if let Ok(meta) = fs::symlink_metadata(&cache) {
+            if let Some(cache) = cache_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if Self::is_under_staging(cache, &staging_dir) {
+                    if let Ok(meta) = fs::symlink_metadata(cache) {
                         if meta.file_type().is_file() && !meta.file_type().is_symlink() {
-                            let _ = fs::remove_file(&cache);
-                            released = released.saturating_add(meta.len());
+                            match fs::remove_file(cache) {
+                                Ok(()) => {
+                                    deleted_cache += 1;
+                                    released = released.saturating_add(meta.len());
+                                }
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                                Err(e) => {
+                                    // 缓存删除失败不阻止映射清理：对象已不再引用本机路径。
+                                    tracing::warn!("删除映射缓存失败 {cache}: {e}");
+                                }
+                            }
                         }
                     }
                 }
             }
-            tx.execute("DELETE FROM local_files WHERE record_id=?1", [&record_id])
+            // 仅清理已成功处理（或本就不存在）的映射，失败记录保留以便重试。
+            if record_ok {
+                cleaned_record_ids.push(record_id);
+            }
+        }
+
+        for record_id in &cleaned_record_ids {
+            tx.execute("DELETE FROM local_files WHERE record_id=?1", [record_id])
                 .map_err(db_error)?;
         }
 
         tx.commit().map_err(db_error)?;
+        if !errors.is_empty() {
+            return Err(ChatVaultError::Internal(format!(
+                "部分本机文件删除失败: {}",
+                errors.join("；")
+            )));
+        }
         Ok((deleted_originals, deleted_cache, released))
+    }
+
+    /// 判断路径是否为受控 staging 目录内的直接子文件（不进入 open/ 等子目录）。
+    fn is_under_staging(path: &str, staging_dir: &Path) -> bool {
+        let path_key = chatvault_core::normalize_scan_key(path);
+        let root_key = chatvault_core::normalize_scan_key(&staging_dir.to_string_lossy());
+        if root_key.is_empty() {
+            return false;
+        }
+        let Some(rest) = path_key.strip_prefix(&format!("{root_key}\\")).or_else(|| {
+            if path_key == root_key {
+                Some("")
+            } else {
+                None
+            }
+        }) else {
+            return false;
+        };
+        !rest.is_empty() && !rest.contains('\\')
     }
 }
 

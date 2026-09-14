@@ -134,14 +134,17 @@ impl<'a> ObjectPublisher<'a> {
             )));
         }
 
-        // 6. MOVE 后复验最终对象可读且哈希一致
+        // 6. MOVE 后复验最终对象可读且哈希一致；损坏占位会阻塞后续重传，先删除再报错。
         if let Err(e) = self
             .verifier
             .verify_remote_hash(&final_path, clean_hash)
             .await
         {
+            if let Err(delete_err) = self.client.delete_resource(&final_path).await {
+                tracing::warn!("清理损坏远端对象失败 {final_path}: {delete_err}");
+            }
             return Err(ChatVaultError::WebDav(format!(
-                "MOVE 后最终对象校验失败: {}",
+                "MOVE 后最终对象校验失败，已尝试清理损坏对象: {}",
                 e
             )));
         }

@@ -186,8 +186,8 @@ pub hidden: bool, // 或 visibility: Option<VisibilityFilter> enum Visible|Hidde
 
 1. 读 object `hash` → `get_object_path(vault_id, hash)`。
 2. WebDAV `DELETE`；404 视为成功。
-3. 远程失败：purge 逻辑状态仍已提交（多端先一致隐藏列表），命令返回「索引已删除，远端清理失败：…」，可对残留对象后续重试或由设置提供「清理已 purge 远端残留」二期再做。  
-   - **V1 策略：purge 命令同步尝试远程删除；失败不回滚本地 journal/索引，错误透出。**
+3. 远程失败：purge 逻辑状态仍已提交（多端先一致隐藏列表），命令返回「索引已删除，远端清理失败：…」。文件库顶部提供「清理网盘残留」入口，对 `remote_cleaned_at IS NULL` 的 purge 对象重试 DELETE（404 视为成功）。成功删除远端后写 `remote_cleaned_at`。
+   - **策略：purge 命令同步尝试远程删除；失败不回滚本地 journal/索引，错误透出，可重试残留。**
 
 注意：内容寻址对象可能曾被其它 records 共享；purge 语义是「这个 library object 不要了」。同 hash 若之后重新入库，会重新上传同一路径。
 
@@ -213,7 +213,9 @@ pub hidden: bool, // 或 visibility: Option<VisibilityFilter> enum Visible|Hidde
 | --- | --- | --- |
 | `library_hide_objects` | `objectIds: string[]` | 批量隐藏；逐个调用 index；汇总成功/失败 |
 | `library_restore_objects` | `objectIds: string[]` | 批量恢复 |
-| `library_purge_objects` | `objectIds: string[]` | 批量彻底删除；**要求均已隐藏**；逐个：本地 purge → 尝试远程 DELETE |
+| `library_purge_objects` | `objectIds: string[]` | 批量彻底删除；**要求均已隐藏**；逐个：本地 purge → 尝试远程 DELETE → 成功则标记 `remote_cleaned_at` |
+| `cleanup_purge_remote` | `limit?: number` | 重试删除待清理的 purge 远端残留 |
+| `count_pending_remote_purges` | — | 待清理残留数量 |
 
 批量结果 DTO 复用现有 `BatchResultDto` 模式。
 

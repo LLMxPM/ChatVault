@@ -419,7 +419,9 @@ async function onPurge() {
       pushToast({
         tone: item?.error ? "warning" : "success",
         title: "已彻底删除",
-        description: item?.error ?? undefined,
+        description: item?.error
+          ? `${item.error}；可在文件库顶部点「清理网盘残留」重试`
+          : undefined,
       });
       emit("changed");
     } else {
@@ -439,7 +441,10 @@ async function onPurge() {
 async function onDeleteLocal() {
   const ok = await confirmAction({
     title: "删除本机原文件",
-    description: `将删除「${props.item.originalName}」的本机原文件与缓存副本。\n不会删除 WebDAV 归档内容。`,
+    description:
+      `将永久删除「${props.item.originalName}」的本机原文件与缓存副本。\n` +
+      "仅当文件已完成网盘归档与元数据同步时才允许删除。\n" +
+      "不会删除 WebDAV 归档内容；若归档尚未完成，后端会拒绝执行。",
     confirmLabel: "删除",
     danger: true,
   });

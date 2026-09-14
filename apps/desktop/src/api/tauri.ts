@@ -164,6 +164,16 @@ export async function libraryPurgeObjects(objectIds: string[]): Promise<BatchRes
   return await invoke<BatchResultDto>("library_purge_objects", { objectIds });
 }
 
+/** 查询仍待远端清理的 purge 对象数量。 */
+export async function countPendingRemotePurges(): Promise<number> {
+  return await invoke<number>("count_pending_remote_purges");
+}
+
+/** 重试删除彻底删除后仍残留的网盘对象。 */
+export async function cleanupPurgeRemote(limit?: number): Promise<BatchResultDto> {
+  return await invoke<BatchResultDto>("cleanup_purge_remote", { limit });
+}
+
 /** 立即回收受控缓存；forceAll 时忽略保留天数与容量。 */
 export async function reclaimCacheNow(forceAll = false): Promise<number> {
   return await invoke<number>("reclaim_cache_now", { forceAll });

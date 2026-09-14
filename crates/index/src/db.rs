@@ -94,7 +94,7 @@ impl Database {
         })
     }
 
-    /// 进程启动时的运行历史维护：异常退出的 running 标记失败，并清理过期记录。
+    /// 进程启动时的运行历史维护：异常退出的 running 标记失败，清理过期记录与过期打开副本。
     ///
     /// 必须只在应用/CLI 启动时调用一次。禁止在 `open`/`get_db` 中调用——
     /// 桌面端每次命令都会新开连接，若在此清理会把进行中的流水线误标为失败。
@@ -106,6 +106,10 @@ impl Database {
         let purged = self.purge_old_task_runs(50, 30)?;
         if purged > 0 {
             tracing::info!("清理过期任务运行记录 {purged} 条");
+        }
+        let open_copies = self.recover_open_cache()?;
+        if open_copies > 0 {
+            tracing::info!("清理过期系统打开副本 {open_copies} 个");
         }
         Ok(())
     }

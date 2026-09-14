@@ -393,7 +393,7 @@ impl WebDavClient {
     ///     输出: `Result<u64>` 写入字节数
     ///     关键约束:
     ///   - 校验失败删除临时文件，不覆盖目标
-    ///   - 目标已存在时覆盖为校验通过的新文件
+    ///   - 目标已存在时直接拒绝，调用方应先选唯一文件名
     pub async fn download_to_path<P: AsRef<Path>>(
         &self,
         remote_path: &str,
@@ -403,6 +403,12 @@ impl WebDavClient {
         use futures_util::StreamExt;
 
         let dest = dest_path.as_ref();
+        if dest.exists() {
+            return Err(ChatVaultError::Internal(format!(
+                "下载目标已存在，拒绝覆盖: {}",
+                dest.display()
+            )));
+        }
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }

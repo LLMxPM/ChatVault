@@ -168,12 +168,14 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
         );
 
         -- 对象彻底删除标记；purge 后同内容可经新 record 再次入库
+        -- remote_cleaned_at: 远端对象删除成功时间；NULL 表示待清理/重试
         CREATE TABLE IF NOT EXISTS object_purges (
             object_id TEXT PRIMARY KEY,
             event_id TEXT NOT NULL,
             logical_clock INTEGER NOT NULL,
             device_id TEXT NOT NULL,
-            purged_at TEXT NOT NULL
+            purged_at TEXT NOT NULL,
+            remote_cleaned_at TEXT
         );
 
         -- 12. 远端已知设备注册表
@@ -246,6 +248,12 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
         "#,
     )
     .map_err(|e| ChatVaultError::Database(format!("执行表结构初始化失败: {}", e)))?;
+
+    // 已有库补充远端清理时间列；列已存在时忽略。
+    let _ = conn.execute(
+        "ALTER TABLE object_purges ADD COLUMN remote_cleaned_at TEXT",
+        [],
+    );
 
     Ok(())
 }

@@ -34,6 +34,15 @@
           <span>去重节省 {{ stats.formattedSavedBytes }}</span>
         </template>
         <UiButton size="sm" variant="secondary" @click="showSources = true">来源标注</UiButton>
+        <UiButton
+          v-if="pendingRemotePurges > 0"
+          size="sm"
+          variant="secondary"
+          :loading="batchBusy === 'purge-remote'"
+          @click="handleCleanupPurgeRemote"
+        >
+          清理网盘残留 {{ pendingRemotePurges }}
+        </UiButton>
       </div>
     </div>
 
@@ -352,6 +361,8 @@ import {
   libraryPurgeObjects,
   listSourceAccounts,
   getVaultStats,
+  countPendingRemotePurges,
+  cleanupPurgeRemote,
 } from "../api/tauri";
 import { pushToast } from "../composables/useToast";
 import { confirmAction } from "../composables/useConfirm";
@@ -387,6 +398,8 @@ const showSources = ref(false);
 const selectedItem = ref<FileObjectViewDto | null>(null);
 const selectedIds = ref(new Set<string>());
 const batchBusy = ref("");
+/** 仍待重试删除的网盘残留对象数 */
+const pendingRemotePurges = ref(0);
 let requestId = 0;
 let debounceTimer: number | undefined;
 
@@ -762,10 +775,40 @@ async function handleBatchPurge() {
   try {
     const result = await libraryPurgeObjects(ids);
     reportBatch("彻底删除完成", result);
+    if (result.failedCount > 0 || result.items.some((i) => i.status === "partial")) {
+      pushToast({
+        tone: "warning",
+        title: "存在网盘残留",
+        description: "部分远端对象清理失败，可稍后点「清理网盘残留」重试。",
+      });
+    }
     await fetchObjects(false);
     await loadMeta();
   } catch (err) {
     pushToast({ tone: "danger", title: "彻底删除失败", description: String(err) });
+  } finally {
+    batchBusy.value = "";
+  }
+}
+
+/** 重试删除彻底删除后仍残留在网盘的对象。 */
+async function handleCleanupPurgeRemote() {
+  const ok = await confirmAction({
+    title: "清理网盘残留",
+    description:
+      `将重试删除 ${pendingRemotePurges.value} 个已彻底删除但仍残留在网盘的内容对象。\n` +
+      "仅删除本应用 Vault 下的内容对象，不会影响其他文件。",
+    confirmLabel: "开始清理",
+    danger: true,
+  });
+  if (!ok) return;
+  batchBusy.value = "purge-remote";
+  try {
+    const result = await cleanupPurgeRemote();
+    reportBatch("网盘残留清理完成", result);
+    await loadMeta();
+  } catch (err) {
+    pushToast({ tone: "danger", title: "清理网盘残留失败", description: String(err) });
   } finally {
     batchBusy.value = "";
   }
@@ -791,7 +834,10 @@ async function handleBatchDeleteLocal() {
   if (ids.length === 0) return;
   const ok = await confirmAction({
     title: "删除本机原文件",
-    description: `将删除已选 ${ids.length} 个文件的本机原文件与缓存副本。\n不会删除 WebDAV 归档内容。`,
+    description:
+      `将永久删除已选 ${ids.length} 个文件的本机原文件与缓存副本。\n` +
+      "仅当文件已完成网盘归档与元数据同步时才允许删除。\n" +
+      "不会删除 WebDAV 归档内容；若归档尚未完成，后端会拒绝执行。",
     confirmLabel: "删除",
     danger: true,
   });
@@ -827,6 +873,11 @@ async function loadMeta() {
     stats.value = await getVaultStats();
   } catch {
     stats.value = null;
+  }
+  try {
+    pendingRemotePurges.value = await countPendingRemotePurges();
+  } catch {
+    pendingRemotePurges.value = 0;
   }
 }
 

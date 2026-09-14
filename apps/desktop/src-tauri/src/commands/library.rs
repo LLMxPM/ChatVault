@@ -828,6 +828,7 @@ pub async fn release_object_cache(
 }
 
 /// 删除选中对象的本机原文件与缓存映射
+/// 后端强制：未完成归档/未发布元数据、路径不在采集源内时拒绝执行。
 #[tauri::command]
 pub async fn delete_object_local_files(
     object_ids: Vec<String>,
@@ -968,8 +969,14 @@ pub async fn library_purge_objects(
                 let mut remote_error: Option<String> = None;
                 if let Some(client) = client.as_ref() {
                     let remote_path = get_object_path(&vault_id, &outcome.hash);
-                    if let Err(e) = client.delete_resource(&remote_path).await {
-                        remote_error = Some(format!("索引已删除，远端清理失败: {e}"));
+                    match client.delete_resource(&remote_path).await {
+                        Ok(()) => {
+                            // 仅绑定 WebDAV 且远端删除成功时标记已清理，便于后续重试残留。
+                            let _ = db.mark_remote_purged_cleaned(object_id);
+                        }
+                        Err(e) => {
+                            remote_error = Some(format!("索引已删除，远端清理失败: {e}"));
+                        }
                     }
                 }
                 if let Some(err) = remote_error {
@@ -1013,6 +1020,90 @@ pub async fn library_purge_objects(
     }
     Ok(BatchResultDto {
         total: object_ids.len(),
+        ok_count,
+        failed_count,
+        released_bytes: 0,
+        items,
+    })
+}
+
+/// 查询仍待远端清理的 purge 对象数量
+#[tauri::command]
+pub async fn count_pending_remote_purges(
+    state: State<'_, AppState>,
+) -> std::result::Result<usize, String> {
+    let db = state.get_db().map_err(|e| e.to_string())?;
+    db.count_pending_remote_purges().map_err(|e| e.to_string())
+}
+
+/// 重试删除彻底删除后仍残留的 WebDAV 远端对象（DELETE 幂等，404 视为成功）
+#[tauri::command]
+pub async fn cleanup_purge_remote(
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> std::result::Result<BatchResultDto, String> {
+    let mut db = state.get_db().map_err(|e| e.to_string())?;
+    let vault_id = state.vault_id().map_err(|e| e.to_string())?;
+    let webdav_url = db
+        .get_setting(setting_keys::WEBDAV_URL)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let webdav_username = db
+        .get_setting(setting_keys::WEBDAV_USERNAME)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let password = if webdav_url.trim().is_empty() {
+        None
+    } else {
+        resolve_webdav_password(&webdav_url, &webdav_username, None)
+    };
+    if webdav_url.trim().is_empty() || password.is_none() {
+        return Err("尚未配置 WebDAV，无法清理网盘残留".into());
+    }
+    let client = WebDavClient::new(WebDavConfig {
+        base_url: webdav_url,
+        username: Some(webdav_username),
+        password,
+    })
+    .map_err(|e| e.to_string())?;
+
+    let pending = db
+        .list_pending_remote_purges(limit.unwrap_or(200).clamp(1, 1000))
+        .map_err(|e| e.to_string())?;
+    let mut items = Vec::with_capacity(pending.len());
+    let mut ok_count = 0usize;
+    let mut failed_count = 0usize;
+    for entry in pending {
+        let remote_path = get_object_path(&vault_id, &entry.hash);
+        match client.delete_resource(&remote_path).await {
+            Ok(()) => {
+                db.mark_remote_purged_cleaned(&entry.object_id)
+                    .map_err(|e| e.to_string())?;
+                ok_count += 1;
+                items.push(BatchItemResultDto {
+                    object_id: entry.object_id.clone(),
+                    original_name: String::new(),
+                    status: "ok".into(),
+                    saved_path: None,
+                    released_bytes: Some(entry.size),
+                    error: None,
+                });
+            }
+            Err(e) => {
+                failed_count += 1;
+                items.push(BatchItemResultDto {
+                    object_id: entry.object_id.clone(),
+                    original_name: String::new(),
+                    status: "failed".into(),
+                    saved_path: None,
+                    released_bytes: None,
+                    error: Some(e.to_string()),
+                });
+            }
+        }
+    }
+    Ok(BatchResultDto {
+        total: items.len(),
         ok_count,
         failed_count,
         released_bytes: 0,

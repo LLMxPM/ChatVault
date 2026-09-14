@@ -40,4 +40,4 @@ pub use task_runs::{
     TaskRunStageRow,
 };
 pub use upload_queue::PendingUpload;
-pub use visibility::PurgeOutcome;
+pub use visibility::{PendingRemotePurge, PurgeOutcome};

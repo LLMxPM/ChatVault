@@ -16,6 +16,14 @@ pub struct PurgeOutcome {
     pub had_upload_tasks: bool,
 }
 
+/// 待重试远端清理的 purge 对象。
+#[derive(Debug, Clone)]
+pub struct PendingRemotePurge {
+    pub object_id: String,
+    pub hash: String,
+    pub size: u64,
+}
+
 impl Database {
     /// 对象是否已彻底删除
     pub fn object_is_purged(&self, object_id: &str) -> Result<bool> {
@@ -213,6 +221,59 @@ impl Database {
                 had_upload_tasks,
             })
         })
+    }
+
+    /// 列出仍待远端清理的 purge 对象（remote_cleaned_at 为空且哈希仍可解析）。
+    pub fn list_pending_remote_purges(&self, limit: usize) -> Result<Vec<PendingRemotePurge>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT p.object_id, o.hash, o.size
+                 FROM object_purges p
+                 JOIN file_objects o ON o.object_id = p.object_id
+                 WHERE p.remote_cleaned_at IS NULL
+                 ORDER BY p.purged_at
+                 LIMIT ?1",
+            )
+            .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([limit as i64], |row| {
+                Ok(PendingRemotePurge {
+                    object_id: row.get(0)?,
+                    hash: row.get(1)?,
+                    size: row.get::<_, i64>(2)?.max(0) as u64,
+                })
+            })
+            .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        let mut list = Vec::new();
+        for row in rows {
+            list.push(row.map_err(|e| ChatVaultError::Database(e.to_string()))?);
+        }
+        Ok(list)
+    }
+
+    /// 统计仍待远端清理的 purge 对象数量。
+    pub fn count_pending_remote_purges(&self) -> Result<usize> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM object_purges WHERE remote_cleaned_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        Ok(count.max(0) as usize)
+    }
+
+    /// 标记 purge 对象的远端内容已清理成功。
+    pub fn mark_remote_purged_cleaned(&mut self, object_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE object_purges SET remote_cleaned_at = ?2 WHERE object_id = ?1 AND remote_cleaned_at IS NULL",
+                params![object_id, Utc::now().to_rfc3339()],
+            )
+            .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        Ok(())
     }
 
     /// 应用远端 ObjectHidden

@@ -387,7 +387,7 @@ async function onResetVaultBinding() {
       tone: "success",
       title: "已清空关联",
       description: report.requeuedUploads
-        ? `有 ${report.requeuedUploads} 个文件会重新备份到新 Vault`
+        ? `${report.requeuedUploads} 个文件（含原先已备份的）将重新备份到新 Vault，完成前请勿删除本机原文件`
         : "现在可以改用新的 Vault ID 了",
     });
   } catch (err) {
