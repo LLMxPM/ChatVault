@@ -36,6 +36,11 @@ export function formatDateTime(
   return `${y}-${mo}-${d} ${time}`;
 }
 
+/** 去掉 Windows 扩展路径前缀等噪音，便于用户阅读。 */
+export function displayPath(path: string): string {
+  return path.replace(/^\\\\\?\\/, "");
+}
+
 /** 将毫秒时长格式化为紧凑可读文本，如 `1.2 秒`、`3 分 5 秒`。 */
 export function formatDurationMs(ms?: number | null): string {
   if (ms === null || ms === undefined || Number.isNaN(ms) || ms < 0) return "—";

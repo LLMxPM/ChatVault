@@ -355,7 +355,7 @@ mod tests {
         CollectSource {
             source_type: source_type.to_string(),
             path: path.to_string_lossy().into_owned(),
-            enable_images: true,
+            enable_videos: true,
         }
     }
 

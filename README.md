@@ -6,7 +6,7 @@ ChatVault 是桌面端聊天附件归档与检索工具。优先实现 Windows �
 
 - [产品与实施规划](docs/产品与实施规划.md)：产品定位、桌面功能、技术栈、阶段任务及验收标准。
 - [架构与同步设计](docs/架构与同步设计.md)：模块划分、数据模型、WebDAV 格式、同步与恢复。
-- [微信 4.x 媒体备份完整方案](docs/compose/spec/wechat-4x-media-backup.md)：`msg/video` mp4 采集 + 聊天图片本机离线解密后备份；不读进程内存、不保存或上传微信密钥。业务功能待实施。
+- [微信 4.x 媒体备份完整方案](docs/compose/spec/wechat-4x-media-backup.md)：`msg/video` 下 `.mp4` 本体增量扫描与备份。
 - [开发与构建](docs/开发与构建.md)：本地依赖、开发命令、Windows 构建和 GitHub Actions 流程。
 - [Windows 安装与发布](docs/Windows安装与发布.md)：安装包构建、数据位置、首次使用与卸载。
 

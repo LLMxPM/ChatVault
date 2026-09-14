@@ -8,8 +8,8 @@ export type CollectSourceType = "wechat-windows-4" | "generic-folder";
 export interface CollectSourceDto {
   sourceType: CollectSourceType;
   path: string;
-  /** 微信聊天图片是否启用本机离线解密；非微信来源忽略。 */
-  enableImages?: boolean;
+  /** 微信是否识别视频（msg/video）；非微信来源忽略。默认开启。 */
+  enableVideos?: boolean;
 }
 
 /** 采集源探测快照状态。 */
@@ -38,8 +38,6 @@ export interface WechatAccountDto {
   filesCountEstimated: number;
   /** 视频候选数（msg/video 下的 .mp4） */
   videosCountEstimated: number;
-  /** 图片候选数（msg/attach/**\/Img） */
-  imagesCountEstimated: number;
 }
 
 /** 立即扫描时用于定位微信账号的目录与账号标识。 */
@@ -65,18 +63,6 @@ export interface ScanResultDto {
   totalNewObjects: number;
   totalSkipped: number;
   durationMs: number;
-  /** 图片候选发现数 */
-  imagesDiscovered?: number;
-  /** 图片解密校验成功数 */
-  imagesPrepared?: number;
-  /** 参数不可用数 */
-  imagesParametersUnavailable?: number;
-  /** 未支持格式数 */
-  imagesUnsupported?: number;
-  /** 校验失败数 */
-  imagesInvalid?: number;
-  /** 逻辑图片组数 */
-  imagesLogicalGroups?: number;
 }
 
 /** 内容对象位置状态。 */
@@ -279,7 +265,7 @@ export interface PipelineResultDto {
 }
 
 /**
- * 归档单元列表项（upload_tasks，跨运行单文件归档队列项）
+ * 上传队列项（upload_tasks，跨运行单文件待上传/已校验记录）
  */
 export interface UploadTaskDto {
   taskId: string;

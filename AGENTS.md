@@ -19,7 +19,7 @@ ChatVault 是桌面端聊天附件归档与检索工具，当前优先支持 Win
 | `crates/webdav/` | WebDAV 客户端、能力检测、远端存储与发布校验。 |
 | `crates/sync/` | 归档、同步发布、远端变更应用与恢复；`tests/` 包含恢复测试。 |
 | `crates/cli/` | 命令行入口、参数解析与同步命令。 |
-| `adapters/wechat-windows/` | Windows 微信 4.x 来源适配：目录/账号探测、附件与媒体根解析、图片参数与解密。 |
+| `adapters/wechat-windows/` | Windows 微信 4.x 来源适配：目录/账号探测、附件与视频媒体根解析。 |
 | `adapters/generic-folder/` | 通用文件夹来源适配。 |
 | `docs/` | 产品与实施规划、架构与同步设计、开发构建与安装发布说明、功能规格。 |
 | `scripts/` | 构建等辅助脚本。 |

@@ -1,10 +1,9 @@
 // ChatVault CLI 定时运行与元数据同步入口：使用持久化身份和共享核心。
 use super::*;
 use chatvault_core::models::{
-    CollectSource, TaskRunItemStatus, TaskRunKind, TaskRunStageName, TaskRunStageStatus,
-    TaskRunStatus, GENERIC_FOLDER_SOURCE_TYPE, WECHAT_WINDOWS_4_SOURCE_TYPE,
+    CollectSource, TaskRunKind, TaskRunStageName, TaskRunStageStatus, TaskRunStatus,
+    GENERIC_FOLDER_SOURCE_TYPE, WECHAT_WINDOWS_4_SOURCE_TYPE,
 };
-use chatvault_index::NewTaskRunItem;
 use chatvault_sync::archive_pending_with_progress;
 use chatvault_sync::NoopProgressSink;
 
@@ -54,10 +53,10 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
                 &device_id,
                 &source.path,
                 scan_started_ms,
+                source.enable_videos,
                 &mut indexed,
                 &mut skipped,
                 &mut discovered,
-                source.enable_images,
             )?,
             GENERIC_FOLDER_SOURCE_TYPE => scan_generic_source(
                 &mut db,
@@ -83,30 +82,6 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
         "[*] 候选 {} 个，跳过未变 {}，新入库 {}",
         discovered, skipped, indexed
     );
-
-    // 扫描阶段明细：失败图片候选（仅本轮更新）
-    let run_row = db.get_task_run(&run_id)?.context("运行记录丢失")?;
-    let failed_cands = db.list_failed_image_candidates(200, Some(&run_row.started_at))?;
-    for cand in &failed_cands {
-        db.add_task_run_item(
-            &run_id,
-            &NewTaskRunItem {
-                stage: "scan",
-                record_id: cand.record_id.as_deref(),
-                object_id: None,
-                task_id: None,
-                name: cand
-                    .source_path
-                    .rsplit(['\\', '/'])
-                    .next()
-                    .unwrap_or(&cand.source_path),
-                status: TaskRunItemStatus::DecryptFailed.as_str(),
-                error_code: cand.error_code.as_deref(),
-                error_message: None,
-                size: Some(cand.source_size),
-            },
-        )?;
-    }
 
     db.finish_task_run_stage(
         &run_id,
@@ -449,10 +424,10 @@ fn scan_wechat_source(
     device_id: &str,
     root_path: &str,
     scan_started_ms: i64,
+    enable_videos: bool,
     indexed: &mut usize,
     skipped: &mut usize,
     discovered: &mut usize,
-    enable_images: bool,
 ) -> Result<()> {
     let root = PathBuf::from(root_path);
     if !root.is_dir() {
@@ -477,6 +452,10 @@ fn scan_wechat_source(
         )?;
 
         // 媒体根 2: msg/video
+        if !enable_videos {
+            println!("    [video] 已按采集源配置关闭视频识别");
+            continue;
+        }
         scan_one_media_root(
             db,
             device_id,
@@ -487,18 +466,6 @@ fn scan_wechat_source(
             skipped,
             discovered,
             false,
-        )?;
-
-        // 图片: msg/attach
-        process_scheduled_images(
-            db,
-            device_id,
-            &acc,
-            scan_started_ms,
-            indexed,
-            skipped,
-            discovered,
-            enable_images,
         )?;
     }
     Ok(())
@@ -534,7 +501,6 @@ fn scan_one_media_root(
                 .to_path_buf(),
             files_dir: media_root.to_path_buf(),
             video_dir: media_root.to_path_buf(),
-            images_dir: media_root.to_path_buf(),
         };
         WeChat4Parser::parse_account_videos_since(&fake, since)?
     };
@@ -570,137 +536,8 @@ fn scan_one_media_root(
     Ok(())
 }
 
-/// 处理聊天图片（定时任务路径）
-///
-/// 定时任务始终增量：检查点预筛新/变源文件；失败重试走候选队列。
+/// 扫描一个通用附件目录采集源。
 #[allow(clippy::too_many_arguments)]
-fn process_scheduled_images(
-    db: &mut Database,
-    device_id: &str,
-    acc: &adapter_wechat_windows::WeChatAccount,
-    scan_started_ms: i64,
-    indexed: &mut usize,
-    skipped: &mut usize,
-    discovered: &mut usize,
-    enable_images: bool,
-) -> Result<()> {
-    use adapter_wechat_windows::media::{
-        discover_image_candidates, image_candidate_from_disk, image_candidate_from_stored,
-        prepare_image_candidates, ImageCandidate,
-    };
-
-    let _ = db.recover_pending_image_cache();
-    if !enable_images {
-        println!("    [image] 已按采集源配置关闭聊天图片解密");
-        return Ok(());
-    }
-
-    if !acc.images_dir.is_dir() {
-        return Ok(());
-    }
-    let images_root_s = acc.images_dir.to_string_lossy().to_string();
-    let since = resolve_since(db, &images_root_s)?;
-    let mut to_upsert: Vec<ImageCandidate> =
-        discover_image_candidates(&acc.images_dir, &acc.source_account_id, since);
-    if since.is_some() {
-        for known in db.list_changed_known_files(&images_root_s)? {
-            if let Some(candidate) = image_candidate_from_disk(
-                &acc.images_dir,
-                &acc.source_account_id,
-                &std::path::Path::new(&known.original_path),
-            ) {
-                let key =
-                    chatvault_core::normalize_scan_key(&candidate.source_path.to_string_lossy());
-                let already = to_upsert.iter().any(|c| {
-                    chatvault_core::normalize_scan_key(&c.source_path.to_string_lossy()) == key
-                });
-                if !already {
-                    to_upsert.push(candidate);
-                }
-            }
-        }
-    }
-    for c in &to_upsert {
-        db.upsert_image_candidate(
-            &images_root_s,
-            &acc.source_account_id,
-            &c.source_path.to_string_lossy(),
-            c.file_size as i64,
-            c.modified_time.timestamp_millis(),
-            c.conv_hash.as_deref(),
-            Some(&c.month),
-            Some(&c.normalized_stem),
-            Some(&c.image_group_key),
-        )?;
-    }
-    *discovered += to_upsert.len();
-    db.mark_scan_started(
-        &images_root_s,
-        WECHAT_WINDOWS_4_SOURCE_TYPE,
-        Some(&acc.source_account_id),
-        scan_started_ms,
-    )?;
-
-    db.recover_image_candidates(Some(&acc.source_account_id))?;
-    let pending_rows =
-        db.list_pending_image_candidates(&acc.source_account_id, Utc::now().timestamp_millis())?;
-    let mut pending_candidates: Vec<ImageCandidate> = Vec::new();
-    let mut pending_ids: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for row in &pending_rows {
-        let Some(candidate) = image_candidate_from_stored(
-            &row.source_path,
-            row.source_size,
-            row.source_mtime_ms,
-            row.conv_hash.as_deref(),
-            row.month.as_deref(),
-            row.normalized_stem.as_deref(),
-            row.image_group_key.as_deref(),
-        ) else {
-            continue;
-        };
-        if !candidate.source_path.is_file() {
-            continue;
-        }
-        pending_ids.insert(row.source_path.clone(), row.candidate_id.clone());
-        pending_candidates.push(candidate);
-    }
-    for candidate in &pending_candidates {
-        let path = candidate.source_path.to_string_lossy().to_string();
-        if let Some(id) = pending_ids.get(&path) {
-            db.mark_candidate_preparing(id)?;
-        }
-    }
-    let staging = db.staging_dir();
-    let batch = prepare_image_candidates(pending_candidates, &acc.source_account_id, &staging, 64);
-
-    for item in &batch.prepared {
-        let source_path = item.candidate.source_path.to_string_lossy().to_string();
-        let candidate_id = pending_ids.get(&source_path).cloned();
-        match db.ingest_prepared_content(&item.prepared, device_id, candidate_id.as_deref()) {
-            Ok(IngestResult::Indexed { .. }) => *indexed += 1,
-            Ok(IngestResult::Skipped { .. }) => *skipped += 1,
-            Err(e) => {
-                eprintln!("[-] 图片入库失败: {}", e);
-                if let Some(cid) = candidate_id.as_deref() {
-                    let _ = db.mark_candidate_failed(
-                        cid,
-                        chatvault_core::models::ImageErrorCode::PreparedContentMissing,
-                    );
-                }
-            }
-        }
-    }
-    for failure in &batch.failures {
-        let source_path = failure.candidate.source_path.to_string_lossy().to_string();
-        if let Some(candidate_id) = pending_ids.get(&source_path) {
-            let _ = db.mark_candidate_failed(candidate_id, failure.error_code);
-        }
-    }
-    Ok(())
-}
-
-/// 按通用目录适配器扫描一个配置的附件目录。
 fn scan_generic_source(
     db: &mut Database,
     device_id: &str,

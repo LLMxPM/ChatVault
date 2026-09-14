@@ -6,7 +6,7 @@
 use adapter_generic_folder::GenericFolderParser;
 use adapter_wechat_windows::{WeChat4Detector, WeChat4Parser};
 use anyhow::{Context, Result};
-use chatvault_core::models::{CollectSource, DiscoveredFile, WECHAT_WINDOWS_4_SOURCE_TYPE};
+use chatvault_core::models::DiscoveredFile;
 use chatvault_index::{Database, IngestResult, SearchFilter, SearchService};
 use chatvault_scanner::check_file_stability_sync;
 use chatvault_webdav::{CapabilityDetector, WebDavClient, WebDavConfig};
@@ -112,7 +112,6 @@ fn handle_detect() -> Result<()> {
         println!("       根目录:   {}", acc.root_dir.display());
         println!("       附件目录: {}", acc.files_dir.display());
         println!("       视频目录: {}", acc.video_dir.display());
-        println!("       图片目录: {}", acc.images_dir.display());
 
         // 尝试统计当前文件数
         if let Ok(files) = WeChat4Parser::parse_account_files(acc) {
@@ -151,7 +150,7 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
         WeChat4Detector::validate_root(target).ok()
     };
     if let Some(root) = wechat_root {
-        let configured_images = load_cli_image_setting(&db, &root.to_string_lossy());
+        let enable_videos = load_cli_video_setting(&db, &root.to_string_lossy());
         let accounts = WeChat4Detector::find_accounts(&root)?;
         if accounts.is_empty() {
             println!("未找到可扫描的微信 4.x 账号");
@@ -176,6 +175,10 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
             )?;
 
             // 媒体根 2: msg/video（仅 .mp4）
+            if !enable_videos {
+                println!("    [video] 已按采集源配置关闭视频识别");
+                continue;
+            }
             scan_cli_media_root(
                 &mut db,
                 &device_id,
@@ -188,20 +191,6 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
                 &mut new_object_count,
                 &mut discovered_count,
                 false,
-            )?;
-
-            // 图片: msg/attach
-            process_cli_images(
-                &mut db,
-                &device_id,
-                &acc,
-                full,
-                scan_started_ms,
-                &mut indexed_count,
-                &mut skipped_count,
-                &mut new_object_count,
-                &mut discovered_count,
-                configured_images,
             )?;
         }
     } else {
@@ -261,22 +250,23 @@ fn resolve_scan_since(
     Ok(ms.map(chatvault_index::system_time_from_ms))
 }
 
-/// 从持久化采集源配置读取微信图片开关；直接扫描未配置路径时默认开启。
-fn load_cli_image_setting(db: &Database, root: &str) -> bool {
+/// 从持久化采集源读取视频识别开关；直接扫描未配置路径时默认开启。
+fn load_cli_video_setting(db: &Database, root: &str) -> bool {
     let raw = db
         .get_setting("collect_sources")
         .ok()
         .flatten()
         .unwrap_or_else(|| "[]".to_string());
-    let sources: Vec<CollectSource> = serde_json::from_str(&raw).unwrap_or_default();
+    let sources: Vec<chatvault_core::models::CollectSource> =
+        serde_json::from_str(&raw).unwrap_or_default();
     let key = chatvault_core::normalize_scan_key(root);
     sources
         .into_iter()
         .find(|source| {
-            source.source_type == WECHAT_WINDOWS_4_SOURCE_TYPE
+            source.source_type == chatvault_core::models::WECHAT_WINDOWS_4_SOURCE_TYPE
                 && chatvault_core::normalize_scan_key(&source.path) == key
         })
-        .map(|source| source.enable_images)
+        .map(|source| source.enable_videos)
         .unwrap_or(true)
 }
 
@@ -313,7 +303,6 @@ fn scan_cli_media_root(
                 .to_path_buf(),
             files_dir: media_root.to_path_buf(),
             video_dir: media_root.to_path_buf(),
-            images_dir: media_root.to_path_buf(),
         };
         WeChat4Parser::parse_account_videos_since(&fake_account, since)?
     };
@@ -359,159 +348,6 @@ fn scan_cli_media_root(
     } else {
         println!("[-] 媒体根 {} 存在未完成候选，保留原扫描检查点", root_s);
     }
-    Ok(())
-}
-
-/// 处理账号的聊天图片
-///
-/// `full` 为 true 时忽略检查点全量发现；失败重试始终由候选队列驱动。
-#[allow(clippy::too_many_arguments)]
-fn process_cli_images(
-    db: &mut Database,
-    device_id: &str,
-    acc: &adapter_wechat_windows::WeChatAccount,
-    full: bool,
-    scan_started_ms: i64,
-    indexed_count: &mut usize,
-    skipped_count: &mut usize,
-    new_object_count: &mut usize,
-    discovered_count: &mut usize,
-    enable_images: bool,
-) -> Result<()> {
-    use adapter_wechat_windows::media::{
-        discover_image_candidates, image_candidate_from_disk, image_candidate_from_stored,
-        prepare_image_candidates, ImageCandidate,
-    };
-
-    let _ = db.recover_pending_image_cache();
-    if !enable_images {
-        println!("    [image] 已按采集源配置关闭聊天图片解密");
-        return Ok(());
-    }
-
-    if !acc.images_dir.is_dir() {
-        return Ok(());
-    }
-    let images_root_s = acc.images_dir.to_string_lossy().to_string();
-    let since = resolve_scan_since(db, &images_root_s, full)?;
-    let mut to_upsert: Vec<ImageCandidate> =
-        discover_image_candidates(&acc.images_dir, &acc.source_account_id, since);
-    if since.is_some() {
-        for known in db.list_changed_known_files(&images_root_s)? {
-            if let Some(candidate) = image_candidate_from_disk(
-                &acc.images_dir,
-                &acc.source_account_id,
-                &std::path::Path::new(&known.original_path),
-            ) {
-                let key =
-                    chatvault_core::normalize_scan_key(&candidate.source_path.to_string_lossy());
-                let already = to_upsert.iter().any(|c| {
-                    chatvault_core::normalize_scan_key(&c.source_path.to_string_lossy()) == key
-                });
-                if !already {
-                    to_upsert.push(candidate);
-                }
-            }
-        }
-    }
-    for c in &to_upsert {
-        db.upsert_image_candidate(
-            &images_root_s,
-            &acc.source_account_id,
-            &c.source_path.to_string_lossy(),
-            c.file_size as i64,
-            c.modified_time.timestamp_millis(),
-            c.conv_hash.as_deref(),
-            Some(&c.month),
-            Some(&c.normalized_stem),
-            Some(&c.image_group_key),
-        )?;
-    }
-    println!("    [image] 本次候选 {} 个图片", to_upsert.len());
-    *discovered_count += to_upsert.len();
-    db.mark_scan_started(
-        &images_root_s,
-        "wechat-windows-4",
-        Some(&acc.source_account_id),
-        scan_started_ms,
-    )?;
-
-    db.recover_image_candidates(Some(&acc.source_account_id))?;
-    let pending_rows =
-        db.list_pending_image_candidates(&acc.source_account_id, Utc::now().timestamp_millis())?;
-    let mut pending_candidates: Vec<ImageCandidate> = Vec::new();
-    let mut pending_ids: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for row in &pending_rows {
-        let Some(candidate) = image_candidate_from_stored(
-            &row.source_path,
-            row.source_size,
-            row.source_mtime_ms,
-            row.conv_hash.as_deref(),
-            row.month.as_deref(),
-            row.normalized_stem.as_deref(),
-            row.image_group_key.as_deref(),
-        ) else {
-            continue;
-        };
-        if !candidate.source_path.is_file() {
-            continue;
-        }
-        pending_ids.insert(row.source_path.clone(), row.candidate_id.clone());
-        pending_candidates.push(candidate);
-    }
-    for candidate in &pending_candidates {
-        let path = candidate.source_path.to_string_lossy().to_string();
-        if let Some(id) = pending_ids.get(&path) {
-            db.mark_candidate_preparing(id)?;
-        }
-    }
-
-    let staging = db.staging_dir();
-    let batch = prepare_image_candidates(pending_candidates, &acc.source_account_id, &staging, 64);
-
-    for item in &batch.prepared {
-        let source_path = item.candidate.source_path.to_string_lossy().to_string();
-        let candidate_id = pending_ids.get(&source_path).cloned();
-
-        match db.ingest_prepared_content(&item.prepared, device_id, candidate_id.as_deref()) {
-            Ok(IngestResult::Indexed { is_new_object, .. }) => {
-                *indexed_count += 1;
-                if is_new_object {
-                    *new_object_count += 1;
-                }
-            }
-            Ok(IngestResult::Skipped { .. }) => {
-                *skipped_count += 1;
-            }
-            Err(e) => {
-                eprintln!("[-] 图片入库失败: {}", e);
-                if let Some(cid) = candidate_id.as_deref() {
-                    let _ = db.mark_candidate_failed(
-                        cid,
-                        chatvault_core::models::ImageErrorCode::PreparedContentMissing,
-                    );
-                }
-            }
-        }
-    }
-
-    for failure in &batch.failures {
-        let source_path = failure.candidate.source_path.to_string_lossy().to_string();
-        if let Some(candidate_id) = pending_ids.get(&source_path) {
-            let _ = db.mark_candidate_failed(candidate_id, failure.error_code);
-        }
-    }
-
-    println!(
-        "    [image] 解密成功 {}, 参数不可用 {}, 未支持 {}, 校验失败 {}, 等待稳定 {}",
-        batch.stats.prepared,
-        batch.stats.parameters_unavailable,
-        batch.stats.unsupported_structure + batch.stats.unsupported_payload,
-        batch.stats.invalid_image,
-        batch.stats.waiting_stable
-    );
-
     Ok(())
 }
 

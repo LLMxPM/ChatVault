@@ -49,12 +49,6 @@ impl Database {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let width = p.get("width").and_then(|v| v.as_u64()).map(|v| v as i64);
-        let height = p.get("height").and_then(|v| v.as_u64()).map(|v| v as i64);
-        let frame_count = p
-            .get("frame_count")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as i64);
 
         let tx = self
             .conn
@@ -63,25 +57,9 @@ impl Database {
 
         tx.execute(
             "INSERT OR IGNORE INTO file_objects
-             (object_id, hash, size, mime, extension, width, height, frame_count, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                object_id,
-                hash,
-                size,
-                mime,
-                extension,
-                width,
-                height,
-                frame_count,
-                created_at
-            ],
-        )
-        .map_err(|e| ChatVaultError::Database(e.to_string()))?;
-        tx.execute(
-            "UPDATE file_objects SET width=COALESCE(width, ?1), height=COALESCE(height, ?2),
-             frame_count=COALESCE(frame_count, ?3) WHERE object_id=?4",
-            params![width, height, frame_count, object_id],
+             (object_id, hash, size, mime, extension, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![object_id, hash, size, mime, extension, created_at],
         )
         .map_err(|e| ChatVaultError::Database(e.to_string()))?;
 
@@ -124,18 +102,6 @@ impl Database {
             .and_then(|v| v.as_str())
             .unwrap_or(&ev.device_id)
             .to_string();
-        let media_variant = p
-            .get("media_variant")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let image_group_key = p
-            .get("image_group_key")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let source_original_name = p
-            .get("source_original_name")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
 
         let mapping_now = ev.created_at.to_rfc3339();
         if let Some(account_id) = source_account_id.as_deref().filter(|id| !id.is_empty()) {
@@ -164,8 +130,8 @@ impl Database {
 
         tx.execute(
             "INSERT OR IGNORE INTO file_records
-             (record_id, object_id, source_type, source_account_id, source_conversation_id, original_name, file_time, time_source, discovered_at, device_id, media_variant, image_group_key, source_original_name)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             (record_id, object_id, source_type, source_account_id, source_conversation_id, original_name, file_time, time_source, discovered_at, device_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 record_id,
                 object_id,
@@ -176,10 +142,7 @@ impl Database {
                 file_time,
                 time_source,
                 discovered_at,
-                device_id,
-                media_variant,
-                image_group_key,
-                source_original_name
+                device_id
             ],
         )
         .map_err(|e| ChatVaultError::Database(e.to_string()))?;

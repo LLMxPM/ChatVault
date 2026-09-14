@@ -1,4 +1,0 @@
-# 微信图片只读抽样工具的固定依赖；使用 uv 和独立 venv 安装。
-blake3==1.0.9
-pillow==12.3.0
-pycryptodome==3.23.0

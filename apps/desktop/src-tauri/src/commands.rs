@@ -25,8 +25,6 @@ pub struct WechatAccountDto {
     pub files_count_estimated: usize,
     /// 视频候选数（msg/video 下的 .mp4）
     pub videos_count_estimated: usize,
-    /// 图片候选数（msg/attach/**/Img）
-    pub images_count_estimated: usize,
 }
 
 /// 立即扫描时用于定位微信账号的目录与账号标识。
@@ -55,24 +53,6 @@ pub struct ScanResultDto {
     pub total_new_objects: usize,
     pub total_skipped: usize,
     pub duration_ms: u128,
-    /// 图片候选发现数
-    #[serde(default)]
-    pub images_discovered: usize,
-    /// 图片解密校验成功数
-    #[serde(default)]
-    pub images_prepared: usize,
-    /// 参数不可用数
-    #[serde(default)]
-    pub images_parameters_unavailable: usize,
-    /// 未支持格式数
-    #[serde(default)]
-    pub images_unsupported: usize,
-    /// 校验失败数
-    #[serde(default)]
-    pub images_invalid: usize,
-    /// 逻辑图片组数
-    #[serde(default)]
-    pub images_logical_groups: usize,
 }
 
 /// 查询过滤参数

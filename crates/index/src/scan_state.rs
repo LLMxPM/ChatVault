@@ -14,8 +14,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub struct KnownLocalFile {
     pub original_path: String,
     pub size: i64,
-    /// 解密来源的源文件大小；普通文件记录为 None。
-    pub source_size: Option<i64>,
     pub mtime_ms: i64,
     pub cache_path: Option<String>,
 }
@@ -105,7 +103,7 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT original_path, size, source_size, mtime_ms, cache_path
+                "SELECT original_path, size, mtime_ms, cache_path
                  FROM local_files
                  ORDER BY rowid DESC",
             )
@@ -115,9 +113,8 @@ impl Database {
                 Ok(KnownLocalFile {
                     original_path: row.get(0)?,
                     size: row.get(1)?,
-                    source_size: row.get(2)?,
-                    mtime_ms: row.get(3)?,
-                    cache_path: row.get(4)?,
+                    mtime_ms: row.get(2)?,
+                    cache_path: row.get(3)?,
                 })
             })
             .map_err(|e| ChatVaultError::Database(e.to_string()))?;
@@ -159,7 +156,7 @@ impl Database {
             let mut stmt = self
                 .conn
                 .prepare(
-                    "SELECT original_path, size, source_size, mtime_ms, cache_path FROM local_files
+                    "SELECT original_path, size, mtime_ms, cache_path FROM local_files
                      WHERE original_path = ?1
                      ORDER BY rowid DESC",
                 )
@@ -169,9 +166,8 @@ impl Database {
                     Ok(KnownLocalFile {
                         original_path: row.get(0)?,
                         size: row.get(1)?,
-                        source_size: row.get(2)?,
-                        mtime_ms: row.get(3)?,
-                        cache_path: row.get(4)?,
+                        mtime_ms: row.get(2)?,
+                        cache_path: row.get(3)?,
                     })
                 })
                 .map_err(|e| ChatVaultError::Database(e.to_string()))?;
@@ -202,8 +198,7 @@ impl Database {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
 
-        let expected_source_size = known.source_size.unwrap_or(known.size);
-        if mtime_ms != known.mtime_ms || size != expected_source_size {
+        if mtime_ms != known.mtime_ms || size != known.size {
             return Ok(false);
         }
         if let Some(cache) = &known.cache_path {
@@ -235,8 +230,7 @@ impl Database {
                 .as_ref()
                 .map(|p| is_regular_file(p))
                 .unwrap_or(true);
-            let expected_source_size = item.source_size.unwrap_or(item.size);
-            if mtime_ms != item.mtime_ms || size != expected_source_size || !cache_ok {
+            if mtime_ms != item.mtime_ms || size != item.size || !cache_ok {
                 changed.push(item);
             }
         }

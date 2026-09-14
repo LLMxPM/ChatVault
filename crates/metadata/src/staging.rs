@@ -100,17 +100,3 @@ pub fn stage_file(
         before.modified()?,
     ))
 }
-
-/// 将已验证的明文写入受控 pending 目录并原子保留，返回唯一暂存路径。
-///
-/// pending 文件不会被对象 GC 扫描；入库成功后再由索引层原子安装为内容对象。
-pub fn stage_bytes_pending(bytes: &[u8], directory: &Path) -> Result<PathBuf> {
-    fs::create_dir_all(directory)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    temporary.write_all(bytes)?;
-    temporary.as_file().sync_all()?;
-    let (_file, path) = temporary
-        .keep()
-        .map_err(|error| ChatVaultError::Io(error.error))?;
-    Ok(path)
-}

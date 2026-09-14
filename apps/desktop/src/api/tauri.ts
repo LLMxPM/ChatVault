@@ -206,7 +206,7 @@ export async function checkDirectory(path: string): Promise<boolean> {
 }
 
 /**
- * 列出上传归档任务
+ * 列出上传队列项。status 可为单状态或虚拟值 pending（待处理）。
  */
 export async function listUploadTasks(status?: string, limit?: number): Promise<UploadTaskDto[]> {
   return await invoke<UploadTaskDto[]>("list_upload_tasks", { status, limit });

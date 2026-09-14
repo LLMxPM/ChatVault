@@ -6,6 +6,11 @@ use rusqlite::params;
 
 impl Database {
     /// 列出上传任务（可按状态过滤）
+    ///
+    /// `status_filter`：
+    /// - `None` 或空串：全部状态
+    /// - `pending`：待处理（queued / retryable_failed / missing / paused）
+    /// - 其他：精确匹配单个状态
     pub fn list_upload_tasks(
         &self,
         status_filter: Option<&str>,
@@ -15,7 +20,11 @@ impl Database {
             r.original_name,r.record_id,o.hash,o.size,l.original_path
             FROM upload_tasks t JOIN file_records r ON t.record_id=r.record_id
             JOIN file_objects o ON t.object_id=o.object_id LEFT JOIN local_files l ON t.record_id=l.record_id
-            WHERE (?1 IS NULL OR t.status=?1) ORDER BY t.updated_at DESC LIMIT ?2";
+            WHERE (
+                ?1 IS NULL OR ?1 = ''
+                OR (?1 = 'pending' AND t.status IN ('queued','retryable_failed','missing','paused'))
+                OR t.status = ?1
+            ) ORDER BY t.updated_at DESC LIMIT ?2";
         let mut stmt = self
             .conn
             .prepare(sql)

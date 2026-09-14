@@ -281,7 +281,6 @@ mod tests {
             source_account_id: "wxid_test".to_string(),
             files_dir: root_dir.join("msg").join("file"),
             video_dir: root_dir.join("msg").join("video"),
-            images_dir: root_dir.join("msg").join("attach"),
             root_dir,
         }
     }

@@ -4,30 +4,28 @@ use chatvault_core::error::{ChatVaultError, Result};
 use std::{fs, time::SystemTime};
 
 impl Database {
-    /// 清理崩溃后遗留的 pending 明文及系统打开副本；只处理超过一天的普通文件，避免误删正在准备的内容。
-    pub fn recover_pending_image_cache(&mut self) -> Result<usize> {
+    /// 清理崩溃后遗留的系统打开副本；只处理超过一天的普通文件，避免误删正在打开的内容。
+    pub fn recover_open_cache(&mut self) -> Result<usize> {
         let now = SystemTime::now();
         let mut removed = 0usize;
-        for directory_name in ["pending", "open"] {
-            let directory = self.staging_dir.join(directory_name);
-            if !directory.is_dir() {
+        let directory = self.staging_dir.join("open");
+        if !directory.is_dir() {
+            return Ok(0);
+        }
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if !file_type.is_file() || file_type.is_symlink() {
                 continue;
             }
-            for entry in fs::read_dir(directory)? {
-                let entry = entry?;
-                let file_type = entry.file_type()?;
-                if !file_type.is_file() || file_type.is_symlink() {
-                    continue;
-                }
-                let modified = entry.metadata()?.modified().unwrap_or(now);
-                if now.duration_since(modified).unwrap_or_default()
-                    < std::time::Duration::from_secs(86_400)
-                {
-                    continue;
-                }
-                if fs::remove_file(entry.path()).is_ok() {
-                    removed += 1;
-                }
+            let modified = entry.metadata()?.modified().unwrap_or(now);
+            if now.duration_since(modified).unwrap_or_default()
+                < std::time::Duration::from_secs(86_400)
+            {
+                continue;
+            }
+            if fs::remove_file(entry.path()).is_ok() {
+                removed += 1;
             }
         }
         Ok(removed)

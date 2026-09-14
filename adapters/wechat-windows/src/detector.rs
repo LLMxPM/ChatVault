@@ -6,6 +6,25 @@
 use chatvault_core::error::{ChatVaultError, Result};
 use std::path::{Path, PathBuf};
 
+/// 判断路径是否为符号链接或 Windows 重解析点；遍历微信目录时一律拒绝。
+pub(crate) fn is_link_or_reparse(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return true;
+    };
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
 /// 探测到的微信 4.x 账号信息
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WeChatAccount {
@@ -17,8 +36,6 @@ pub struct WeChatAccount {
     pub files_dir: PathBuf,
     /// 视频本体目录 (`msg/video`)；缺失时该路径仍给出，由扫描层按空目录处理
     pub video_dir: PathBuf,
-    /// 聊天图片加密目录 (`msg/attach`)；缺失时该路径仍给出，由扫描层按空目录处理
-    pub images_dir: PathBuf,
 }
 
 /// 微信 4.x 探测器
@@ -32,7 +49,7 @@ impl WeChat4Detector {
     /// 可继续枚举账号的规范路径。
     pub fn validate_root<P: AsRef<Path>>(root: P) -> Result<PathBuf> {
         let path = root.as_ref();
-        if !path.is_dir() || crate::media::is_link_or_reparse(path) {
+        if !path.is_dir() || is_link_or_reparse(path) {
             return Err(ChatVaultError::FileNotFound {
                 path: path.display().to_string(),
             });
@@ -99,7 +116,7 @@ impl WeChat4Detector {
     ///     输出: `Result<Vec<WeChatAccount>>`
     pub fn find_accounts<P: AsRef<Path>>(root: P) -> Result<Vec<WeChatAccount>> {
         let r = root.as_ref();
-        if !r.exists() || crate::media::is_link_or_reparse(r) {
+        if !r.exists() || is_link_or_reparse(r) {
             return Err(ChatVaultError::FileNotFound {
                 path: r.display().to_string(),
             });
@@ -110,7 +127,7 @@ impl WeChat4Detector {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if crate::media::is_link_or_reparse(&path) || !path.is_dir() {
+            if is_link_or_reparse(&path) || !path.is_dir() {
                 continue;
             }
 
@@ -128,7 +145,6 @@ impl WeChat4Detector {
             let msg_dir = path.join("msg");
             let files_dir = msg_dir.join("file");
             let video_dir = msg_dir.join("video");
-            let images_dir = msg_dir.join("attach");
 
             // 只要存在 msg 目录，即使当前还没有收到 file，也属于合法账号
             if msg_dir.exists() {
@@ -137,7 +153,6 @@ impl WeChat4Detector {
                     root_dir: path,
                     files_dir,
                     video_dir,
-                    images_dir,
                 });
             }
         }

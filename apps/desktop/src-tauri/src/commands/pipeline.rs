@@ -2,10 +2,8 @@
 use super::scan::execute_scan;
 use super::webdav::resolve_webdav_password;
 use super::*;
-use chatvault_core::models::{
-    TaskRunItemStatus, TaskRunKind, TaskRunStageName, TaskRunStageStatus, TaskRunStatus,
-};
-use chatvault_index::{item_from_row, stage_from_row, NewTaskRunItem, TaskRunRow};
+use chatvault_core::models::{TaskRunKind, TaskRunStageName, TaskRunStageStatus, TaskRunStatus};
+use chatvault_index::{item_from_row, stage_from_row, TaskRunRow};
 use chatvault_sync::{archive_pending_with_progress, ArchiveProgressSink};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
@@ -153,42 +151,6 @@ impl ArchiveProgressSink for TauriProgressSink {
             }),
         );
     }
-}
-
-/// 扫描后写入图片解密关键失败明细（仅本轮扫描期间更新的失败候选）。
-fn record_scan_decrypt_items(
-    db: &mut chatvault_index::Database,
-    run_id: &str,
-) -> std::result::Result<(), String> {
-    let run = db
-        .get_task_run(run_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "运行记录不存在".to_string())?;
-    let failed = db
-        .list_failed_image_candidates(200, Some(&run.started_at))
-        .map_err(|e| e.to_string())?;
-    for cand in failed {
-        db.add_task_run_item(
-            run_id,
-            &NewTaskRunItem {
-                stage: "scan",
-                record_id: cand.record_id.as_deref(),
-                object_id: None,
-                task_id: None,
-                name: cand
-                    .source_path
-                    .rsplit(['\\', '/'])
-                    .next()
-                    .unwrap_or(&cand.source_path),
-                status: TaskRunItemStatus::DecryptFailed.as_str(),
-                error_code: cand.error_code.as_deref(),
-                error_message: None,
-                size: Some(cand.source_size),
-            },
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    Ok(())
 }
 
 fn run_row_to_dto(db: &chatvault_index::Database, row: &TaskRunRow) -> Result<TaskRunDto, String> {
@@ -362,13 +324,10 @@ pub async fn run_pipeline(
             return Err(e);
         }
     };
-    let _ = record_scan_decrypt_items(&mut db, &run_id);
     let scan_stats = json!({
         "discovered": scan.total_discovered,
         "newObjects": scan.total_new_objects,
         "skipped": scan.total_skipped,
-        "imagesDiscovered": scan.images_discovered,
-        "imagesPrepared": scan.images_prepared,
     });
     db.finish_task_run_stage(
         &run_id,

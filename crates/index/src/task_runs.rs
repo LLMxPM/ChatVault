@@ -545,7 +545,6 @@ pub fn item_from_row(row: &TaskRunItemRow) -> Result<TaskRunItem> {
     };
     let status = match row.status.as_str() {
         "missing" => TaskRunItemStatus::Missing,
-        "decrypt_failed" => TaskRunItemStatus::DecryptFailed,
         "skipped" => TaskRunItemStatus::Skipped,
         _ => TaskRunItemStatus::Failed,
     };

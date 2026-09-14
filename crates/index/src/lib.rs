@@ -3,12 +3,10 @@
 //! 提供本地 SQLite 数据库管理、Schema 初始化、增量去重入库与 FTS5 中文检索。
 
 pub mod db;
-pub mod image_candidates;
 pub mod query;
 pub mod schema;
 
 pub use db::{Database, DatabaseStats, IngestResult, UploadTaskRow};
-pub use image_candidates::{parse_candidate_status, ImageCandidateRow};
 pub use query::{
     ObjectLocation, ObjectSearchItem, ObjectSourceItem, SearchFilter, SearchResultItem,
     SearchService,

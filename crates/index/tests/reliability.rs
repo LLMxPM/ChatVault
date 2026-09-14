@@ -127,6 +127,15 @@ fn retries_and_pause_use_persistent_queue() {
         .list_upload_tasks(Some("queued' OR 1=1 --"), 100)
         .unwrap()
         .is_empty());
+    // pending 虚拟筛选：含待处理状态，不含已校验
+    db.pause_task(&id).unwrap();
+    assert_eq!(db.list_upload_tasks(Some("pending"), 100).unwrap().len(), 1);
+    db.update_task_status(&id, "backed_up", None).unwrap();
+    assert!(db
+        .list_upload_tasks(Some("pending"), 100)
+        .unwrap()
+        .is_empty());
+    assert_eq!(db.list_upload_tasks(Some("backed_up"), 100).unwrap().len(), 1);
 }
 
 /// 两个新数据库生成不同身份，同一个索引重新打开后身份不变。

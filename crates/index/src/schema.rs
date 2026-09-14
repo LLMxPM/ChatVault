@@ -32,9 +32,6 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             size INTEGER NOT NULL,
             mime TEXT NOT NULL,
             extension TEXT NOT NULL,
-            width INTEGER,
-            height INTEGER,
-            frame_count INTEGER,
             created_at TEXT NOT NULL
         );
 
@@ -49,16 +46,12 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             file_time TEXT NOT NULL,
             time_source TEXT NOT NULL,
             discovered_at TEXT NOT NULL,
-            device_id TEXT NOT NULL,
-            media_variant TEXT,
-            image_group_key TEXT,
-            source_original_name TEXT
+            device_id TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_records_object_id ON file_records(object_id);
         CREATE INDEX IF NOT EXISTS idx_records_source_account_id ON file_records(source_type, source_account_id);
         CREATE INDEX IF NOT EXISTS idx_records_source_conversation_id ON file_records(source_type, source_account_id, source_conversation_id);
         CREATE INDEX IF NOT EXISTS idx_records_file_time ON file_records(file_time);
-        CREATE INDEX IF NOT EXISTS idx_records_image_group ON file_records(image_group_key);
 
         -- 3. 来源账号映射：原始 ID 是稳定匹配键，用户只维护 display_name 与收藏状态
         CREATE TABLE IF NOT EXISTS source_accounts (
@@ -99,10 +92,8 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             original_path TEXT NOT NULL,
             cache_path TEXT,
             size INTEGER NOT NULL,
-            source_size INTEGER,
             mtime_ms INTEGER NOT NULL,
-            availability TEXT NOT NULL,
-            content_origin TEXT
+            availability TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_local_path ON local_files(original_path);
 
@@ -183,32 +174,7 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             last_scan_started_ms INTEGER NOT NULL
         );
 
-        -- 14. 图片候选持久化：采集根、账号与规范化来源路径标识候选；不保存密钥、code
-        CREATE TABLE IF NOT EXISTS image_candidates (
-            candidate_id TEXT PRIMARY KEY,
-            source_root TEXT NOT NULL,
-            source_account_id TEXT NOT NULL,
-            source_path TEXT NOT NULL,
-            source_size INTEGER NOT NULL,
-            source_mtime_ms INTEGER NOT NULL,
-            source_digest TEXT,
-            conv_hash TEXT,
-            month TEXT,
-            normalized_stem TEXT,
-            image_group_key TEXT,
-            status TEXT NOT NULL,
-            error_code TEXT,
-            attempt_count INTEGER NOT NULL DEFAULT 0,
-            next_retry_ms INTEGER,
-            record_id TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(source_account_id, source_path)
-        );
-        CREATE INDEX IF NOT EXISTS idx_image_candidates_status ON image_candidates(status, next_retry_ms);
-        CREATE INDEX IF NOT EXISTS idx_image_candidates_group ON image_candidates(image_group_key);
-
-        -- 15. 运行实体：一次流水线/恢复
+        -- 14. 运行实体：一次流水线/恢复
         CREATE TABLE IF NOT EXISTS task_runs (
             run_id TEXT PRIMARY KEY,
             kind TEXT NOT NULL,

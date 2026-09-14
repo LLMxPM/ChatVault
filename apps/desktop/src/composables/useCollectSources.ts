@@ -58,7 +58,7 @@ export function useCollectSources() {
   function sourceStatusLabel(status: SourceStatus) {
     const labels: Record<SourceStatus, string> = {
       checking: "检查中",
-      ready: "已识别",
+      ready: "可用",
       empty: "未发现账号",
       missing: "目录不存在",
       error: "识别失败",
@@ -79,7 +79,7 @@ export function useCollectSources() {
     if (source.status === "error") return source.errorMessage || "请确认目录类型正确后重试。";
     if (source.sourceType === "wechat-windows-4") {
       return source.accounts.length
-        ? `${source.accounts.length} 个微信账号；立即归档可按账号选择`
+        ? `识别到 ${source.accounts.length} 个微信账号`
         : "目录有效，但暂未发现微信账号。";
     }
     return "递归扫描该目录中的附件文件。";
@@ -110,8 +110,9 @@ export function useCollectSources() {
   function createSourceItem(source: CollectSourceDto): CollectSourceItem {
     return {
       ...source,
-      // 微信图片解密默认关闭，由用户显式开启；通用目录不使用该字段。
-      enableImages: source.sourceType === "wechat-windows-4" ? source.enableImages === true : true,
+      // 微信视频识别默认开启；通用目录不使用该字段。
+      enableVideos:
+        source.sourceType === "wechat-windows-4" ? source.enableVideos !== false : true,
       accounts: [],
       status: "checking",
       errorMessage: "",
@@ -124,10 +125,10 @@ export function useCollectSources() {
   }
 
   function sourcePayload(sources: CollectSourceItem[]): CollectSourceDto[] {
-    return sources.map(({ sourceType, path, enableImages }) => ({
+    return sources.map(({ sourceType, path, enableVideos }) => ({
       sourceType,
       path,
-      enableImages: sourceType === "wechat-windows-4" ? enableImages === true : true,
+      enableVideos: sourceType === "wechat-windows-4" ? enableVideos !== false : true,
     }));
   }
 
@@ -187,12 +188,12 @@ export function useCollectSources() {
     void persistSelectedAccounts();
   }
 
-  /** 切换微信采集源的聊天图片解密开关并持久化。 */
-  async function toggleSourceImages(source: CollectSourceItem) {
+  /** 切换微信采集源的视频识别开关并持久化。 */
+  async function toggleSourceVideos(source: CollectSourceItem) {
     if (source.sourceType !== "wechat-windows-4") return;
     const previousSources = cloneSources(collectSources.value);
     const previousSelections = selectedAccounts.value.map((target) => ({ ...target }));
-    source.enableImages = source.enableImages !== true;
+    source.enableVideos = source.enableVideos === false;
     if (!(await persistSources(previousSources, previousSelections))) {
       return;
     }
@@ -241,7 +242,6 @@ export function useCollectSources() {
       await addSource({
         sourceType: "generic-folder",
         path,
-        enableImages: true,
         accounts: [],
         status: "ready",
         errorMessage: "",
@@ -287,8 +287,7 @@ export function useCollectSources() {
     await addSource({
       sourceType: "wechat-windows-4",
       path,
-      // 默认关闭聊天图片解密；用户在任务页显式开启后才会读取本机统计参数。
-      enableImages: false,
+      enableVideos: true,
       accounts,
       status: accounts.length ? "ready" : "empty",
       errorMessage: "",
@@ -407,7 +406,7 @@ export function useCollectSources() {
       const replacement = createSourceItem({
         sourceType: source.sourceType,
         path,
-        enableImages: source.enableImages !== false,
+        enableVideos: source.enableVideos !== false,
       });
       if (source.sourceType === "wechat-windows-4") {
         replacement.accounts = await inspectWechatDirectory(path);
@@ -532,6 +531,6 @@ export function useCollectSources() {
     sourceStatusTone,
     sourceTypeLabel,
     toggleAccount,
-    toggleSourceImages,
+    toggleSourceVideos,
   };
 }

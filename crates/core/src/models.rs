@@ -22,14 +22,14 @@ pub struct CollectSource {
     pub source_type: String,
     /// 用户选择的目录绝对路径。
     pub path: String,
-    /// 微信聊天图片是否启用本机离线解密；非微信来源忽略该字段。
-    #[serde(default = "default_enable_images")]
-    pub enable_images: bool,
+    /// 微信是否识别视频（`msg/video`）；非微信来源忽略该字段。
+    #[serde(default = "default_enable_videos")]
+    pub enable_videos: bool,
 }
 
-/// 采集源图片处理的默认开关：默认关闭，由用户显式启用本机离线解密。
-fn default_enable_images() -> bool {
-    false
+/// 采集源视频识别的默认开关：默认开启，用户可显式关闭。
+fn default_enable_videos() -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -41,12 +41,12 @@ mod tests {
         let source = CollectSource {
             source_type: GENERIC_FOLDER_SOURCE_TYPE.to_string(),
             path: r"C:\attachments".to_string(),
-            enable_images: true,
+            enable_videos: false,
         };
         let encoded = serde_json::to_string(&source).unwrap();
         assert_eq!(
             encoded,
-            r#"{"sourceType":"generic-folder","path":"C:\\attachments","enableImages":true}"#
+            r#"{"sourceType":"generic-folder","path":"C:\\attachments","enableVideos":false}"#
         );
         assert_eq!(
             serde_json::from_str::<CollectSource>(&encoded).unwrap(),
@@ -56,7 +56,7 @@ mod tests {
             r#"{"sourceType":"generic-folder","path":"C:\\attachments"}"#,
         )
         .unwrap();
-        assert!(!legacy.enable_images);
+        assert!(legacy.enable_videos);
     }
 }
 
@@ -103,12 +103,6 @@ pub struct FileObject {
     pub mime: String,
     /// 文件小写扩展名（不含点）
     pub extension: String,
-    /// 图片宽度；非图片为 None。
-    pub width: Option<u32>,
-    /// 图片高度；非图片为 None。
-    pub height: Option<u32>,
-    /// 图片帧数；非图片为 None。
-    pub frame_count: Option<u32>,
     /// 首次创建时间
     pub created_at: DateTime<Utc>,
 }
@@ -138,12 +132,6 @@ pub struct FileRecord {
     pub discovered_at: DateTime<Utc>,
     /// 产生该记录的设备唯一标识
     pub device_id: String,
-    /// 图片变体类型（display/high/thumbnail/unknown）；非图片为 None
-    pub media_variant: Option<String>,
-    /// 同逻辑图片分组键；非图片为 None
-    pub image_group_key: Option<String>,
-    /// 源文件原始名（图片为 .dat 名）；与 original_name 可能不同
-    pub source_original_name: Option<String>,
 }
 
 /// 本机文件映射关系模型
@@ -157,14 +145,10 @@ pub struct LocalFile {
     pub cache_path: Option<String>,
     /// 文件大小（字节）
     pub size: u64,
-    /// 解密来源的源文件大小；普通明文来源为 None。
-    pub source_size: Option<u64>,
     /// 本地文件最后修改时间戳（毫秒）
     pub mtime_ms: i64,
     /// 本地可用状态
     pub availability: LocalAvailability,
-    /// 内容来源：original（明文源）或 decrypted（解密产物）
-    pub content_origin: Option<String>,
 }
 
 /// 本地文件可用性状态
@@ -220,159 +204,6 @@ pub struct DiscoveredFile {
     pub modified_time: DateTime<Utc>,
     /// 来源系统提供的稳定会话 ID（若无法可靠提取则为 None）
     pub source_conversation_id: Option<String>,
-}
-
-/// 已准备好的明文内容（图片解密产物）
-///
-/// 携带受控明文路径、内容哈希/大小/类型、源状态及来源上下文；
-/// 由 `ingest_prepared_content` 验证后事务入库。
-#[derive(Debug, Clone)]
-pub struct PreparedContent {
-    /// 受控明文暂存路径
-    pub plaintext_path: String,
-    /// 明文 BLAKE3 hex
-    pub content_hash: String,
-    /// 明文大小（字节）
-    pub size: u64,
-    /// 真实 MIME
-    pub mime: String,
-    /// 建议扩展名（小写，不含点）
-    pub extension: String,
-    /// 图片宽（非图片为 None）
-    pub width: Option<u32>,
-    /// 图片高（非图片为 None）
-    pub height: Option<u32>,
-    /// 帧数（非图片为 None）
-    pub frame_count: Option<u32>,
-    /// 来源类型
-    pub source_type: String,
-    /// 来源账号 ID
-    pub source_account_id: Option<String>,
-    /// 来源会话 ID（图片为 conv_hash）
-    pub source_conversation_id: Option<String>,
-    /// 导出用文件名
-    pub export_name: String,
-    /// 源文件原始名（.dat）
-    pub source_original_name: String,
-    /// 源文件绝对路径
-    pub source_path: String,
-    /// 源 mtime 毫秒
-    pub source_mtime_ms: i64,
-    /// 源大小
-    pub source_size: u64,
-    /// 本轮读取到的源 BLAKE3 摘要（仅本机候选复核使用）
-    pub source_digest: Option<String>,
-    /// 图片变体类型
-    pub media_variant: Option<String>,
-    /// 图片分组键
-    pub image_group_key: Option<String>,
-    /// 文件时间
-    pub file_time: DateTime<Utc>,
-}
-
-/// 图片候选处理状态
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ImageCandidateStatus {
-    /// 已发现
-    Discovered,
-    /// 等待源文件稳定
-    WaitingStable,
-    /// 准备中
-    Preparing,
-    /// 解密完成待校验
-    DecryptedPendingVerify,
-    /// 明文已校验
-    VerifiedPlaintext,
-    /// 已入库
-    Ingested,
-    /// 已归档
-    Archived,
-    /// 失败（见错误码）
-    Failed,
-}
-
-impl ImageCandidateStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ImageCandidateStatus::Discovered => "discovered",
-            ImageCandidateStatus::WaitingStable => "waiting_stable",
-            ImageCandidateStatus::Preparing => "preparing",
-            ImageCandidateStatus::DecryptedPendingVerify => "decrypted_pending_verify",
-            ImageCandidateStatus::VerifiedPlaintext => "verified_plaintext",
-            ImageCandidateStatus::Ingested => "ingested",
-            ImageCandidateStatus::Archived => "archived",
-            ImageCandidateStatus::Failed => "failed",
-        }
-    }
-}
-
-/// 图片处理错误码（与规划文档 §6.2 对应）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ImageErrorCode {
-    /// 写入中或大小/mtime 不稳定
-    WaitingStable,
-    /// 0 字节
-    EmptySource,
-    /// 准备期间源被改写
-    SourceChanged,
-    /// 白名单内无任何 code
-    MediaParametersUnavailable,
-    /// 账号规范化无法确定
-    AccountIdentityUnconfirmed,
-    /// 本轮有限候选均未命中该源
-    ParametersNotApplicable,
-    /// code/候选数超上限
-    CandidateLimitExceeded,
-    /// 有 code 但对应该账号/该文件不适用
-    AccountParametersMiss,
-    /// 非 V2 / 未知标志 / 边界非法
-    UnsupportedStructure,
-    /// 解密后为 WXGF 等未验收容器
-    UnsupportedPayload,
-    /// 头合法但完整解码失败
-    InvalidImage,
-    /// 磁盘不足
-    InsufficientSpace,
-    /// 明文缓存丢失
-    PreparedContentMissing,
-}
-
-impl ImageErrorCode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ImageErrorCode::WaitingStable => "waiting_stable",
-            ImageErrorCode::EmptySource => "empty_source",
-            ImageErrorCode::SourceChanged => "source_changed",
-            ImageErrorCode::MediaParametersUnavailable => "media_parameters_unavailable",
-            ImageErrorCode::AccountIdentityUnconfirmed => "account_identity_unconfirmed",
-            ImageErrorCode::ParametersNotApplicable => "parameters_not_applicable",
-            ImageErrorCode::CandidateLimitExceeded => "candidate_limit_exceeded",
-            ImageErrorCode::AccountParametersMiss => "account_parameters_miss",
-            ImageErrorCode::UnsupportedStructure => "unsupported_structure",
-            ImageErrorCode::UnsupportedPayload => "unsupported_payload",
-            ImageErrorCode::InvalidImage => "invalid_image",
-            ImageErrorCode::InsufficientSpace => "insufficient_space",
-            ImageErrorCode::PreparedContentMissing => "prepared_content_missing",
-        }
-    }
-
-    /// 是否默认自动重试
-    pub fn auto_retry(&self) -> bool {
-        matches!(
-            self,
-            ImageErrorCode::WaitingStable
-                | ImageErrorCode::EmptySource
-                | ImageErrorCode::SourceChanged
-                | ImageErrorCode::MediaParametersUnavailable
-                | ImageErrorCode::ParametersNotApplicable
-                | ImageErrorCode::CandidateLimitExceeded
-                | ImageErrorCode::AccountParametersMiss
-                | ImageErrorCode::InsufficientSpace
-                | ImageErrorCode::PreparedContentMissing
-        )
-    }
 }
 
 /// 同步日志事件类型
@@ -512,8 +343,6 @@ pub enum TaskRunItemStatus {
     Failed,
     /// 本地文件缺失
     Missing,
-    /// 图片解密失败
-    DecryptFailed,
     /// 主动跳过（暂停等）
     Skipped,
 }
@@ -523,7 +352,6 @@ impl TaskRunItemStatus {
         match self {
             TaskRunItemStatus::Failed => "failed",
             TaskRunItemStatus::Missing => "missing",
-            TaskRunItemStatus::DecryptFailed => "decrypt_failed",
             TaskRunItemStatus::Skipped => "skipped",
         }
     }
