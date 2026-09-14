@@ -1,17 +1,21 @@
 // ChatVault 采集源状态与交互逻辑
-// 负责微信 4.x/通用附件目录的选择、校验、持久化、账号选择和状态刷新。
+// 负责按适配器注册表选择、校验、持久化、账号选择和状态刷新。
 // 首屏用上次探测快照秒开，仅做目录存在性轻量校验；完整账号识别按需触发。
 
 import { computed, ref } from "vue";
 import {
   checkDirectory,
-  detectWechatAccounts,
-  inspectWechatDirectory,
   pickDirectory,
   setCollectSelectedAccounts,
   setCollectSourceCache,
   setCollectSources,
 } from "../api/tauri";
+import {
+  COLLECT_ADAPTERS,
+  discoverableCollectAdapters,
+  getCollectAdapter,
+  isAccountAdapter,
+} from "../adapters/collectAdapters";
 import { pushToast } from "./useToast";
 import type {
   CollectSourceCacheDto,
@@ -31,7 +35,7 @@ type CollectSourceItem = CollectSourceDto & {
   inspecting: boolean;
 };
 
-/** 提供采集源列表、目录操作和微信账号选择状态。 */
+/** 提供采集源列表、目录操作和账号选择状态。 */
 export function useCollectSources() {
   const selectedAccounts = ref<WechatAccountTargetDto[]>([]);
   const detecting = ref(false);
@@ -40,7 +44,7 @@ export function useCollectSources() {
 
   const allWechatAccounts = computed(() =>
     collectSources.value
-      .filter((source) => source.sourceType === "wechat-windows-4")
+      .filter((source) => isAccountAdapter(source.sourceType))
       .flatMap((source) => source.accounts),
   );
   const canRun = computed(
@@ -51,8 +55,29 @@ export function useCollectSources() {
       ),
   );
 
-  function sourceTypeLabel(sourceType: CollectSourceType) {
-    return sourceType === "wechat-windows-4" ? "微信 4.x" : "附件目录";
+  /** 已注册适配器（添加菜单用）。 */
+  const adapters = COLLECT_ADAPTERS;
+  /** 支持自动发现的适配器。 */
+  const discoverableAdapters = discoverableCollectAdapters();
+
+  function sourceTypeLabel(sourceType: CollectSourceType | string) {
+    return getCollectAdapter(sourceType)?.label ?? sourceType;
+  }
+
+  function sourceBadgeTone(sourceType: CollectSourceType | string) {
+    return getCollectAdapter(sourceType)?.badgeTone ?? "neutral";
+  }
+
+  function sourceBadgeLabel(sourceType: CollectSourceType | string) {
+    return getCollectAdapter(sourceType)?.badge ?? sourceType;
+  }
+
+  function sourceVideoHint(sourceType: CollectSourceType | string) {
+    return getCollectAdapter(sourceType)?.videoHint ?? "";
+  }
+
+  function supportsVideos(sourceType: CollectSourceType | string) {
+    return getCollectAdapter(sourceType)?.supportsVideos ?? false;
   }
 
   function sourceStatusLabel(status: SourceStatus) {
@@ -77,14 +102,16 @@ export function useCollectSources() {
     if (source.status === "checking") return "正在检查目录可用性…";
     if (source.status === "missing") return "目录可能已被移动或删除，可重新选择目录。";
     if (source.status === "error") return source.errorMessage || "请确认目录类型正确后重试。";
-    if (source.sourceType === "wechat-windows-4") {
-      return source.accounts.length ? "" : "目录有效，但暂未发现微信账号。";
+    const adapter = getCollectAdapter(source.sourceType);
+    if (!adapter) return "";
+    if (adapter.kind === "account") {
+      return source.accounts.length ? "" : (adapter.emptyAccountDetail ?? "");
     }
-    return "递归扫描该目录中的附件文件。";
+    return adapter.folderDetail ?? "";
   }
 
   function normalizePath(path: string) {
-    return path.replace(/\//g, "\\").replace(/[\\]+$/, "").toLowerCase();
+    return path.replace(/\//g, "\\").replace(/[/\\]+$/, "").toLowerCase();
   }
 
   function isUnderRoot(path: string, root: string) {
@@ -106,11 +133,11 @@ export function useCollectSources() {
   }
 
   function createSourceItem(source: CollectSourceDto): CollectSourceItem {
+    const adapter = getCollectAdapter(source.sourceType);
     return {
       ...source,
-      // 微信视频识别默认开启；通用目录不使用该字段。
-      enableVideos:
-        source.sourceType === "wechat-windows-4" ? source.enableVideos !== false : true,
+      // 支持视频的适配器默认开启；目录型保持 true（后端忽略）。
+      enableVideos: adapter?.supportsVideos ? source.enableVideos !== false : true,
       accounts: [],
       status: "checking",
       errorMessage: "",
@@ -126,7 +153,7 @@ export function useCollectSources() {
     return sources.map(({ sourceType, path, enableVideos }) => ({
       sourceType,
       path,
-      enableVideos: sourceType === "wechat-windows-4" ? enableVideos !== false : true,
+      enableVideos: supportsVideos(sourceType) ? enableVideos !== false : true,
     }));
   }
 
@@ -186,9 +213,25 @@ export function useCollectSources() {
     void persistSelectedAccounts();
   }
 
-  /** 切换微信采集源的视频识别开关并持久化。 */
+  /** 全选/清空单个源下账号。 */
+  function setSourceAccountsSelected(source: CollectSourceItem, selectAll: boolean) {
+    const keys = new Set(source.accounts.map(accountKey));
+    if (selectAll) {
+      const existing = new Set(selectedAccounts.value.map(targetKey));
+      for (const account of source.accounts) {
+        if (!existing.has(accountKey(account))) {
+          selectedAccounts.value.push(toAccountTarget(account));
+        }
+      }
+    } else {
+      selectedAccounts.value = selectedAccounts.value.filter((target) => !keys.has(targetKey(target)));
+    }
+    void persistSelectedAccounts();
+  }
+
+  /** 切换账号型采集源的视频识别开关并持久化。 */
   async function toggleSourceVideos(source: CollectSourceItem) {
-    if (source.sourceType !== "wechat-windows-4") return;
+    if (!supportsVideos(source.sourceType)) return;
     const previousSources = cloneSources(collectSources.value);
     const previousSelections = selectedAccounts.value.map((target) => ({ ...target }));
     source.enableVideos = source.enableVideos === false;
@@ -208,55 +251,60 @@ export function useCollectSources() {
     }
   }
 
-  /** 选择并添加微信 4.x 根目录；目录校验成功后才写入配置。 */
-  async function pickAndAddWechat() {
+  /** 选择并添加指定适配器的根目录。 */
+  async function pickAndAddSource(sourceType: CollectSourceType) {
+    const adapter = getCollectAdapter(sourceType);
+    if (!adapter) return;
     try {
-      const path = await pickDirectory("选择采集目录");
+      const path = await pickDirectory(`选择${adapter.label}采集目录`);
       if (!path) return;
       if (hasPathConflict(path)) {
         pushToast({ tone: "warning", title: "目录已存在或与现有目录重叠" });
         return;
       }
-      const accounts = await inspectWechatDirectory(path);
-      await addWechatSource(path, accounts);
-    } catch (err) {
-      pushToast({ tone: "danger", title: "添加微信目录失败", description: String(err) });
-    }
-  }
-
-  /** 选择并添加通用附件目录；路径只能来自系统目录选择器。 */
-  async function pickAndAddAttachment() {
-    try {
-      const path = await pickDirectory("选择采集目录");
-      if (!path) return;
-      if (hasPathConflict(path)) {
-        pushToast({ tone: "warning", title: "目录已存在或与现有目录重叠" });
+      if (adapter.kind === "folder") {
+        if (!(await checkDirectory(path))) {
+          pushToast({ tone: "danger", title: "附件目录不可用" });
+          return;
+        }
+        await addSource({
+          sourceType,
+          path,
+          accounts: [],
+          status: "ready",
+          errorMessage: "",
+          inspecting: false,
+        });
         return;
       }
-      if (!(await checkDirectory(path))) {
-        pushToast({ tone: "danger", title: "附件目录不可用" });
-        return;
-      }
+      const accounts = await adapter.inspect(path);
       await addSource({
-        sourceType: "generic-folder",
+        sourceType,
         path,
-        accounts: [],
-        status: "ready",
+        enableVideos: true,
+        accounts,
+        status: accounts.length ? "ready" : "empty",
         errorMessage: "",
         inspecting: false,
       });
     } catch (err) {
-      pushToast({ tone: "danger", title: "添加附件目录失败", description: String(err) });
+      pushToast({
+        tone: "danger",
+        title: `添加${adapter.label}目录失败`,
+        description: String(err),
+      });
     }
   }
 
-  /** 自动发现默认微信根目录并快捷加入；不会隐式改变未展示的扫描范围。 */
-  async function discoverAndAddWechat() {
+  /** 自动发现指定适配器的本机根目录并加入。 */
+  async function discoverAndAdd(sourceType: CollectSourceType) {
+    const adapter = getCollectAdapter(sourceType);
+    if (!adapter?.discover) return;
     detecting.value = true;
     try {
-      const accounts = await detectWechatAccounts();
+      const accounts = await adapter.discover();
       if (!accounts.length) {
-        pushToast({ tone: "warning", title: "未发现微信 4.x 目录" });
+        pushToast({ tone: "warning", title: `未发现${adapter.label}目录` });
         return;
       }
       const path = accounts[0].sourceRoot;
@@ -266,31 +314,30 @@ export function useCollectSources() {
         );
         if (existingIndex >= 0) {
           await refreshSource(existingIndex);
-          pushToast({ tone: "success", title: "微信目录已重新识别" });
+          pushToast({ tone: "success", title: `${adapter.label}目录已重新识别` });
         } else {
           pushToast({ tone: "warning", title: "自动发现的目录与现有目录重叠" });
         }
         return;
       }
-      await addWechatSource(path, accounts);
+      await addSource({
+        sourceType,
+        path,
+        enableVideos: true,
+        accounts,
+        status: accounts.length ? "ready" : "empty",
+        errorMessage: "",
+        inspecting: false,
+      });
     } catch (err) {
-      pushToast({ tone: "danger", title: "自动发现微信目录失败", description: String(err) });
+      pushToast({
+        tone: "danger",
+        title: `自动发现${adapter.label}失败`,
+        description: String(err),
+      });
     } finally {
       detecting.value = false;
     }
-  }
-
-  /** 将微信目录及其账号加入统一采集源列表。 */
-  async function addWechatSource(path: string, accounts: WechatAccountDto[]) {
-    await addSource({
-      sourceType: "wechat-windows-4",
-      path,
-      enableVideos: true,
-      accounts,
-      status: accounts.length ? "ready" : "empty",
-      errorMessage: "",
-      inspecting: false,
-    });
   }
 
   /** 保存采集源；保存失败时恢复列表和账号选择。 */
@@ -314,10 +361,11 @@ export function useCollectSources() {
     await persistSourceCache();
   }
 
-  /** 全量检查一个采集源：目录存在性 + 微信账号识别，并写回快照。 */
+  /** 全量检查一个采集源：目录存在性 + 账号识别，并写回快照。 */
   async function refreshSource(index: number) {
     const source = collectSources.value[index];
     if (!source) return;
+    const adapter = getCollectAdapter(source.sourceType);
     source.inspecting = true;
     source.status = "checking";
     source.errorMessage = "";
@@ -327,8 +375,8 @@ export function useCollectSources() {
         source.status = "missing";
         return;
       }
-      if (source.sourceType === "wechat-windows-4") {
-        source.accounts = await inspectWechatDirectory(source.path);
+      if (adapter && adapter.kind === "account") {
+        source.accounts = await adapter.inspect(source.path);
         source.status = source.accounts.length ? "ready" : "empty";
       } else {
         source.accounts = [];
@@ -371,7 +419,8 @@ export function useCollectSources() {
       return;
     }
 
-    if (source.sourceType === "generic-folder") {
+    const adapter = getCollectAdapter(source.sourceType);
+    if (adapter?.kind !== "account") {
       if (source.status !== "ready") {
         source.status = "ready";
         source.errorMessage = "";
@@ -380,7 +429,7 @@ export function useCollectSources() {
       return;
     }
 
-    // 微信源：无缓存/失败/刚恢复时才全量识别
+    // 账号型来源：无缓存/失败/刚恢复时才全量识别
     const needsFullInspect =
       source.status === "checking" || source.status === "error" || source.status === "missing";
     if (needsFullInspect) {
@@ -392,6 +441,7 @@ export function useCollectSources() {
   async function pickAndReplaceSource(index: number) {
     const source = collectSources.value[index];
     if (!source) return;
+    const adapter = getCollectAdapter(source.sourceType);
     source.inspecting = true;
     try {
       const path = await pickDirectory("选择采集目录");
@@ -406,8 +456,8 @@ export function useCollectSources() {
         path,
         enableVideos: source.enableVideos !== false,
       });
-      if (source.sourceType === "wechat-windows-4") {
-        replacement.accounts = await inspectWechatDirectory(path);
+      if (adapter && adapter.kind === "account") {
+        replacement.accounts = await adapter.inspect(path);
         replacement.status = replacement.accounts.length ? "ready" : "empty";
       } else if (!(await checkDirectory(path))) {
         pushToast({ tone: "danger", title: "附件目录不可用" });
@@ -509,26 +559,35 @@ export function useCollectSources() {
   }
 
   return {
+    adapters,
+    discoverableAdapters,
     allWechatAccounts,
     accountKey,
     canRun,
     collectSources,
     detecting,
-    discoverAndAddWechat,
+    discoverAndAdd,
+    isAccountAdapter,
     isAccountSelected,
     loadSources,
-    pickAndAddAttachment,
-    pickAndAddWechat,
+    pickAndAddSource,
     pickAndReplaceSource,
     refreshSource,
     removeSource,
     selectedAccounts,
+    setSourceAccountsSelected,
+    sourceBadgeLabel,
+    sourceBadgeTone,
     sourceKey,
     sourceStatusDetail,
     sourceStatusLabel,
     sourceStatusTone,
     sourceTypeLabel,
+    sourceVideoHint,
+    supportsVideos,
     toggleAccount,
     toggleSourceVideos,
   };
 }
+
+export type { CollectSourceItem };

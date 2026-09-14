@@ -15,12 +15,12 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
-    /// 自动探测 Windows 微信 4.x (xwechat_files) 存储目录与账号列表
+    /// 自动探测 Windows 微信 4.x / 企业微信存储目录与账号列表
     Detect,
 
-    /// 扫描微信 4.x 或指定文件夹并增量入库 SQLite
+    /// 扫描微信 4.x、企业微信或指定文件夹并增量入库 SQLite
     Scan {
-        /// 扫描目标: "wechat" 代表自动探测微信 4.x，或传入指定本地文件夹路径
+        /// 扫描目标: "wechat" / "wxwork" 自动探测，或传入来源根/附件目录路径
         #[arg(short, long, default_value = "wechat")]
         target: String,
 

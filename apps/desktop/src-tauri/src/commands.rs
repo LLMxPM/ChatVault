@@ -2,11 +2,9 @@
 // 桥接前端 UI 与底层的微信探测、扫描器、数据库检索、文件定位和 WebDAV 归档模块
 
 use crate::state::{setting_keys, AppState};
-use adapter_generic_folder::GenericFolderParser;
-use adapter_wechat_windows::{WeChat4Detector, WeChat4Parser};
+use adapter_wechat_windows::WeChat4Detector;
 use chatvault_index::category::determine_category;
 use chatvault_index::query::{SearchFilter, SearchService};
-use chatvault_index::IngestResult;
 use chatvault_webdav::{CapabilityDetector, WebDavClient, WebDavConfig};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -64,6 +62,14 @@ pub struct SearchQueryDto {
     pub source_type: Option<String>,
     pub source_account_id: Option<String>,
     pub source_conversation_id: Option<String>,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    /// file_time | discovered_at
+    pub time_field: Option<String>,
+    /// local | remote | both | missing
+    pub location: Option<String>,
+    pub extensions: Option<Vec<String>>,
+    pub sort: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
 }

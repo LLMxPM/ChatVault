@@ -12,6 +12,9 @@ pub const WECHAT_WINDOWS_4_SOURCE_TYPE: &str = "wechat-windows-4";
 /// 通用附件目录适配器标识。
 pub const GENERIC_FOLDER_SOURCE_TYPE: &str = "generic-folder";
 
+/// 企业微信 Windows 文件来源适配器标识。
+pub const WXWORK_WINDOWS_SOURCE_TYPE: &str = "wxwork-windows";
+
 /// 持久化的采集源配置。
 ///
 /// 目录路径与适配器类型成对保存，扫描编排层据此选择对应适配器。

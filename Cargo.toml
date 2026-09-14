@@ -7,9 +7,11 @@ members = [
     "crates/index",
     "crates/webdav",
     "crates/sync",
+    "crates/scan",
     "crates/cli",
     "adapters/wechat-windows",
     "adapters/generic-folder",
+    "adapters/wxwork-windows",
     "apps/desktop/src-tauri",
 ]
 
@@ -26,8 +28,10 @@ chatvault-scanner = { path = "crates/scanner" }
 chatvault-index = { path = "crates/index" }
 chatvault-webdav = { path = "crates/webdav" }
 chatvault-sync = { path = "crates/sync" }
+chatvault-scan = { path = "crates/scan" }
 adapter-wechat-windows = { path = "adapters/wechat-windows" }
 adapter-generic-folder = { path = "adapters/generic-folder" }
+adapter-wxwork-windows = { path = "adapters/wxwork-windows" }
 
 # 序列化与数据处理
 serde = { version = "1.0", features = ["derive"] }

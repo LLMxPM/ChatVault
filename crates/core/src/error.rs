@@ -31,9 +31,9 @@ pub enum ChatVaultError {
     #[error("文件未找到或不可读: {path}")]
     FileNotFound { path: String },
 
-    /// 微信目录解析失败
-    #[error("微信目录解析失败: {0}")]
-    WeChatParse(String),
+    /// 来源适配器目录布局解析失败
+    #[error("来源目录解析失败: {0}")]
+    SourceParse(String),
 
     /// 扫描器操作错误
     #[error("扫描错误: {0}")]

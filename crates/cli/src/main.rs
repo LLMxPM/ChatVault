@@ -1,22 +1,16 @@
 //! # ChatVault CLI 命令行验证工具
 //!
-//! 提供面向终端的实机功能验证、微信 4.x 目录自动探测、批量扫描入库、
+//! 提供面向终端的实机功能验证、来源目录自动探测、批量扫描入库、
 //! SQLite+FTS5 中文检索、WebDAV 连通性测试以及端到端归档校验。
 
-use adapter_generic_folder::GenericFolderParser;
-use adapter_wechat_windows::{WeChat4Detector, WeChat4Parser};
 use anyhow::{Context, Result};
-use chatvault_core::models::DiscoveredFile;
-use chatvault_index::{Database, IngestResult, SearchFilter, SearchService};
-use chatvault_scanner::check_file_stability_sync;
+use chatvault_index::{Database, SearchFilter, SearchService};
 use chatvault_webdav::{CapabilityDetector, WebDavClient, WebDavConfig};
-use chrono::Utc;
 use clap::Parser;
 mod args;
 mod sync_commands;
 use args::{Cli, Commands};
 use std::path::PathBuf;
-use std::time::Duration;
 use sync_commands::*;
 
 #[tokio::main]
@@ -84,41 +78,61 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// 处理微信 4.x 目录自动探测命令
+/// 处理来源目录自动探测命令
 ///
-/// 职责: 查找本地 xwechat_files 目录并输出账号及附件路径
+/// 职责: 查找本机微信 4.x / 企业微信数据目录并输出账号及附件路径
 fn handle_detect() -> Result<()> {
-    println!("=== 正在探测 Windows 微信 4.x 数据目录 ===");
-    let root = match WeChat4Detector::detect_root() {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("[-] 探测失败: {}", e);
-            eprintln!("提示: 请确认当前机器已安装并登录过微信 4.x (数据目录 xwechat_files)");
-            return Ok(());
+    println!("=== 正在探测 Windows 来源数据目录 ===");
+
+    match chatvault_scan::detect_wechat_root() {
+        Ok(root) => {
+            println!("[+] 检测到微信 4.x 数据根目录: {}", root.display());
+            match chatvault_scan::inspect_wechat_accounts(&root) {
+                Ok(accounts) if accounts.is_empty() => {
+                    println!("    根目录下暂未发现有效微信账号目录");
+                }
+                Ok(accounts) => {
+                    println!("[+] 共发现 {} 个微信账号:", accounts.len());
+                    for (i, acc) in accounts.iter().enumerate() {
+                        println!("    {}. 账号标识: {}", i + 1, acc.source_account_id);
+                        println!("       附件目录: {}", acc.source_dir);
+                        println!(
+                            "       附件约 {} · 视频约 {}",
+                            acc.files_count_estimated, acc.videos_count_estimated
+                        );
+                    }
+                }
+                Err(e) => println!("    读取账号失败: {e}"),
+            }
         }
-    };
-
-    println!("[+] 成功检测到微信 4.x 数据根目录: {}", root.display());
-
-    let accounts = WeChat4Detector::find_accounts(&root)?;
-    if accounts.is_empty() {
-        println!("[-] 根目录下暂未发现有效微信账号目录");
-        return Ok(());
+        Err(e) => {
+            println!("[-] 未检测到微信 4.x: {e}");
+        }
     }
 
-    println!("[+] 共发现 {} 个微信账号:", accounts.len());
-    for (i, acc) in accounts.iter().enumerate() {
-        println!("    {}. 账号标识: {}", i + 1, acc.source_account_id);
-        println!("       根目录:   {}", acc.root_dir.display());
-        println!("       附件目录: {}", acc.files_dir.display());
-        println!("       视频目录: {}", acc.video_dir.display());
-
-        // 尝试统计当前文件数
-        if let Ok(files) = WeChat4Parser::parse_account_files(acc) {
-            println!("       当前附件文件数: {}", files.len());
+    match chatvault_scan::detect_wxwork_root() {
+        Ok(root) => {
+            println!("[+] 检测到企业微信数据根目录: {}", root.display());
+            match chatvault_scan::inspect_wxwork_accounts(&root) {
+                Ok(accounts) if accounts.is_empty() => {
+                    println!("    根目录下暂未发现有效企业微信账号目录");
+                }
+                Ok(accounts) => {
+                    println!("[+] 共发现 {} 个企业微信账号:", accounts.len());
+                    for (i, acc) in accounts.iter().enumerate() {
+                        println!("    {}. 账号标识: {}", i + 1, acc.source_account_id);
+                        println!("       附件目录: {}", acc.source_dir);
+                        println!(
+                            "       附件约 {} · 视频约 {}",
+                            acc.files_count_estimated, acc.videos_count_estimated
+                        );
+                    }
+                }
+                Err(e) => println!("    读取账号失败: {e}"),
+            }
         }
-        if let Ok(videos) = WeChat4Parser::parse_account_videos(acc) {
-            println!("       当前视频文件数: {}", videos.len());
+        Err(e) => {
+            println!("[-] 未检测到企业微信: {e}");
         }
     }
 
@@ -127,8 +141,9 @@ fn handle_detect() -> Result<()> {
 
 /// 执行扫描并入库 SQLite
 ///
-/// 职责: 收集文件、检查稳定性、计算 BLAKE3、增量去重并建立 FTS5 索引
-/// 默认增量（由来源策略发现候选 + 已知文件复检）；`full` 时忽略检查点全量发现
+/// 职责: 委托共享编排收集文件、稳定性检测、哈希去重并建立 FTS5 索引
+/// 默认增量；`full` 时忽略检查点全量发现。target 支持 wechat / wxwork /
+/// 有效来源根路径或通用附件目录。
 fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> Result<()> {
     println!(
         "=== 开始执行文件扫描与入库（{}） ===",
@@ -137,295 +152,23 @@ fn handle_scan(target: &str, db_path: &PathBuf, device_id: &str, full: bool) -> 
     println!("[*] 正在打开/初始化本地数据库: {}", db_path.display());
     let mut db = Database::open(db_path)?;
     let device_id = resolve_device(&mut db, device_id)?;
-    let scan_started_ms = Utc::now().timestamp_millis();
+    let report = scan_path_with_shared(&mut db, &device_id, target, full)?;
 
-    let mut indexed_count = 0;
-    let mut skipped_count = 0;
-    let mut new_object_count = 0;
-    let mut discovered_count = 0;
-
-    let wechat_root = if target.eq_ignore_ascii_case("wechat") {
-        Some(WeChat4Detector::detect_root().context("探测微信 4.x 根目录失败")?)
-    } else {
-        WeChat4Detector::validate_root(target).ok()
-    };
-    if let Some(root) = wechat_root {
-        let enable_videos = load_cli_video_setting(&db, &root.to_string_lossy());
-        let accounts = WeChat4Detector::find_accounts(&root)?;
-        if accounts.is_empty() {
-            println!("未找到可扫描的微信 4.x 账号");
-            return Ok(());
-        }
-        for acc in accounts {
-            println!("[*] 正在扫描微信账号 [{}]...", acc.source_account_id);
-
-            // 媒体根 1: msg/file
-            scan_cli_media_root(
-                &mut db,
-                &device_id,
-                &acc.files_dir,
-                &acc.source_account_id,
-                full,
-                scan_started_ms,
-                &mut indexed_count,
-                &mut skipped_count,
-                &mut new_object_count,
-                &mut discovered_count,
-                true,
-            )?;
-
-            // 媒体根 2: msg/video（仅 .mp4）
-            if !enable_videos {
-                println!("    [video] 已按采集源配置关闭视频识别");
-                continue;
-            }
-            scan_cli_media_root(
-                &mut db,
-                &device_id,
-                &acc.video_dir,
-                &acc.source_account_id,
-                full,
-                scan_started_ms,
-                &mut indexed_count,
-                &mut skipped_count,
-                &mut new_object_count,
-                &mut discovered_count,
-                false,
-            )?;
-        }
-    } else {
-        println!("[*] 正在扫描通用目录: {}", target);
-        let since = resolve_scan_since(&db, target, full)?;
-        let walked = GenericFolderParser::parse_with_since(target, since)?;
-        let changed_known = if since.is_some() {
-            db.list_changed_known_files(target)?
-        } else {
-            Vec::new()
-        };
-        let files = merge_changed_known(walked, changed_known, "generic-folder", None, None, None);
-        println!("    本次候选 {} 个文件", files.len());
-        discovered_count += files.len();
-        let complete = process_scan_files(
-            &mut db,
-            &device_id,
-            &files,
-            &mut indexed_count,
-            &mut skipped_count,
-            &mut new_object_count,
-        )?;
-        if complete {
-            db.mark_scan_started(target, "generic-folder", None, scan_started_ms)?;
-        } else {
-            println!("[-] 通用目录存在未完成候选，保留原扫描检查点");
-        }
-    }
-
-    if discovered_count == 0 {
+    if report.discovered == 0 {
         println!("未发现符合归档条件的新增或变更文件");
     }
 
     let stats = db.get_stats()?;
     println!("\n=== 入库完成总结 ===");
-    println!("  - 本次候选总数:   {}", discovered_count);
-    println!("  - 本次新入库记录: {}", indexed_count);
-    println!("  - 本次新增独立对象: {}", new_object_count);
-    println!("  - 幂等跳过未变文件: {}", skipped_count);
+    println!("  - 本次候选总数:   {}", report.discovered);
+    println!("  - 本次新入库记录: {}", report.indexed);
+    println!("  - 本次新增独立对象: {}", report.new_objects);
+    println!("  - 幂等跳过未变文件: {}", report.skipped);
     println!("  - 数据库总内容对象: {}", stats.total_objects);
     println!("  - 数据库总来源记录: {}", stats.total_records);
     println!("  - 待上传队列任务数: {}", stats.pending_tasks);
 
     Ok(())
-}
-
-/// 解析扫描根增量起点
-fn resolve_scan_since(
-    db: &Database,
-    root: &str,
-    full: bool,
-) -> Result<Option<std::time::SystemTime>> {
-    if full {
-        return Ok(None);
-    }
-    let ms = db.get_scan_started_ms(root)?;
-    Ok(ms.map(chatvault_index::system_time_from_ms))
-}
-
-/// 从持久化采集源读取视频识别开关；直接扫描未配置路径时默认开启。
-fn load_cli_video_setting(db: &Database, root: &str) -> bool {
-    let raw = db
-        .get_setting("collect_sources")
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "[]".to_string());
-    let sources: Vec<chatvault_core::models::CollectSource> =
-        serde_json::from_str(&raw).unwrap_or_default();
-    let key = chatvault_core::normalize_scan_key(root);
-    sources
-        .into_iter()
-        .find(|source| {
-            source.source_type == chatvault_core::models::WECHAT_WINDOWS_4_SOURCE_TYPE
-                && chatvault_core::normalize_scan_key(&source.path) == key
-        })
-        .map(|source| source.enable_videos)
-        .unwrap_or(true)
-}
-
-/// 扫描单个媒体根（msg/file 或 msg/video）
-#[allow(clippy::too_many_arguments)]
-fn scan_cli_media_root(
-    db: &mut Database,
-    device_id: &str,
-    media_root: &std::path::Path,
-    account_id: &str,
-    full: bool,
-    scan_started_ms: i64,
-    indexed_count: &mut usize,
-    skipped_count: &mut usize,
-    new_object_count: &mut usize,
-    discovered_count: &mut usize,
-    use_file_parser: bool,
-) -> Result<()> {
-    let root_s = media_root.to_string_lossy().to_string();
-    let since = resolve_scan_since(db, &root_s, full)?;
-
-    let walked = if use_file_parser {
-        if !media_root.exists() {
-            return Ok(());
-        }
-        WeChat4Parser::parse_folder_since(media_root, Some(account_id), since)?
-    } else {
-        let fake_account = adapter_wechat_windows::WeChatAccount {
-            source_account_id: account_id.to_string(),
-            root_dir: media_root
-                .parent()
-                .and_then(|p| p.parent())
-                .unwrap_or(media_root)
-                .to_path_buf(),
-            files_dir: media_root.to_path_buf(),
-            video_dir: media_root.to_path_buf(),
-        };
-        WeChat4Parser::parse_account_videos_since(&fake_account, since)?
-    };
-
-    let changed_known = if since.is_some() {
-        db.list_changed_known_files(&root_s)?
-    } else {
-        Vec::new()
-    };
-    let files = merge_changed_known(
-        walked,
-        changed_known,
-        "wechat-windows-4",
-        Some(account_id),
-        None,
-        if use_file_parser {
-            Some(media_root)
-        } else {
-            None
-        },
-    );
-    println!(
-        "    [{}] 本次候选 {} 个文件",
-        if use_file_parser { "file" } else { "video" },
-        files.len()
-    );
-    *discovered_count += files.len();
-    let complete = process_scan_files(
-        db,
-        device_id,
-        &files,
-        indexed_count,
-        skipped_count,
-        new_object_count,
-    )?;
-    if complete {
-        db.mark_scan_started(
-            &root_s,
-            "wechat-windows-4",
-            Some(account_id),
-            scan_started_ms,
-        )?;
-    } else {
-        println!("[-] 媒体根 {} 存在未完成候选，保留原扫描检查点", root_s);
-    }
-    Ok(())
-}
-
-/// 合并目录发现与已知文件内容变更
-fn merge_changed_known(
-    walked: Vec<DiscoveredFile>,
-    changed_known: Vec<chatvault_index::KnownLocalFile>,
-    source_type: &str,
-    source_account_id: Option<&str>,
-    source_conversation_id: Option<String>,
-    source_root: Option<&std::path::Path>,
-) -> Vec<DiscoveredFile> {
-    use std::collections::HashSet;
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut merged = Vec::with_capacity(walked.len() + changed_known.len());
-    for file in walked {
-        let key = chatvault_core::normalize_scan_key(&file.absolute_path);
-        if seen.insert(key) {
-            merged.push(file);
-        }
-    }
-    for known in changed_known {
-        let key = chatvault_core::normalize_scan_key(&known.original_path);
-        if seen.contains(&key) {
-            continue;
-        }
-        let conversation_id = source_root
-            .and_then(|root| WeChat4Parser::conversation_id_for_path(root, &known.original_path))
-            .or_else(|| source_conversation_id.clone());
-        if let Some(file) = known.to_discovered(source_type, source_account_id, conversation_id) {
-            seen.insert(key);
-            merged.push(file);
-        }
-    }
-    merged
-}
-
-/// 仅对需要处理的文件做稳定性检测并入库，返回是否全部完成。
-///
-/// 未稳定或入库失败的文件会使本轮检查点保持不变，等待下次扫描重试。
-fn process_scan_files(
-    db: &mut Database,
-    device_id: &str,
-    files: &[DiscoveredFile],
-    indexed_count: &mut usize,
-    skipped_count: &mut usize,
-    new_object_count: &mut usize,
-) -> Result<bool> {
-    let mut complete = true;
-    for file in files {
-        if db.path_is_current(&file.absolute_path)? {
-            *skipped_count += 1;
-            continue;
-        }
-        let is_stable = check_file_stability_sync(&file.absolute_path, Duration::from_millis(50))
-            .unwrap_or(false);
-        if !is_stable {
-            complete = false;
-            println!("[-] 跳过处于写入变动中的不稳定文件: {}", file.file_name);
-            continue;
-        }
-        match db.ingest_file(file, device_id) {
-            Ok(IngestResult::Indexed { is_new_object, .. }) => {
-                *indexed_count += 1;
-                if is_new_object {
-                    *new_object_count += 1;
-                }
-            }
-            Ok(IngestResult::Skipped { .. }) => {
-                *skipped_count += 1;
-            }
-            Err(e) => {
-                complete = false;
-                eprintln!("[-] 文件入库异常 {}: {}", file.file_name, e);
-            }
-        }
-    }
-    Ok(complete)
 }
 
 /// 执行多维检索
@@ -457,6 +200,7 @@ fn handle_search(
         end_time: None,
         limit,
         offset: 0,
+        ..Default::default()
     };
 
     println!(

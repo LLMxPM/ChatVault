@@ -1,6 +1,8 @@
-<!-- UiCard：面板容器；info 时在标题旁显示可点击说明 -->
+<!-- UiCard：面板容器；header 固定，body 可 flex-1 内部滚动；info 在标题旁显示说明 -->
 <template>
-  <section class="overflow-hidden rounded-cv-lg border border-cv-border bg-cv-surface">
+  <section
+    class="flex min-h-0 flex-col overflow-hidden rounded-cv-lg border border-cv-border bg-cv-surface"
+  >
     <header v-if="title || $slots.header" class="shrink-0 border-b border-cv-border px-4 py-3">
       <slot name="header">
         <div class="flex items-start justify-between gap-3">
@@ -15,7 +17,7 @@
         </div>
       </slot>
     </header>
-    <div class="min-h-0 flex-1 p-4" :class="bodyClass">
+    <div class="flex min-h-0 flex-1 flex-col p-4" :class="bodyClass">
       <slot />
     </div>
   </section>
@@ -29,6 +31,7 @@ withDefaults(
     title?: string;
     description?: string;
     info?: string;
+    /** 覆盖默认 body 类；需要内部滚动时传 overflow-y-auto 等 */
     bodyClass?: string;
   }>(),
   { title: undefined, description: undefined, info: undefined, bodyClass: "" },

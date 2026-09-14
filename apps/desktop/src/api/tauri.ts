@@ -9,10 +9,11 @@ import type {
   CollectSourceCacheDto,
   ScanRequestDto,
   ScanResultDto,
-  FileObjectViewDto,
   FileSourceDto,
   DownloadResultDto,
   SearchQueryDto,
+  ObjectSearchPageDto,
+  BatchResultDto,
   VaultStatsDto,
   WebdavConfigDto,
   WebdavCapabilityDto,
@@ -42,6 +43,16 @@ export async function detectWechatAccounts(): Promise<WechatAccountDto[]> {
 /** 检查用户选择的微信 4.x 根目录并返回账号列表。 */
 export async function inspectWechatDirectory(path: string): Promise<WechatAccountDto[]> {
   return await invoke<WechatAccountDto[]>("inspect_wechat_directory", { path });
+}
+
+/** 探测本机企业微信账号列表。 */
+export async function detectWxworkAccounts(): Promise<WechatAccountDto[]> {
+  return await invoke<WechatAccountDto[]>("detect_wxwork_accounts");
+}
+
+/** 检查用户选择的企业微信根目录并返回账号列表。 */
+export async function inspectWxworkDirectory(path: string): Promise<WechatAccountDto[]> {
+  return await invoke<WechatAccountDto[]>("inspect_wxwork_directory", { path });
 }
 
 /**
@@ -99,10 +110,10 @@ export async function setScheduleConfig(enabled: boolean, intervalMinutes: numbe
 /**
  * 全文搜索与多维筛选文件记录（按内容折叠）
  * @param query 查询过滤条件
- * @returns 匹配的内容对象列表
+ * @returns 匹配的内容对象分页信封
  */
-export async function searchObjects(query: SearchQueryDto): Promise<FileObjectViewDto[]> {
-  return await invoke<FileObjectViewDto[]>("search_objects", { query });
+export async function searchObjects(query: SearchQueryDto): Promise<ObjectSearchPageDto> {
+  return await invoke<ObjectSearchPageDto>("search_objects", { query });
 }
 
 /** 列出内容对象的全部来源记录。 */
@@ -121,6 +132,26 @@ export async function downloadObject(
   originalName: string,
 ): Promise<DownloadResultDto> {
   return await invoke<DownloadResultDto>("download_object", { objectId, originalName });
+}
+
+/** 批量导出内容对象到下载目录（含本地可打开对象）。 */
+export async function downloadObjects(objectIds: string[]): Promise<BatchResultDto> {
+  return await invoke<BatchResultDto>("download_objects", { objectIds });
+}
+
+/** 批量释放对象受控缓存。 */
+export async function releaseObjectCache(objectIds: string[]): Promise<BatchResultDto> {
+  return await invoke<BatchResultDto>("release_object_cache", { objectIds });
+}
+
+/** 批量删除对象本机原文件与缓存映射。 */
+export async function deleteObjectLocalFiles(objectIds: string[]): Promise<BatchResultDto> {
+  return await invoke<BatchResultDto>("delete_object_local_files", { objectIds });
+}
+
+/** 立即回收受控缓存；forceAll 时忽略保留天数与容量。 */
+export async function reclaimCacheNow(forceAll = false): Promise<number> {
+  return await invoke<number>("reclaim_cache_now", { forceAll });
 }
 
 /**

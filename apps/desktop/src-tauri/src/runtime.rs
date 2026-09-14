@@ -109,12 +109,34 @@ pub fn get_runtime_info(
     })
 }
 
+/// 打开本应用数据目录，不接受前端提供的任意路径。
+#[tauri::command]
+pub fn open_data_directory(state: State<'_, AppState>) -> Result<(), String> {
+    let directory = state.db_path.parent().ok_or("无效的数据目录")?;
+    std::process::Command::new("explorer.exe")
+        .arg(directory)
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 /// 打开本应用日志目录，不接受前端提供的任意路径。
 #[tauri::command]
 pub fn open_log_directory(state: State<'_, AppState>) -> Result<(), String> {
     let directory = state.db_path.parent().ok_or("无效的数据目录")?.join("logs");
     std::process::Command::new("explorer.exe")
         .arg(directory)
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// 打开项目开源仓库，方便用户查阅文档或 star；地址固定，不接受前端传入 URL。
+#[tauri::command]
+pub fn open_repository_homepage() -> Result<(), String> {
+    const REPOSITORY_URL: &str = "https://github.com/LLMxPM/ChatVault";
+    std::process::Command::new("explorer.exe")
+        .arg(REPOSITORY_URL)
         .spawn()
         .map_err(|error| error.to_string())?;
     Ok(())

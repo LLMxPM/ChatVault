@@ -33,6 +33,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .invoke_handler(tauri::generate_handler![
             commands::scan::detect_wechat_accounts,
             commands::scan::inspect_wechat_directory,
+            commands::scan::detect_wxwork_accounts,
+            commands::scan::inspect_wxwork_directory,
             commands::scan::run_scan,
             commands::pipeline::run_pipeline,
             commands::pipeline::list_task_runs,
@@ -45,6 +47,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::library::reveal_file_in_explorer,
             commands::library::open_file_with_system,
             commands::library::download_object,
+            commands::library::download_objects,
+            commands::library::release_object_cache,
+            commands::library::delete_object_local_files,
+            commands::library::reclaim_cache_now,
             commands::sources::list_source_accounts,
             commands::sources::list_source_conversations,
             commands::sources::update_source_account,
@@ -74,7 +80,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::tasks::pause_upload_task,
             connection::save_webdav_config,
             runtime::get_runtime_info,
+            runtime::open_data_directory,
             runtime::open_log_directory,
+            runtime::open_repository_homepage,
         ])
         .build(tauri::generate_context!())?;
     let data_dir = app.path().app_local_data_dir()?;

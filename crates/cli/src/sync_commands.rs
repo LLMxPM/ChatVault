@@ -1,12 +1,17 @@
-// ChatVault CLI 定时运行与元数据同步入口：使用持久化身份和共享核心。
+// ChatVault CLI 定时运行与元数据同步入口：使用持久化身份和共享扫描编排。
 use super::*;
 use chatvault_core::models::{
     CollectSource, TaskRunKind, TaskRunStageName, TaskRunStageStatus, TaskRunStatus,
     GENERIC_FOLDER_SOURCE_TYPE, WECHAT_WINDOWS_4_SOURCE_TYPE,
+    WXWORK_WINDOWS_SOURCE_TYPE,
+};
+use chatvault_scan::{
+    scan_generic_source, scan_wechat_source, scan_wxwork_source, AccountTarget, ScanEvent,
+    ScanRequest, ScanReport,
 };
 use chatvault_sync::archive_pending_with_progress;
 use chatvault_sync::NoopProgressSink;
-use std::path::Path;
+use chrono::Utc;
 
 /// 定时任务：读取本地设置，增量扫描采集目录并归档到 WebDAV，并写入运行日志
 pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
@@ -34,53 +39,61 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
     let run_id = db.start_task_run(TaskRunKind::Pipeline, "schedule", webdav_configured, "cli")?;
     db.start_task_run_stage(&run_id, TaskRunStageName::Scan)?;
 
-    let mut indexed = 0usize;
-    let mut skipped = 0usize;
-    let mut discovered = 0usize;
+    let on_event = |event: ScanEvent| print_scan_event(&event);
+    let mut report = ScanReport::default();
 
-    // 1. 按配置的适配器扫描采集源（有检查点则增量）。
+    // 1. 按配置的适配器扫描采集源（有检查点则增量），来源边界检查取消。
     for source in &collect_sources {
         if db.task_run_cancel_requested(&run_id)? {
             return finish_cancelled_run(
                 &mut db,
                 &run_id,
                 TaskRunStageName::Scan,
-                discovered,
-                indexed,
-                skipped,
+                report.discovered,
+                report.indexed,
+                report.skipped,
             );
         }
-        match source.source_type.as_str() {
-            WECHAT_WINDOWS_4_SOURCE_TYPE => scan_wechat_source(
-                &mut db,
-                &device_id,
-                &source.path,
-                selected_accounts.as_deref(),
-                scan_started_ms,
-                source.enable_videos,
-                &mut indexed,
-                &mut skipped,
-                &mut discovered,
-            )?,
-            GENERIC_FOLDER_SOURCE_TYPE => scan_generic_source(
-                &mut db,
-                &device_id,
-                &source.path,
-                scan_started_ms,
-                &mut indexed,
-                &mut skipped,
-                &mut discovered,
-            )?,
-            other => println!("[-] 跳过未知采集源类型 {}: {}", other, source.path),
-        }
+        let req = ScanRequest {
+            device_id: &device_id,
+            full_scan: false,
+            target_accounts: selected_accounts.as_deref(),
+            scan_started_ms,
+            should_cancel: None,
+            on_event: Some(&on_event),
+            on_source_done: None,
+        };
+        let root = PathBuf::from(&source.path);
+        let partial = match source.source_type.as_str() {
+            WECHAT_WINDOWS_4_SOURCE_TYPE => {
+                scan_wechat_source(&mut db, &root, source.enable_videos, &req)?
+            }
+            WXWORK_WINDOWS_SOURCE_TYPE => {
+                scan_wxwork_source(&mut db, &root, source.enable_videos, &req)?
+            }
+            GENERIC_FOLDER_SOURCE_TYPE => scan_generic_source(&mut db, &root, &req)?,
+            other => {
+                println!("[-] 跳过未知采集源类型 {}: {}", other, source.path);
+                continue;
+            }
+        };
+        report.merge(partial);
+        println!(
+            "[*] 采集源完成 {}: 累计候选 {} · 新入库 {} · 跳过 {}",
+            source.path, report.discovered, report.indexed, report.skipped
+        );
         let _ = db.touch_task_run_progress(
             &run_id,
             TaskRunStageName::Scan,
-            indexed,
-            discovered.max(indexed),
+            report.indexed,
+            report.discovered.max(report.indexed),
             Some(&source.path),
         );
     }
+
+    let discovered = report.discovered;
+    let indexed = report.indexed;
+    let skipped = report.skipped;
 
     println!(
         "[*] 候选 {} 个，跳过未变 {}，新入库 {}",
@@ -94,7 +107,7 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
         Some(
             &serde_json::json!({
                 "discovered": discovered,
-                "newObjects": indexed,
+                "newObjects": report.new_objects,
                 "skipped": skipped,
             })
             .to_string(),
@@ -120,7 +133,7 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
             Some(
                 &serde_json::json!({
                     "discovered": discovered,
-                    "newObjects": indexed,
+                    "newObjects": report.new_objects,
                     "skipped": skipped,
                 })
                 .to_string(),
@@ -280,7 +293,7 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
         Some(
             &serde_json::json!({
                 "discovered": discovered,
-                "newObjects": indexed,
+                "newObjects": report.new_objects,
                 "skipped": skipped,
                 "uploaded": archive.uploaded,
                 "failed": archive.failed,
@@ -297,6 +310,46 @@ pub(super) async fn handle_scheduled_run(db_path: &PathBuf) -> Result<()> {
         anyhow::bail!("存在归档失败任务，已保存失败原因并等待重试");
     }
     Ok(())
+}
+
+/// 打印共享扫描事件。
+fn print_scan_event(event: &ScanEvent) {
+    match event {
+        ScanEvent::SourceStart { source_type, path } => {
+            println!("[*] 扫描采集源 {source_type}: {path}");
+        }
+        ScanEvent::UnknownSourceType { source_type, path } => {
+            println!("[-] 跳过未知采集源类型 {source_type}: {path}");
+        }
+        ScanEvent::SourceMissing { path, label } => {
+            println!("[-] {label}: {path}");
+        }
+        ScanEvent::AccountListed { accounts } => {
+            println!("[+] 发现账号 {} 个", accounts.len());
+        }
+        ScanEvent::AccountSkipped { account_id } => {
+            println!("[*] 跳过未勾选账号 [{account_id}]");
+        }
+        ScanEvent::AccountStart { account_id } => {
+            println!("[*] 扫描账号 [{account_id}]");
+        }
+        ScanEvent::MediaRootStart { kind, path } => {
+            println!("    [{}] {}", kind.as_str(), path);
+        }
+        ScanEvent::MediaRootCandidates { kind, path, count } => {
+            println!(
+                "    [{}] 候选 {} 个文件 ({path})",
+                kind.as_str(),
+                count
+            );
+        }
+        ScanEvent::MediaRootIncomplete { path } => {
+            println!("[-] 媒体根 {path} 存在未完成候选，保留原扫描检查点");
+        }
+        ScanEvent::VideosDisabled { account_id } => {
+            println!("    [video] 账号 {account_id} 已按采集源配置关闭视频识别");
+        }
+    }
 }
 
 /// 扫描阶段观察到取消：当前阶段 skipped，整 run cancelled。
@@ -421,7 +474,7 @@ fn finish_partial_scheduled_run(
     Ok(())
 }
 
-/// 桌面持久化的微信账号勾选项；字段与前端 collect_selected_accounts 一致。
+/// 桌面持久化的账号勾选项；字段与前端 collect_selected_accounts 一致。
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SelectedAccount {
@@ -430,7 +483,7 @@ struct SelectedAccount {
 }
 
 /// 读取账号勾选：设置缺失或 null 表示从未配置（全选）。
-fn load_selected_accounts(db: &Database) -> Result<Option<Vec<SelectedAccount>>> {
+fn load_selected_accounts(db: &Database) -> Result<Option<Vec<AccountTarget>>> {
     let Some(raw) = db.get_setting("collect_selected_accounts")? else {
         return Ok(None);
     };
@@ -440,266 +493,15 @@ fn load_selected_accounts(db: &Database) -> Result<Option<Vec<SelectedAccount>>>
     }
     let accounts: Vec<SelectedAccount> =
         serde_json::from_str(trimmed).context("解析账号勾选配置失败")?;
-    Ok(Some(accounts))
-}
-
-/// 判断微信账号是否在勾选范围内；selected 为 None 时全选。
-fn is_selected_account(
-    selected: Option<&[SelectedAccount]>,
-    root: &Path,
-    account_id: &str,
-) -> bool {
-    let Some(targets) = selected else {
-        return true;
-    };
-    let root_key = chatvault_core::normalize_scan_key(&root.to_string_lossy());
-    targets.iter().any(|target| {
-        target.source_account_id == account_id
-            && chatvault_core::normalize_scan_key(&target.source_root) == root_key
-    })
-}
-
-/// 按微信 4.x 适配器扫描一个配置的根目录。
-#[allow(clippy::too_many_arguments)]
-fn scan_wechat_source(
-    db: &mut Database,
-    device_id: &str,
-    root_path: &str,
-    selected_accounts: Option<&[SelectedAccount]>,
-    scan_started_ms: i64,
-    enable_videos: bool,
-    indexed: &mut usize,
-    skipped: &mut usize,
-    discovered: &mut usize,
-) -> Result<()> {
-    let root = PathBuf::from(root_path);
-    if !root.is_dir() {
-        println!("[-] 微信 4.x 目录不存在，跳过: {}", root_path);
-        return Ok(());
-    }
-    let accounts = WeChat4Detector::find_accounts(&root)?;
-    for acc in accounts {
-        if !is_selected_account(selected_accounts, &root, &acc.source_account_id) {
-            println!(
-                "[*] 跳过未勾选微信账号 [{}]",
-                acc.source_account_id
-            );
-            continue;
-        }
-        println!("[*] 扫描微信账号 [{}]", acc.source_account_id);
-
-        // 媒体根 1: msg/file
-        scan_one_media_root(
-            db,
-            device_id,
-            &acc.files_dir,
-            &acc.source_account_id,
-            scan_started_ms,
-            indexed,
-            skipped,
-            discovered,
-            true,
-        )?;
-
-        // 媒体根 2: msg/video
-        if !enable_videos {
-            println!("    [video] 已按采集源配置关闭视频识别");
-            continue;
-        }
-        scan_one_media_root(
-            db,
-            device_id,
-            &acc.video_dir,
-            &acc.source_account_id,
-            scan_started_ms,
-            indexed,
-            skipped,
-            discovered,
-            false,
-        )?;
-    }
-    Ok(())
-}
-
-/// 扫描单个媒体根
-#[allow(clippy::too_many_arguments)]
-fn scan_one_media_root(
-    db: &mut Database,
-    device_id: &str,
-    media_root: &std::path::Path,
-    account_id: &str,
-    scan_started_ms: i64,
-    indexed: &mut usize,
-    skipped: &mut usize,
-    discovered: &mut usize,
-    use_file_parser: bool,
-) -> Result<()> {
-    let root_s = media_root.to_string_lossy().to_string();
-    let since = resolve_since(db, &root_s)?;
-    let walked = if use_file_parser {
-        if !media_root.exists() {
-            return Ok(());
-        }
-        WeChat4Parser::parse_folder_since(media_root, Some(account_id), since)?
-    } else {
-        let fake = adapter_wechat_windows::WeChatAccount {
-            source_account_id: account_id.to_string(),
-            root_dir: media_root
-                .parent()
-                .and_then(|p| p.parent())
-                .unwrap_or(media_root)
-                .to_path_buf(),
-            files_dir: media_root.to_path_buf(),
-            video_dir: media_root.to_path_buf(),
-        };
-        WeChat4Parser::parse_account_videos_since(&fake, since)?
-    };
-    let changed_known = if since.is_some() {
-        db.list_changed_known_files(&root_s)?
-    } else {
-        Vec::new()
-    };
-    let files = merge_changed_known(
-        walked,
-        changed_known,
-        WECHAT_WINDOWS_4_SOURCE_TYPE,
-        Some(account_id),
-        None,
-        if use_file_parser {
-            Some(media_root)
-        } else {
-            None
-        },
-    );
-    *discovered += files.len();
-    let complete = process_files(db, device_id, &files, indexed, skipped)?;
-    if complete {
-        db.mark_scan_started(
-            &root_s,
-            WECHAT_WINDOWS_4_SOURCE_TYPE,
-            Some(account_id),
-            scan_started_ms,
-        )?;
-    } else {
-        println!("[-] 媒体根 {} 存在未完成候选，保留原扫描检查点", root_s);
-    }
-    Ok(())
-}
-
-/// 扫描一个通用附件目录采集源。
-#[allow(clippy::too_many_arguments)]
-fn scan_generic_source(
-    db: &mut Database,
-    device_id: &str,
-    root_path: &str,
-    scan_started_ms: i64,
-    indexed: &mut usize,
-    skipped: &mut usize,
-    discovered: &mut usize,
-) -> Result<()> {
-    let root = PathBuf::from(root_path);
-    if !root.is_dir() {
-        println!("[-] 附件目录不存在，跳过: {}", root_path);
-        return Ok(());
-    }
-    println!("[*] 扫描附件目录: {}", root_path);
-    let since = resolve_since(db, root_path)?;
-    let walked = GenericFolderParser::parse_with_since(&root, since)?;
-    let changed_known = if since.is_some() {
-        db.list_changed_known_files(root_path)?
-    } else {
-        Vec::new()
-    };
-    let files = merge_changed_known(
-        walked,
-        changed_known,
-        GENERIC_FOLDER_SOURCE_TYPE,
-        None,
-        None,
-        None,
-    );
-    *discovered += files.len();
-    let complete = process_files(db, device_id, &files, indexed, skipped)?;
-    if complete {
-        db.mark_scan_started(root_path, GENERIC_FOLDER_SOURCE_TYPE, None, scan_started_ms)?;
-    } else {
-        println!("[-] 附件目录存在未完成候选，保留原扫描检查点");
-    }
-    Ok(())
-}
-
-/// 定时任务始终使用增量：无检查点时自动退化为全量
-fn resolve_since(db: &Database, root: &str) -> Result<Option<std::time::SystemTime>> {
-    let ms = db.get_scan_started_ms(root)?;
-    Ok(ms.map(chatvault_index::system_time_from_ms))
-}
-
-/// 合并目录发现与已知文件内容变更
-fn merge_changed_known(
-    walked: Vec<DiscoveredFile>,
-    changed_known: Vec<chatvault_index::KnownLocalFile>,
-    source_type: &str,
-    source_account_id: Option<&str>,
-    source_conversation_id: Option<String>,
-    source_root: Option<&std::path::Path>,
-) -> Vec<DiscoveredFile> {
-    use std::collections::HashSet;
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut merged = Vec::with_capacity(walked.len() + changed_known.len());
-    for file in walked {
-        let key = chatvault_core::normalize_scan_key(&file.absolute_path);
-        if seen.insert(key) {
-            merged.push(file);
-        }
-    }
-    for known in changed_known {
-        let key = chatvault_core::normalize_scan_key(&known.original_path);
-        if seen.contains(&key) {
-            continue;
-        }
-        let conversation_id = source_root
-            .and_then(|root| WeChat4Parser::conversation_id_for_path(root, &known.original_path))
-            .or_else(|| source_conversation_id.clone());
-        if let Some(file) = known.to_discovered(source_type, source_account_id, conversation_id) {
-            seen.insert(key);
-            merged.push(file);
-        }
-    }
-    merged
-}
-
-/// 仅对需要处理的文件做稳定性检测并入库，返回是否全部完成。
-///
-/// 未稳定或入库失败的文件会使本轮检查点保持不变，等待下次扫描重试。
-fn process_files(
-    db: &mut Database,
-    device_id: &str,
-    files: &[DiscoveredFile],
-    indexed: &mut usize,
-    skipped: &mut usize,
-) -> Result<bool> {
-    let mut complete = true;
-    for file in files {
-        if db.path_is_current(&file.absolute_path)? {
-            *skipped += 1;
-            continue;
-        }
-        let stable = check_file_stability_sync(&file.absolute_path, Duration::from_millis(50))
-            .unwrap_or(false);
-        if !stable {
-            complete = false;
-            continue;
-        }
-        match db.ingest_file(file, device_id) {
-            Ok(IngestResult::Indexed { .. }) => *indexed += 1,
-            Ok(IngestResult::Skipped { .. }) => *skipped += 1,
-            Err(e) => {
-                complete = false;
-                eprintln!("[-] 入库异常 {}: {}", file.file_name, e);
-            }
-        }
-    }
-    Ok(complete)
+    Ok(Some(
+        accounts
+            .into_iter()
+            .map(|a| AccountTarget {
+                source_root: a.source_root,
+                source_account_id: a.source_account_id,
+            })
+            .collect(),
+    ))
 }
 
 /// 发布本机元数据日志
@@ -780,3 +582,105 @@ pub(super) async fn handle_restore(
     );
     Ok(())
 }
+
+// 暴露给 handle_scan 使用的共享扫描入口
+pub(super) fn scan_path_with_shared(
+    db: &mut Database,
+    device_id: &str,
+    target: &str,
+    full: bool,
+) -> Result<ScanReport> {
+    let on_event = |event: ScanEvent| print_scan_event(&event);
+    let scan_started_ms = Utc::now().timestamp_millis();
+    let wechat_root = if target.eq_ignore_ascii_case("wechat") {
+        Some(chatvault_scan::detect_wechat_root().context("探测微信 4.x 根目录失败")?)
+    } else if target.eq_ignore_ascii_case("wxwork") {
+        // 企业微信：作为通用路径扫描账号型根
+        let root = chatvault_scan::detect_wxwork_root().context("探测企业微信根目录失败")?;
+        let enable_videos = load_source_video_setting(
+            db,
+            &root.to_string_lossy(),
+            WXWORK_WINDOWS_SOURCE_TYPE,
+        );
+        let req = ScanRequest {
+            device_id,
+            full_scan: full,
+            target_accounts: None,
+            scan_started_ms,
+            should_cancel: None,
+            on_event: Some(&on_event),
+            on_source_done: None,
+        };
+        return Ok(scan_wxwork_source(db, &root, enable_videos, &req)?);
+    } else {
+        adapter_wechat_windows::WeChat4Detector::validate_root(target).ok()
+    };
+
+    if let Some(root) = wechat_root {
+        let enable_videos =
+            load_source_video_setting(db, &root.to_string_lossy(), WECHAT_WINDOWS_4_SOURCE_TYPE);
+        let req = ScanRequest {
+            device_id,
+            full_scan: full,
+            target_accounts: None,
+            scan_started_ms,
+            should_cancel: None,
+            on_event: Some(&on_event),
+            on_source_done: None,
+        };
+        return Ok(scan_wechat_source(db, &root, enable_videos, &req)?);
+    }
+
+    // 可能是企业微信手动路径
+    if adapter_wxwork_windows::WxWorkDetector::validate_root(target).is_ok() {
+        let enable_videos = load_source_video_setting(
+            db,
+            target,
+            WXWORK_WINDOWS_SOURCE_TYPE,
+        );
+        let root = PathBuf::from(target);
+        let req = ScanRequest {
+            device_id,
+            full_scan: full,
+            target_accounts: None,
+            scan_started_ms,
+            should_cancel: None,
+            on_event: Some(&on_event),
+            on_source_done: None,
+        };
+        return Ok(scan_wxwork_source(db, &root, enable_videos, &req)?);
+    }
+
+    println!("[*] 正在扫描通用目录: {target}");
+    let root = PathBuf::from(target);
+    let req = ScanRequest {
+        device_id,
+        full_scan: full,
+        target_accounts: None,
+        scan_started_ms,
+        should_cancel: None,
+        on_event: Some(&on_event),
+        on_source_done: None,
+    };
+    Ok(scan_generic_source(db, &root, &req)?)
+}
+
+/// 从持久化采集源读取指定类型的视频识别开关；未配置时默认开启。
+fn load_source_video_setting(db: &Database, root: &str, source_type: &str) -> bool {
+    let raw = db
+        .get_setting("collect_sources")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "[]".to_string());
+    let sources: Vec<CollectSource> = serde_json::from_str(&raw).unwrap_or_default();
+    let key = chatvault_core::normalize_scan_key(root);
+    sources
+        .into_iter()
+        .find(|source| {
+            source.source_type == source_type
+                && chatvault_core::normalize_scan_key(&source.path) == key
+        })
+        .map(|source| source.enable_videos)
+        .unwrap_or(true)
+}
+

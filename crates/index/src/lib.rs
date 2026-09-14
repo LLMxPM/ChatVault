@@ -8,8 +8,8 @@ pub mod schema;
 
 pub use db::{Database, DatabaseStats, IngestResult, UploadTaskRow};
 pub use query::{
-    ObjectLocation, ObjectSearchItem, ObjectSourceItem, SearchFilter, SearchResultItem,
-    SearchService,
+    ObjectLocation, ObjectSearchItem, ObjectSearchPage, ObjectSort, ObjectSourceItem, SearchFilter,
+    SearchResultItem, SearchService, TimeField,
 };
 pub use schema::initialize_schema;
 

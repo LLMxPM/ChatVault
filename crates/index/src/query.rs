@@ -8,6 +8,91 @@ use chatvault_core::error::{ChatVaultError, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// 时间筛选字段
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TimeField {
+    /// 文件修改时间 file_records.file_time
+    #[default]
+    FileTime,
+    /// 首次发现时间 file_records.discovered_at
+    DiscoveredAt,
+}
+
+impl TimeField {
+    /// 解析前端标识；非法值回退 file_time
+    pub fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim).unwrap_or("") {
+            "discovered_at" | "discoveredAt" => TimeField::DiscoveredAt,
+            _ => TimeField::FileTime,
+        }
+    }
+
+    /// 对应 SQL 列名（白名单，不可注入）
+    fn column(self) -> &'static str {
+        match self {
+            TimeField::FileTime => "r.file_time",
+            TimeField::DiscoveredAt => "r.discovered_at",
+        }
+    }
+}
+
+/// 对象排序白名单
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObjectSort {
+    #[default]
+    FileTimeDesc,
+    FileTimeAsc,
+    SizeDesc,
+    SizeAsc,
+    NameAsc,
+    NameDesc,
+}
+
+impl ObjectSort {
+    /// 解析前端标识；非法值回退 file_time_desc
+    pub fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim).unwrap_or("") {
+            "file_time_asc" => ObjectSort::FileTimeAsc,
+            "size_desc" => ObjectSort::SizeDesc,
+            "size_asc" => ObjectSort::SizeAsc,
+            "name_asc" => ObjectSort::NameAsc,
+            "name_desc" => ObjectSort::NameDesc,
+            _ => ObjectSort::FileTimeDesc,
+        }
+    }
+
+    /// SQL ORDER BY 片段（白名单）
+    fn order_by(self) -> &'static str {
+        match self {
+            ObjectSort::FileTimeDesc => "file_time DESC, object_id",
+            ObjectSort::FileTimeAsc => "file_time ASC, object_id",
+            ObjectSort::SizeDesc => "size DESC, object_id",
+            ObjectSort::SizeAsc => "size ASC, object_id",
+            ObjectSort::NameAsc => "original_name COLLATE NOCASE ASC, object_id",
+            ObjectSort::NameDesc => "original_name COLLATE NOCASE DESC, object_id",
+        }
+    }
+
+    /// 内存排序比较键（位置筛选时使用）
+    fn cmp_items(self, a: &ObjectSearchItem, b: &ObjectSearchItem) -> std::cmp::Ordering {
+        let primary = match self {
+            ObjectSort::FileTimeDesc => b.file_time.cmp(&a.file_time),
+            ObjectSort::FileTimeAsc => a.file_time.cmp(&b.file_time),
+            ObjectSort::SizeDesc => b.size.cmp(&a.size),
+            ObjectSort::SizeAsc => a.size.cmp(&b.size),
+            ObjectSort::NameAsc => a
+                .original_name
+                .to_lowercase()
+                .cmp(&b.original_name.to_lowercase()),
+            ObjectSort::NameDesc => b
+                .original_name
+                .to_lowercase()
+                .cmp(&a.original_name.to_lowercase()),
+        };
+        primary.then_with(|| a.object_id.cmp(&b.object_id))
+    }
+}
+
 /// 检索过滤条件
 #[derive(Debug, Clone, Default)]
 pub struct SearchFilter {
@@ -15,6 +100,8 @@ pub struct SearchFilter {
     pub keyword: Option<String>,
     /// 文件扩展名过滤 (例如 "pdf", "docx")
     pub extension: Option<String>,
+    /// 多扩展名过滤（OR）；小写不含点
+    pub extensions: Vec<String>,
     /// 文件分类，在数据库分页前筛选。
     pub category: Option<String>,
     /// 来源类型过滤
@@ -27,10 +114,23 @@ pub struct SearchFilter {
     pub start_time: Option<DateTime<Utc>>,
     /// 时间范围截止
     pub end_time: Option<DateTime<Utc>>,
+    /// 时间过滤字段，默认 file_time
+    pub time_field: TimeField,
+    /// 位置过滤：local / remote / both / missing
+    pub location: Option<String>,
+    /// 排序
+    pub sort: ObjectSort,
     /// 返回的最大记录数
     pub limit: usize,
     /// 分页偏移量
     pub offset: usize,
+}
+
+/// 对象检索分页结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObjectSearchPage {
+    pub total: usize,
+    pub items: Vec<ObjectSearchItem>,
 }
 
 /// 检索结果项
@@ -88,6 +188,8 @@ pub struct ObjectSearchItem {
     pub size: u64,
     pub file_time: String,
     pub discovered_at: String,
+    /// 时间含义（代表记录的 time_source）
+    pub time_source: String,
     pub source_count: usize,
     pub location: ObjectLocation,
     /// 本机可打开路径；解密来源只允许使用明文 cache_path。
@@ -304,12 +406,13 @@ impl<'a> SearchService<'a> {
     ///
     /// 职责: 在记录级过滤后按 object 去重分页，并推断本机/远端位置
     /// 输入: `filter`: 与记录检索相同的过滤条件；`device_id`: 本机设备标识
-    /// 输出: `Result<Vec<ObjectSearchItem>>`
+    /// 输出: `Result<ObjectSearchPage>`
+    /// 约束: 位置筛选需读盘判定，此时先取候选再内存过滤分页；无位置筛选时 SQL 分页。
     pub fn search_objects(
         &self,
         filter: &SearchFilter,
         device_id: &str,
-    ) -> Result<Vec<ObjectSearchItem>> {
+    ) -> Result<ObjectSearchPage> {
         let conn = self.db.connection();
         let limit = if filter.limit == 0 {
             50
@@ -318,6 +421,23 @@ impl<'a> SearchService<'a> {
         };
         let offset = filter.offset;
         let (where_clause, params_vec) = build_record_conditions(filter)?;
+        let order_by = filter.sort.order_by();
+
+        // 位置筛选时拉取全部候选，磁盘可读性无法在 SQL 中表达
+        let needs_location_filter = filter
+            .location
+            .as_deref()
+            .map(|v| {
+                let t = v.trim().to_ascii_lowercase();
+                !t.is_empty() && t != "all"
+            })
+            .unwrap_or(false);
+
+        let sql_limit = if needs_location_filter {
+            String::new()
+        } else {
+            "LIMIT ? OFFSET ?".to_string()
+        };
 
         let sql = format!(
             r#"
@@ -329,6 +449,7 @@ impl<'a> SearchService<'a> {
                     r.file_time,
                     r.discovered_at,
                     r.device_id,
+                    r.time_source,
                     o.hash,
                     o.extension,
                     o.size
@@ -361,11 +482,12 @@ impl<'a> SearchService<'a> {
                 size,
                 file_time,
                 discovered_at,
-                source_count
+                source_count,
+                time_source
             FROM ranked
             WHERE rn = 1
-            ORDER BY file_time DESC, object_id
-            LIMIT ? OFFSET ?
+            ORDER BY {order_by}
+            {sql_limit}
             "#
         );
 
@@ -379,8 +501,10 @@ impl<'a> SearchService<'a> {
         }
         let limit_val = limit as i64;
         let offset_val = offset as i64;
-        query_params.push(&limit_val);
-        query_params.push(&offset_val);
+        if !needs_location_filter {
+            query_params.push(&limit_val);
+            query_params.push(&offset_val);
+        }
 
         let rows = stmt
             .query_map(query_params.as_slice(), |row| {
@@ -393,6 +517,7 @@ impl<'a> SearchService<'a> {
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, i64>(7)? as usize,
+                    row.get::<_, String>(8)?,
                 ))
             })
             .map_err(|e| ChatVaultError::Database(format!("执行对象检索失败: {}", e)))?;
@@ -402,10 +527,10 @@ impl<'a> SearchService<'a> {
             base_items.push(row.map_err(|e| ChatVaultError::Database(e.to_string()))?);
         }
 
-        let mut results = Vec::with_capacity(base_items.len());
         // 批量拉取位置信息，避免每条对象 N+1 查询
         let object_ids: Vec<String> = base_items.iter().map(|b| b.0.clone()).collect();
         let location_map = self.batch_object_locations(&object_ids, device_id)?;
+        let mut results = Vec::with_capacity(base_items.len());
         for (
             object_id,
             hash,
@@ -415,6 +540,7 @@ impl<'a> SearchService<'a> {
             file_time,
             discovered_at,
             source_count,
+            time_source,
         ) in base_items
         {
             let (open_path, location) = location_map
@@ -432,9 +558,62 @@ impl<'a> SearchService<'a> {
                 source_count,
                 location,
                 open_path,
+                time_source,
             });
         }
-        Ok(results)
+
+        if needs_location_filter {
+            let want = filter
+                .location
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            results.retain(|item| item.location.as_str() == want);
+            results.sort_by(|a, b| filter.sort.cmp_items(a, b));
+            let total = results.len();
+            let end = offset.saturating_add(limit).min(total);
+            let start = offset.min(end);
+            let items = results[start.min(total)..end].to_vec();
+            return Ok(ObjectSearchPage { total, items });
+        }
+
+        let total = self.count_objects(filter)?;
+        Ok(ObjectSearchPage {
+            total,
+            items: results,
+        })
+    }
+
+    /// 满足条件的对象总数（与 search_objects 同一折叠口径）
+    pub fn count_objects(&self, filter: &SearchFilter) -> Result<usize> {
+        let conn = self.db.connection();
+        let (where_clause, params_vec) = build_record_conditions(filter)?;
+        let sql = format!(
+            r#"
+            WITH filtered AS (
+                SELECT r.record_id, r.object_id, r.file_time
+                FROM file_records r
+                JOIN file_objects o ON r.object_id = o.object_id
+                {where_clause}
+            ),
+            ranked AS (
+                SELECT object_id,
+                       ROW_NUMBER() OVER (PARTITION BY object_id ORDER BY file_time DESC, record_id) AS rn
+                FROM filtered
+            )
+            SELECT COUNT(*) FROM ranked WHERE rn = 1
+            "#
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| ChatVaultError::Database(format!("准备对象计数 SQL 失败: {}", e)))?;
+        let query_params: Vec<&dyn rusqlite::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+        let total: i64 = stmt
+            .query_row(query_params.as_slice(), |r| r.get(0))
+            .map_err(|e| ChatVaultError::Database(format!("执行对象计数失败: {}", e)))?;
+        Ok(total.max(0) as usize)
     }
 
     /// 列出内容对象的全部有效来源记录
@@ -714,8 +893,25 @@ fn build_record_conditions(
 
     if let Some(ext) = &filter.extension {
         let clean_ext = ext.trim_start_matches('.').to_lowercase();
-        conditions.push("o.extension = ?".to_string());
-        params_vec.push(Box::new(clean_ext));
+        if !clean_ext.is_empty() {
+            conditions.push("o.extension = ?".to_string());
+            params_vec.push(Box::new(clean_ext));
+        }
+    }
+    if !filter.extensions.is_empty() {
+        let clean: Vec<String> = filter
+            .extensions
+            .iter()
+            .map(|e| e.trim_start_matches('.').trim().to_lowercase())
+            .filter(|e| !e.is_empty())
+            .collect();
+        if !clean.is_empty() {
+            let placeholders = vec!["?"; clean.len()].join(",");
+            conditions.push(format!("o.extension IN ({placeholders})"));
+            for ext in clean {
+                params_vec.push(Box::new(ext));
+            }
+        }
     }
 
     if let Some(source_type) = &filter.source_type {
@@ -730,12 +926,13 @@ fn build_record_conditions(
         conditions.push("r.source_conversation_id = ?".to_string());
         params_vec.push(Box::new(conversation_id.clone()));
     }
+    let time_col = filter.time_field.column();
     if let Some(st) = &filter.start_time {
-        conditions.push("r.file_time >= ?".to_string());
+        conditions.push(format!("{time_col} >= ?"));
         params_vec.push(Box::new(st.to_rfc3339()));
     }
     if let Some(et) = &filter.end_time {
-        conditions.push("r.file_time <= ?".to_string());
+        conditions.push(format!("{time_col} <= ?"));
         params_vec.push(Box::new(et.to_rfc3339()));
     }
 
@@ -871,7 +1068,7 @@ mod tests {
         .unwrap();
 
         let service = SearchService::new(&db);
-        let objects = service
+        let page = service
             .search_objects(
                 &SearchFilter {
                     limit: 50,
@@ -880,8 +1077,10 @@ mod tests {
                 "dev-a",
             )
             .unwrap();
+        let objects = &page.items;
 
         // 两条内容对象（共享内容折叠为一行）
+        assert_eq!(page.total, 2);
         assert_eq!(objects.len(), 2);
         let shared_obj = objects
             .iter()
@@ -922,11 +1121,12 @@ mod tests {
         .unwrap();
 
         let service = SearchService::new(&db);
-        let objects = service
+        let page = service
             .search_objects(&SearchFilter::default(), "dev-local")
             .unwrap();
-        assert_eq!(objects.len(), 1);
-        assert_eq!(objects[0].location, ObjectLocation::Remote);
-        assert!(objects[0].open_path.is_none());
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].location, ObjectLocation::Remote);
+        assert!(page.items[0].open_path.is_none());
     }
 }

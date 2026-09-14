@@ -135,7 +135,10 @@ fn retries_and_pause_use_persistent_queue() {
         .list_upload_tasks(Some("pending"), 100)
         .unwrap()
         .is_empty());
-    assert_eq!(db.list_upload_tasks(Some("backed_up"), 100).unwrap().len(), 1);
+    assert_eq!(
+        db.list_upload_tasks(Some("backed_up"), 100).unwrap().len(),
+        1
+    );
 }
 
 /// 两个新数据库生成不同身份，同一个索引重新打开后身份不变。

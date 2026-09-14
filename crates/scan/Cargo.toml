@@ -1,0 +1,19 @@
+[package]
+name = "chatvault-scan"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ChatVault 采集源扫描编排：统一桌面与 CLI 的发现、合并、入库与检查点"
+
+[dependencies]
+chatvault-core.workspace = true
+chatvault-index.workspace = true
+chatvault-scanner.workspace = true
+adapter-wechat-windows.workspace = true
+adapter-generic-folder.workspace = true
+adapter-wxwork-windows.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

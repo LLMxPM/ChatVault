@@ -2,6 +2,7 @@
 use super::*;
 use chatvault_core::models::{
     CollectSource, GENERIC_FOLDER_SOURCE_TYPE, WECHAT_WINDOWS_4_SOURCE_TYPE,
+    WXWORK_WINDOWS_SOURCE_TYPE,
 };
 use chatvault_core::{is_under_root, normalize_scan_key};
 use chatvault_index::cache_policy::{CACHE_MAX_MIB, CACHE_RETENTION_DAYS, COPY_THRESHOLD_MIB};
@@ -187,6 +188,20 @@ fn validate_collect_sources(
                     WeChat4Detector::validate_root(&source.path).map_err(|e| e.to_string())?;
                 }
             }
+            WXWORK_WINDOWS_SOURCE_TYPE => {
+                let is_wxwork_root = Path::new(&source.path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.eq_ignore_ascii_case("WXWork"))
+                    .unwrap_or(false);
+                if !is_wxwork_root {
+                    return Err("企业微信采集源必须是 WXWork 根目录".to_string());
+                }
+                if Path::new(&source.path).exists() {
+                    adapter_wxwork_windows::WxWorkDetector::validate_root(&source.path)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
             GENERIC_FOLDER_SOURCE_TYPE => {}
             _ => return Err(format!("不支持的采集源类型: {}", source.source_type)),
         }
@@ -367,12 +382,19 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&base);
         let wechat = base.join("xwechat_files");
+        let wxwork = base.join("WXWork");
         let attachments = base.join("attachments");
         let nested = attachments.join("nested");
+        std::fs::create_dir_all(&wechat).unwrap();
+        std::fs::create_dir_all(&wxwork).unwrap();
         std::fs::create_dir_all(&nested).unwrap();
 
         assert!(validate_collect_sources(vec![
             source(WECHAT_WINDOWS_4_SOURCE_TYPE, &attachments,)
+        ])
+        .is_err());
+        assert!(validate_collect_sources(vec![
+            source(WXWORK_WINDOWS_SOURCE_TYPE, &attachments)
         ])
         .is_err());
         assert!(validate_collect_sources(vec![
@@ -387,6 +409,7 @@ mod tests {
         .is_err());
         assert!(validate_collect_sources(vec![
             source(WECHAT_WINDOWS_4_SOURCE_TYPE, &wechat),
+            source(WXWORK_WINDOWS_SOURCE_TYPE, &wxwork),
             source(GENERIC_FOLDER_SOURCE_TYPE, &attachments),
         ])
         .is_ok());

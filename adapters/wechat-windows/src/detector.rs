@@ -61,7 +61,7 @@ impl WeChat4Detector {
             .map(|name| name.eq_ignore_ascii_case("xwechat_files"))
             .unwrap_or(false);
         if !is_xwechat_root {
-            return Err(ChatVaultError::WeChatParse(
+            return Err(ChatVaultError::SourceParse(
                 "请选择微信 4.x 的 xwechat_files 根目录，不能选择账号或 msg/file 子目录"
                     .to_string(),
             ));
@@ -102,7 +102,7 @@ impl WeChat4Detector {
             }
         }
 
-        Err(ChatVaultError::WeChatParse(
+        Err(ChatVaultError::SourceParse(
             "未检测到微信 4.x 数据目录 (xwechat_files)，请确认微信 4.x 是否已安装登录，或手动指定目录".to_string(),
         ))
     }

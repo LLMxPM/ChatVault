@@ -1,8 +1,9 @@
 // ChatVault 桌面命令：library 职责实现与前端错误映射。
 use super::webdav::resolve_webdav_password;
 use super::*;
-use chatvault_index::query::{ObjectSearchItem, ObjectSourceItem};
+use chatvault_index::query::{ObjectSearchItem, ObjectSort, ObjectSourceItem, TimeField};
 use chatvault_metadata::get_object_path;
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 
 /// 内容对象列表项 DTO
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,9 +17,42 @@ pub struct FileObjectViewDto {
     pub formatted_size: String,
     pub category: String,
     pub file_time: Option<String>,
+    pub discovered_at: Option<String>,
+    pub time_source: Option<String>,
     pub location: String,
     pub open_path: Option<String>,
     pub source_count: usize,
+}
+
+/// 对象检索分页信封
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectSearchPageDto {
+    pub total: usize,
+    pub items: Vec<FileObjectViewDto>,
+}
+
+/// 批量操作单项结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchItemResultDto {
+    pub object_id: String,
+    pub original_name: String,
+    pub status: String,
+    pub saved_path: Option<String>,
+    pub released_bytes: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// 批量操作汇总
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchResultDto {
+    pub total: usize,
+    pub ok_count: usize,
+    pub failed_count: usize,
+    pub released_bytes: u64,
+    pub items: Vec<BatchItemResultDto>,
 }
 
 /// 内容对象来源项 DTO
@@ -63,9 +97,62 @@ fn map_object_item(item: ObjectSearchItem) -> FileObjectViewDto {
         formatted_size: format_file_size(item.size),
         category: cat,
         file_time: Some(item.file_time),
+        discovered_at: Some(item.discovered_at),
+        time_source: Some(item.time_source),
         location: item.location.as_str().to_string(),
         open_path: item.open_path,
         source_count: item.source_count,
+    }
+}
+
+/// 解析前端时间：支持 RFC3339、`YYYY-MM-DD` 与 `YYYY-MM-DDTHH:mm[:ss]`
+fn parse_query_time(value: &str, end_of_day: bool) -> Option<DateTime<Utc>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(dt) = DateTime::parse_from_rfc3339(trimmed) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
+        let time = if end_of_day {
+            NaiveTime::from_hms_opt(23, 59, 59)?
+        } else {
+            NaiveTime::from_hms_opt(0, 0, 0)?
+        };
+        return Some(Utc.from_utc_datetime(&NaiveDateTime::new(date, time)));
+    }
+    if let Ok(dt) = NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S") {
+        return Some(Utc.from_utc_datetime(&dt));
+    }
+    if let Ok(dt) = NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M") {
+        return Some(Utc.from_utc_datetime(&dt));
+    }
+    None
+}
+
+fn build_search_filter(query: &SearchQueryDto) -> SearchFilter {
+    SearchFilter {
+        keyword: query.keyword.clone(),
+        category: query.category.clone(),
+        source_type: query.source_type.clone(),
+        source_account_id: query.source_account_id.clone(),
+        source_conversation_id: query.source_conversation_id.clone(),
+        start_time: query
+            .start_time
+            .as_deref()
+            .and_then(|v| parse_query_time(v, false)),
+        end_time: query
+            .end_time
+            .as_deref()
+            .and_then(|v| parse_query_time(v, true)),
+        time_field: TimeField::parse(query.time_field.as_deref()),
+        location: query.location.clone(),
+        extensions: query.extensions.clone().unwrap_or_default(),
+        sort: ObjectSort::parse(query.sort.as_deref()),
+        limit: query.limit.unwrap_or(300),
+        offset: query.offset.unwrap_or(0),
+        ..Default::default()
     }
 }
 
@@ -74,26 +161,18 @@ fn map_object_item(item: ObjectSearchItem) -> FileObjectViewDto {
 pub async fn search_objects(
     query: SearchQueryDto,
     state: State<'_, AppState>,
-) -> std::result::Result<Vec<FileObjectViewDto>, String> {
+) -> std::result::Result<ObjectSearchPageDto, String> {
     let db = state.get_db().map_err(|e| e.to_string())?;
     let device_id = state.device_id().map_err(|e| e.to_string())?;
     let search_service = SearchService::new(&db);
-
-    let filter = SearchFilter {
-        keyword: query.keyword.clone(),
-        category: query.category.clone(),
-        source_type: query.source_type.clone(),
-        source_account_id: query.source_account_id.clone(),
-        source_conversation_id: query.source_conversation_id.clone(),
-        limit: query.limit.unwrap_or(300),
-        offset: query.offset.unwrap_or(0),
-        ..Default::default()
-    };
-
-    let items = search_service
+    let filter = build_search_filter(&query);
+    let page = search_service
         .search_objects(&filter, &device_id)
         .map_err(|e| e.to_string())?;
-    Ok(items.into_iter().map(map_object_item).collect())
+    Ok(ObjectSearchPageDto {
+        total: page.total,
+        items: page.items.into_iter().map(map_object_item).collect(),
+    })
 }
 
 /// 列出内容对象的全部来源
@@ -421,6 +500,408 @@ pub async fn download_object(
         file_name: saved_name,
         size,
     })
+}
+
+/// 查询对象代表信息：名称、哈希、本机可读路径
+struct ObjectExportInfo {
+    original_name: String,
+    hash: String,
+    open_path: Option<String>,
+}
+
+fn load_object_export_info(
+    db: &chatvault_index::Database,
+    _device_id: &str,
+    object_id: &str,
+) -> std::result::Result<ObjectExportInfo, String> {
+    let conn = db.connection();
+    let (original_name, hash): (String, String) = conn
+        .query_row(
+            r#"
+            SELECT
+                COALESCE(
+                    (SELECT r.original_name FROM file_records r
+                     WHERE r.object_id = ?1
+                       AND NOT EXISTS(SELECT 1 FROM record_tombstones d WHERE d.record_id = r.record_id)
+                     ORDER BY r.file_time DESC, r.record_id LIMIT 1),
+                    o.extension
+                ),
+                o.hash
+            FROM file_objects o
+            WHERE o.object_id = ?1
+            "#,
+            [object_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| format!("未找到内容对象: {e}"))?;
+
+    let open_path: Option<String> = conn
+        .query_row(
+            r#"
+            SELECT CASE
+                WHEN EXISTS(
+                    SELECT 1 FROM local_files l
+                    JOIN file_records r ON r.record_id = l.record_id
+                    WHERE r.object_id = ?1
+                      AND NOT EXISTS(SELECT 1 FROM record_tombstones d WHERE d.record_id = r.record_id)
+                      AND l.original_path <> ''
+                ) THEN (
+                    SELECT l.original_path FROM local_files l
+                    JOIN file_records r ON r.record_id = l.record_id
+                    WHERE r.object_id = ?1
+                      AND NOT EXISTS(SELECT 1 FROM record_tombstones d WHERE d.record_id = r.record_id)
+                      AND l.original_path <> ''
+                    ORDER BY r.file_time DESC LIMIT 1
+                )
+                ELSE (
+                    SELECT l.cache_path FROM local_files l
+                    JOIN file_records r ON r.record_id = l.record_id
+                    WHERE r.object_id = ?1
+                      AND NOT EXISTS(SELECT 1 FROM record_tombstones d WHERE d.record_id = r.record_id)
+                      AND l.cache_path IS NOT NULL AND l.cache_path <> ''
+                    ORDER BY r.file_time DESC LIMIT 1
+                )
+            END
+            "#,
+            [object_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    // 磁盘不可读时视为无路径
+    let open_path = open_path.filter(|p| {
+        std::fs::symlink_metadata(p)
+            .map(|m| m.file_type().is_file() && !m.file_type().is_symlink())
+            .unwrap_or(false)
+    });
+
+    Ok(ObjectExportInfo {
+        original_name,
+        hash,
+        open_path,
+    })
+}
+
+fn safe_export_name(original_name: &str, hash: &str) -> String {
+    if original_name.trim().is_empty() {
+        format!("{}.bin", hash.chars().take(16).collect::<String>())
+    } else {
+        Path::new(original_name)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| original_name.to_string())
+    }
+}
+
+/// 导出所需的连接与路径配置（避免在 await 间持有 Database）
+struct ExportContext {
+    vault_id: String,
+    webdav_url: String,
+    webdav_username: String,
+    password: Option<String>,
+    download_dir: PathBuf,
+}
+
+fn build_export_context(db: &chatvault_index::Database, vault_id: &str) -> ExportContext {
+    let webdav_url = db
+        .get_setting(setting_keys::WEBDAV_URL)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let webdav_username = db
+        .get_setting(setting_keys::WEBDAV_USERNAME)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let download_dir_cfg = db
+        .get_setting(setting_keys::DOWNLOAD_DIR)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let password = resolve_webdav_password(&webdav_url, &webdav_username, None);
+    ExportContext {
+        vault_id: vault_id.to_string(),
+        webdav_url,
+        webdav_username,
+        password,
+        download_dir: resolve_download_dir(&download_dir_cfg),
+    }
+}
+
+async fn export_object_with_context(
+    ctx: &ExportContext,
+    info: &ObjectExportInfo,
+) -> std::result::Result<DownloadResultDto, String> {
+    std::fs::create_dir_all(&ctx.download_dir)
+        .map_err(|e| format!("无法创建下载目录 {}: {e}", ctx.download_dir.display()))?;
+    let safe_name = safe_export_name(&info.original_name, &info.hash);
+    let dest = unique_dest_path(&ctx.download_dir, &safe_name);
+
+    if let Some(src) = info.open_path.as_ref() {
+        std::fs::copy(src, &dest).map_err(|e| format!("复制本地文件失败: {e}"))?;
+        let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+        let saved_name = dest
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| safe_name.clone());
+        return Ok(DownloadResultDto {
+            saved_path: dest.to_string_lossy().into_owned(),
+            file_name: saved_name,
+            size,
+        });
+    }
+
+    if ctx.webdav_url.trim().is_empty() {
+        return Err("无本地文件且尚未配置 WebDAV".into());
+    }
+    if ctx.password.is_none() {
+        return Err("无本地文件且尚未保存 WebDAV 密码".into());
+    }
+    let client = WebDavClient::new(WebDavConfig {
+        base_url: ctx.webdav_url.clone(),
+        username: Some(ctx.webdav_username.clone()),
+        password: ctx.password.clone(),
+    })
+    .map_err(|e| e.to_string())?;
+    let remote_path = get_object_path(&ctx.vault_id, &info.hash);
+    let size = client
+        .download_to_path(&remote_path, &dest, &info.hash)
+        .await
+        .map_err(|e| e.to_string())?;
+    let saved_name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| safe_name.clone());
+    Ok(DownloadResultDto {
+        saved_path: dest.to_string_lossy().into_owned(),
+        file_name: saved_name,
+        size,
+    })
+}
+
+/// 批量导出内容对象到下载目录（含本地已可打开对象）
+#[tauri::command]
+pub async fn download_objects(
+    object_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> std::result::Result<BatchResultDto, String> {
+    let vault_id = state.vault_id().map_err(|e| e.to_string())?;
+    let (ctx, infos) = {
+        let db = state.get_db().map_err(|e| e.to_string())?;
+        let ctx = build_export_context(&db, &vault_id);
+        let mut infos = Vec::with_capacity(object_ids.len());
+        for object_id in &object_ids {
+            let info = load_object_export_info(&db, "", object_id).ok();
+            infos.push((object_id.clone(), info));
+        }
+        (ctx, infos)
+    };
+
+    let mut items = Vec::with_capacity(object_ids.len());
+    let mut ok_count = 0usize;
+    let mut failed_count = 0usize;
+    for (object_id, info) in infos {
+        let original_name = info
+            .as_ref()
+            .map(|i| i.original_name.clone())
+            .unwrap_or_default();
+        let Some(info) = info else {
+            failed_count += 1;
+            items.push(BatchItemResultDto {
+                object_id,
+                original_name,
+                status: "failed".into(),
+                saved_path: None,
+                released_bytes: None,
+                error: Some("未找到内容对象".into()),
+            });
+            continue;
+        };
+        match export_object_with_context(&ctx, &info).await {
+            Ok(result) => {
+                ok_count += 1;
+                items.push(BatchItemResultDto {
+                    object_id,
+                    original_name: result.file_name.clone(),
+                    status: "ok".into(),
+                    saved_path: Some(result.saved_path),
+                    released_bytes: None,
+                    error: None,
+                });
+            }
+            Err(error) => {
+                failed_count += 1;
+                items.push(BatchItemResultDto {
+                    object_id,
+                    original_name,
+                    status: "failed".into(),
+                    saved_path: None,
+                    released_bytes: None,
+                    error: Some(error),
+                });
+            }
+        }
+    }
+    Ok(BatchResultDto {
+        total: object_ids.len(),
+        ok_count,
+        failed_count,
+        released_bytes: 0,
+        items,
+    })
+}
+
+/// 释放选中对象的受控缓存副本
+#[tauri::command]
+pub async fn release_object_cache(
+    object_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> std::result::Result<BatchResultDto, String> {
+    let mut db = state.get_db().map_err(|e| e.to_string())?;
+    let mut items = Vec::with_capacity(object_ids.len());
+    let mut ok_count = 0usize;
+    let mut failed_count = 0usize;
+    let mut released_bytes = 0u64;
+    for object_id in &object_ids {
+        let original_name = {
+            let conn = db.connection();
+            conn.query_row(
+                r#"
+                SELECT COALESCE(
+                    (SELECT r.original_name FROM file_records r
+                     WHERE r.object_id = ?1
+                       AND NOT EXISTS(SELECT 1 FROM record_tombstones d WHERE d.record_id = r.record_id)
+                     ORDER BY r.file_time DESC LIMIT 1),
+                    ''
+                )
+                "#,
+                [object_id],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap_or_default()
+        };
+        match db.release_object_cache(object_id) {
+            Ok((true, bytes)) => {
+                ok_count += 1;
+                released_bytes = released_bytes.saturating_add(bytes);
+                items.push(BatchItemResultDto {
+                    object_id: object_id.clone(),
+                    original_name,
+                    status: "ok".into(),
+                    saved_path: None,
+                    released_bytes: Some(bytes),
+                    error: None,
+                });
+            }
+            Ok((false, _)) => {
+                failed_count += 1;
+                items.push(BatchItemResultDto {
+                    object_id: object_id.clone(),
+                    original_name,
+                    status: "failed".into(),
+                    saved_path: None,
+                    released_bytes: None,
+                    error: Some("尚未完成远端归档，无法释放缓存".into()),
+                });
+            }
+            Err(e) => {
+                failed_count += 1;
+                items.push(BatchItemResultDto {
+                    object_id: object_id.clone(),
+                    original_name,
+                    status: "failed".into(),
+                    saved_path: None,
+                    released_bytes: None,
+                    error: Some(e.to_string()),
+                });
+            }
+        }
+    }
+    Ok(BatchResultDto {
+        total: object_ids.len(),
+        ok_count,
+        failed_count,
+        released_bytes,
+        items,
+    })
+}
+
+/// 删除选中对象的本机原文件与缓存映射
+#[tauri::command]
+pub async fn delete_object_local_files(
+    object_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> std::result::Result<BatchResultDto, String> {
+    let mut db = state.get_db().map_err(|e| e.to_string())?;
+    let mut items = Vec::with_capacity(object_ids.len());
+    let mut ok_count = 0usize;
+    let mut failed_count = 0usize;
+    let mut released_bytes = 0u64;
+    for object_id in &object_ids {
+        let original_name = {
+            let conn = db.connection();
+            conn.query_row(
+                r#"
+                SELECT COALESCE(
+                    (SELECT r.original_name FROM file_records r
+                     WHERE r.object_id = ?1
+                       AND NOT EXISTS(SELECT 1 FROM record_tombstones d WHERE d.record_id = r.record_id)
+                     ORDER BY r.file_time DESC LIMIT 1),
+                    ''
+                )
+                "#,
+                [object_id],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap_or_default()
+        };
+        match db.delete_object_local_files(object_id) {
+            Ok((_origins, _caches, bytes)) => {
+                ok_count += 1;
+                released_bytes = released_bytes.saturating_add(bytes);
+                items.push(BatchItemResultDto {
+                    object_id: object_id.clone(),
+                    original_name,
+                    status: "ok".into(),
+                    saved_path: None,
+                    released_bytes: Some(bytes),
+                    error: None,
+                });
+            }
+            Err(e) => {
+                failed_count += 1;
+                items.push(BatchItemResultDto {
+                    object_id: object_id.clone(),
+                    original_name,
+                    status: "failed".into(),
+                    saved_path: None,
+                    released_bytes: None,
+                    error: Some(e.to_string()),
+                });
+            }
+        }
+    }
+    Ok(BatchResultDto {
+        total: object_ids.len(),
+        ok_count,
+        failed_count,
+        released_bytes,
+        items,
+    })
+}
+
+/// 立即回收受控缓存；force_all 为 true 时忽略保留天数与容量目标
+#[tauri::command]
+pub async fn reclaim_cache_now(
+    force_all: Option<bool>,
+    state: State<'_, AppState>,
+) -> std::result::Result<u64, String> {
+    let mut db = state.get_db().map_err(|e| e.to_string())?;
+    if force_all.unwrap_or(false) {
+        db.reclaim_cache_force().map_err(|e| e.to_string())
+    } else {
+        db.reclaim_cache().map_err(|e| e.to_string())
+    }
 }
 
 #[cfg(test)]

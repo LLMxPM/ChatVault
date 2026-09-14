@@ -2,13 +2,13 @@
 // 用于前端与 Rust Tauri 后端通过 invoke 进行交互的契约对象
 
 /** 采集源适配器类型。 */
-export type CollectSourceType = "wechat-windows-4" | "generic-folder";
+export type CollectSourceType = "wechat-windows-4" | "wxwork-windows" | "generic-folder";
 
 /** 持久化采集源配置。 */
 export interface CollectSourceDto {
   sourceType: CollectSourceType;
   path: string;
-  /** 微信是否识别视频（msg/video）；非微信来源忽略。默认开启。 */
+  /** 账号型来源（微信/企业微信）是否识别视频；非账号来源忽略。默认开启。 */
   enableVideos?: boolean;
 }
 
@@ -78,9 +78,36 @@ export interface FileObjectViewDto {
   formattedSize: string;
   category: "doc" | "image" | "video" | "audio" | "archive" | "other";
   fileTime?: string | null;
+  discoveredAt?: string | null;
+  timeSource?: string | null;
   location: FileLocation;
   openPath?: string | null;
   sourceCount: number;
+}
+
+/** 对象检索分页信封。 */
+export interface ObjectSearchPageDto {
+  total: number;
+  items: FileObjectViewDto[];
+}
+
+/** 批量操作单项结果。 */
+export interface BatchItemResultDto {
+  objectId: string;
+  originalName: string;
+  status: "ok" | "failed";
+  savedPath?: string | null;
+  releasedBytes?: number | null;
+  error?: string | null;
+}
+
+/** 批量操作汇总。 */
+export interface BatchResultDto {
+  total: number;
+  okCount: number;
+  failedCount: number;
+  releasedBytes: number;
+  items: BatchItemResultDto[];
 }
 
 /** 内容对象展开后的来源条目。 */
@@ -119,6 +146,12 @@ export interface SearchQueryDto {
   sourceType?: string;
   sourceAccountId?: string;
   sourceConversationId?: string;
+  startTime?: string;
+  endTime?: string;
+  timeField?: "file_time" | "discovered_at";
+  location?: FileLocation | "";
+  extensions?: string[];
+  sort?: string;
   limit?: number;
   offset?: number;
 }

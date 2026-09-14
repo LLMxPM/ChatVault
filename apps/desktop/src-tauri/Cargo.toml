@@ -31,5 +31,7 @@ chatvault-metadata = { workspace = true }
 chatvault-scanner = { workspace = true }
 chatvault-webdav = { workspace = true }
 chatvault-sync = { workspace = true }
+chatvault-scan = { workspace = true }
 adapter-wechat-windows = { workspace = true }
 adapter-generic-folder = { workspace = true }
+adapter-wxwork-windows = { workspace = true }

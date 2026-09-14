@@ -27,6 +27,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "adapter-wxwork-windows"
+version = "0.1.0"
+dependencies = [
+ "chatvault-core",
+ "chatvault-scanner",
+ "chrono",
+ "dirs 5.0.1",
+ "thiserror 1.0.69",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -711,10 +724,12 @@ version = "0.1.0"
 dependencies = [
  "adapter-generic-folder",
  "adapter-wechat-windows",
+ "adapter-wxwork-windows",
  "anyhow",
  "chatvault-core",
  "chatvault-index",
  "chatvault-metadata",
+ "chatvault-scan",
  "chatvault-scanner",
  "chatvault-sync",
  "chatvault-webdav",
@@ -746,9 +761,11 @@ version = "0.1.0"
 dependencies = [
  "adapter-generic-folder",
  "adapter-wechat-windows",
+ "adapter-wxwork-windows",
  "chatvault-core",
  "chatvault-index",
  "chatvault-metadata",
+ "chatvault-scan",
  "chatvault-scanner",
  "chatvault-sync",
  "chatvault-webdav",
@@ -795,6 +812,22 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "chatvault-scan"
+version = "0.1.0"
+dependencies = [
+ "adapter-generic-folder",
+ "adapter-wechat-windows",
+ "adapter-wxwork-windows",
+ "chatvault-core",
+ "chatvault-index",
+ "chatvault-scanner",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]

@@ -1,9 +1,10 @@
 <!--
   ChatVault 文件库与全文检索视图
-  职责：中文即输即搜、多维筛选、按内容折叠分页、位置状态、打开/定位/下载与来源标注入口。
+  职责：中文即输即搜、多维筛选、按内容折叠分页、位置状态、打开/定位/下载、详情侧栏、
+  多选批量导出/释放缓存/删除本机文件与来源标注入口。
 -->
 <template>
-  <div class="flex h-full flex-col gap-4 p-6">
+  <div class="flex h-full flex-col gap-3 p-6">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h2 class="text-cv-page text-cv-text">文件库</h2>
@@ -21,7 +22,7 @@
     </div>
 
     <div class="flex flex-wrap items-center gap-2">
-      <div class="relative min-w-[220px] flex-1">
+      <div class="relative min-w-[200px] flex-1">
         <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-cv-text-3" />
         <UiInput
           v-model="keyword"
@@ -38,8 +39,15 @@
           <X class="h-3.5 w-3.5" />
         </button>
       </div>
-      <div class="w-48 shrink-0">
-        <UiSelect v-model="selectedAccount" @change="fetchObjects()">
+      <div class="w-36 shrink-0">
+        <UiSelect v-model="currentCategory" @change="onFilterChange">
+          <option v-for="cat in categories" :key="cat.id" :value="cat.id">
+            {{ cat.id === "all" ? "全部类型" : cat.label }}
+          </option>
+        </UiSelect>
+      </div>
+      <div class="w-40 shrink-0">
+        <UiSelect v-model="selectedAccount" @change="onFilterChange">
           <option value="">全部来源</option>
           <option
             v-for="acc in accountList"
@@ -50,201 +58,213 @@
           </option>
         </UiSelect>
       </div>
-      <UiButton variant="secondary" size="md" :loading="loading" @click="fetchObjects()">
-        <template #icon><RefreshCw class="h-4 w-4" /></template>
-        刷新
-      </UiButton>
+      <div class="w-32 shrink-0">
+        <UiSelect v-model="selectedLocation" @change="onFilterChange">
+          <option value="">全部位置</option>
+          <option value="local">本地</option>
+          <option value="remote">远程</option>
+          <option value="both">本地+远程</option>
+          <option value="missing">失效</option>
+        </UiSelect>
+      </div>
+      <div class="w-36 shrink-0">
+        <UiSelect v-model="selectedSort" @change="onFilterChange">
+          <option value="file_time_desc">时间 ↓</option>
+          <option value="file_time_asc">时间 ↑</option>
+          <option value="size_desc">大小 ↓</option>
+          <option value="size_asc">大小 ↑</option>
+          <option value="name_asc">名称 A→Z</option>
+          <option value="name_desc">名称 Z→A</option>
+        </UiSelect>
+      </div>
     </div>
 
     <div class="flex flex-wrap items-center gap-1.5">
-      <button
-        v-for="cat in categories"
-        :key="cat.id"
-        class="rounded-cv px-2.5 py-1 text-cv-caption transition-colors"
-        :class="
-          currentCategory === cat.id
-            ? 'bg-cv-accent-soft font-medium text-cv-accent'
-            : 'text-cv-text-2 hover:bg-cv-surface-2 hover:text-cv-text'
-        "
-        @click="selectCategory(cat.id)"
-      >
-        {{ cat.label }}
-      </button>
-      <span class="ml-auto text-cv-caption text-cv-text-3">
-        第 {{ page + 1 }} 页 · 本页 {{ objects.length }} 个对象
+      <template v-if="activeChips.length > 0">
+        <span
+          v-for="chip in activeChips"
+          :key="chip.key"
+          class="inline-flex items-center gap-1 rounded-cv bg-cv-surface-2 px-2 py-0.5 text-cv-caption text-cv-text-2"
+        >
+          {{ chip.label }}
+          <button class="text-cv-text-3 hover:text-cv-text" @click="chip.clear">
+            <X class="h-3 w-3" />
+          </button>
+        </span>
+        <button class="text-cv-caption text-cv-accent hover:underline" @click="clearAllFilters">
+          清空筛选
+        </button>
+      </template>
+      <span v-else class="text-cv-caption text-cv-text-3">暂无筛选项</span>
+      <span class="ml-auto flex items-center gap-1.5 text-cv-caption text-cv-text-3">
+        共 {{ total }} 个对象 · 本页 {{ objects.length }}
+        <UiButton
+          size="sm"
+          variant="ghost"
+          :loading="loading"
+          title="刷新"
+          aria-label="刷新"
+          @click="fetchObjects()"
+        >
+          <template #icon><RefreshCw class="h-3.5 w-3.5" /></template>
+        </UiButton>
       </span>
     </div>
 
-    <div class="min-h-0 flex-1 overflow-hidden rounded-cv-lg border border-cv-border bg-cv-surface">
-      <div class="h-full overflow-auto">
-        <table class="w-full table-fixed text-left text-cv-body">
-          <thead class="sticky top-0 z-10 border-b border-cv-border bg-cv-surface-2 text-cv-caption text-cv-text-2">
-            <tr>
-              <th class="px-4 py-2.5 font-medium">文件名</th>
-              <th class="w-28 px-3 py-2.5 font-medium">位置</th>
-              <th class="w-28 px-3 py-2.5 font-medium">来源数</th>
-              <th class="w-32 px-3 py-2.5 font-medium">时间</th>
-              <th class="w-24 px-3 py-2.5 font-medium">大小</th>
-              <th class="w-56 px-4 py-2.5 text-right font-medium">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <template v-for="item in objects" :key="item.objectId">
-              <tr
-                class="cursor-pointer border-b border-cv-border/60 transition-colors last:border-0 hover:bg-cv-surface-2"
-                :class="expandedId === item.objectId ? 'bg-cv-surface-2' : ''"
-                @click="toggleExpand(item)"
-              >
-                <td class="max-w-[280px] px-4 py-2.5">
-                  <div class="flex items-center gap-2">
-                    <ChevronDown
-                      v-if="item.sourceCount > 1"
-                      class="h-3.5 w-3.5 shrink-0 text-cv-text-3 transition-transform"
-                      :class="expandedId === item.objectId ? 'rotate-0' : '-rotate-90'"
+    <div
+      v-if="selectedIds.size > 0"
+      class="flex flex-wrap items-center gap-2 rounded-cv border border-cv-accent/30 bg-cv-accent-soft/40 px-3 py-2"
+    >
+      <span class="text-cv-caption font-medium text-cv-accent">已选 {{ selectedIds.size }} 项</span>
+      <UiButton size="sm" variant="primary" :loading="batchBusy === 'dl'" @click="handleBatchDownload">
+        下载
+      </UiButton>
+      <UiButton
+        size="sm"
+        variant="secondary"
+        :loading="batchBusy === 'cache'"
+        @click="handleBatchReleaseCache"
+      >
+        释放缓存
+      </UiButton>
+      <UiButton
+        size="sm"
+        variant="danger"
+        :loading="batchBusy === 'local'"
+        @click="handleBatchDeleteLocal"
+      >
+        删除本机文件
+      </UiButton>
+      <button class="ml-auto text-cv-caption text-cv-text-2 hover:text-cv-text" @click="clearSelection">
+        取消选择
+      </button>
+    </div>
+
+    <div class="flex min-h-0 flex-1 overflow-hidden">
+      <div class="min-w-0 flex-1 overflow-hidden rounded-cv-lg border border-cv-border bg-cv-surface">
+        <div class="h-full overflow-auto">
+          <table class="w-full table-fixed text-left text-cv-body">
+            <thead class="sticky top-0 z-10 border-b border-cv-border bg-cv-surface-2 text-cv-caption text-cv-text-2">
+              <tr>
+                <th class="w-10 px-2 py-2.5 font-medium">
+                  <input
+                    type="checkbox"
+                    class="accent-cv-accent"
+                    :checked="allPageSelected"
+                    :indeterminate="somePageSelected && !allPageSelected"
+                    @change="toggleSelectPage"
+                  />
+                </th>
+                <th class="px-2 py-2.5 font-medium">文件名</th>
+                <th class="w-28 px-2 py-2.5 font-medium">位置</th>
+                <th class="w-24 px-2 py-2.5 font-medium">来源数</th>
+                <th class="w-32 px-2 py-2.5 font-medium">时间</th>
+                <th class="w-20 px-2 py-2.5 font-medium">大小</th>
+                <th class="w-36 px-2 py-2.5 text-right font-medium">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-for="item in objects" :key="item.objectId">
+                <tr
+                  class="cursor-pointer border-b border-cv-border/60 transition-colors last:border-0 hover:bg-cv-surface-2"
+                  :class="selectedItem?.objectId === item.objectId ? 'bg-cv-surface-2' : ''"
+                  @click="openDetail(item)"
+                >
+                  <td class="px-2 py-2.5" @click.stop>
+                    <input
+                      type="checkbox"
+                      class="accent-cv-accent"
+                      :checked="selectedIds.has(item.objectId)"
+                      @change="toggleSelect(item.objectId)"
                     />
-                    <span v-else class="w-3.5 shrink-0" />
-                    <component :is="categoryIcon(item.category)" class="h-4 w-4 shrink-0 text-cv-text-3" />
-                    <span class="truncate font-medium text-cv-text" :title="item.originalName">
-                      {{ item.originalName }}
-                    </span>
-                  </div>
-                </td>
-                <td class="px-3 py-2.5">
-                  <span
-                    class="inline-block rounded-cv px-1.5 py-0.5 text-cv-caption font-medium"
-                    :class="locationClass(item.location)"
-                    :title="locationTitle(item.location)"
-                  >
-                    {{ locationLabel(item.location) }}
-                  </span>
-                </td>
-                <td class="px-3 py-2.5 text-cv-caption text-cv-text-2">
-                  {{ item.sourceCount > 1 ? `${item.sourceCount} 条` : "1 条" }}
-                </td>
-                <td class="px-3 py-2.5 font-mono text-cv-caption text-cv-text-2">
-                  {{ formatDateTime(item.fileTime, { fallback: "未知" }) }}
-                </td>
-                <td class="px-3 py-2.5 font-mono text-cv-caption text-cv-text-2">{{ item.formattedSize }}</td>
-                <td class="px-4 py-2.5 text-right" @click.stop>
-                  <div class="flex items-center justify-end gap-1">
-                    <UiButton
-                      v-if="item.openPath"
-                      size="sm"
-                      variant="ghost"
-                      :loading="busyKey === item.objectId + ':open'"
-                      @click="handleOpen(item)"
-                    >
-                      <template #icon><ExternalLink class="h-3.5 w-3.5" /></template>
-                      打开
-                    </UiButton>
-                    <UiButton
-                      v-if="item.openPath"
-                      size="sm"
-                      variant="ghost"
-                      @click="revealFile(item.openPath!)"
-                    >
-                      <template #icon><FolderOpen class="h-3.5 w-3.5" /></template>
-                      定位
-                    </UiButton>
-                    <UiButton
-                      v-if="!item.openPath && canDownload(item)"
-                      size="sm"
-                      variant="ghost"
-                      :loading="busyKey === item.objectId + ':dl'"
-                      @click="handleDownload(item)"
-                    >
-                      <template #icon><Download class="h-3.5 w-3.5" /></template>
-                      下载
-                    </UiButton>
-                    <UiButton size="sm" variant="ghost" :title="item.hash" @click="copyText(item.hash)">
-                      <template #icon><Copy class="h-3.5 w-3.5" /></template>
-                    </UiButton>
-                  </div>
-                </td>
-              </tr>
-              <tr v-if="expandedId === item.objectId">
-                <td colspan="6" class="max-w-0 border-b border-cv-border/60 bg-cv-surface-2/80 px-4 py-2">
-                  <div v-if="sourcesLoading" class="py-2 text-cv-caption text-cv-text-3">加载来源…</div>
-                  <div v-else-if="expandedSources.length === 0" class="py-2 text-cv-caption text-cv-text-3">
-                    暂无来源明细
-                  </div>
-                  <div v-else class="max-w-full space-y-2 overflow-hidden py-1.5">
-                    <div
-                      v-for="src in expandedSources"
-                      :key="src.recordId"
-                      class="max-w-full overflow-hidden rounded-cv border border-cv-border/60 bg-cv-surface px-3 py-2"
-                    >
-                      <div class="flex min-w-0 flex-wrap items-center gap-2">
-                        <span
-                          class="max-w-[160px] shrink-0 truncate rounded-cv bg-cv-surface-2 px-1.5 py-0.5 text-cv-caption text-cv-text-2"
-                          :title="src.sourceAccountName || src.sourceAccountId || '通用文件'"
-                        >
-                          {{ src.sourceAccountName || src.sourceAccountId || "通用文件" }}
-                          <span v-if="src.sourceConversationName" class="text-cv-accent">
-                            · {{ src.sourceConversationName }}
-                          </span>
-                        </span>
-                        <span class="min-w-0 flex-1 truncate text-cv-body font-medium text-cv-text" :title="src.originalName">
-                          {{ src.originalName }}
-                        </span>
-                        <span class="shrink-0 text-cv-caption text-cv-text-3">
-                          {{ formatDateTime(src.fileTime, { fallback: "—" }) }}
-                        </span>
-                        <UiButton
-                          v-if="src.hasLocalPath && src.originalPath"
-                          size="sm"
-                          variant="ghost"
-                          class="shrink-0"
-                          @click="revealFile(src.originalPath)"
-                        >
-                          定位
-                        </UiButton>
-                      </div>
-                      <div
-                        class="mt-1.5 flex min-w-0 items-center gap-2 text-cv-caption text-cv-text-3"
-                        :title="deviceTitle(src)"
-                      >
-                        <span class="min-w-0 flex-1 truncate font-mono" :title="pathTitle(src)">
-                          {{ pathLabel(src) }}
-                        </span>
-                        <span class="max-w-[140px] shrink-0 truncate">
-                          {{ src.deviceName || shortDeviceId(src.deviceId) }}
-                        </span>
-                        <span
-                          v-if="src.isLocal"
-                          class="shrink-0 rounded-cv bg-cv-accent-soft px-1.5 py-0.5 font-medium text-cv-accent"
-                        >
-                          本机
-                        </span>
-                      </div>
+                  </td>
+                  <td class="max-w-[240px] px-2 py-2.5">
+                    <div class="flex items-center gap-2">
+                      <component :is="categoryIcon(item.category)" class="h-4 w-4 shrink-0 text-cv-text-3" />
+                      <span class="truncate font-medium text-cv-text" :title="item.originalName">
+                        {{ item.originalName }}
+                      </span>
                     </div>
-                  </div>
+                  </td>
+                  <td class="px-2 py-2.5">
+                    <span
+                      class="inline-block rounded-cv px-1.5 py-0.5 text-cv-caption font-medium"
+                      :class="locationClass(item.location)"
+                      :title="locationTitle(item.location)"
+                    >
+                      {{ locationLabel(item.location) }}
+                    </span>
+                  </td>
+                  <td class="px-2 py-2.5 text-cv-caption text-cv-text-2">
+                    {{ item.sourceCount > 1 ? item.sourceCount + " 条" : "1 条" }}
+                  </td>
+                  <td class="px-2 py-2.5 font-mono text-cv-caption text-cv-text-2">
+                    {{ formatDateTime(item.fileTime, { fallback: "未知" }) }}
+                  </td>
+                  <td class="px-2 py-2.5 font-mono text-cv-caption text-cv-text-2">
+                    {{ item.formattedSize }}
+                  </td>
+                  <td class="px-2 py-2.5 text-right" @click.stop>
+                    <div class="flex items-center justify-end gap-1">
+                      <UiButton v-if="item.openPath" size="sm" variant="ghost" @click="handleOpen(item)">
+                        打开
+                      </UiButton>
+                      <UiButton
+                        v-else-if="canDownload(item)"
+                        size="sm"
+                        variant="ghost"
+                        @click="handleDownload(item)"
+                      >
+                        下载
+                      </UiButton>
+                      <UiButton size="sm" variant="ghost" :title="item.hash" @click="copyText(item.hash)">
+                        <Copy class="h-3.5 w-3.5" />
+                      </UiButton>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+              <tr v-if="!loading && objects.length === 0">
+                <td colspan="7" class="py-16 text-center">
+                  <FileQuestion class="mx-auto mb-2 h-10 w-10 text-cv-text-3" />
+                  <p class="text-cv-body font-medium text-cv-text">{{ emptyTitle }}</p>
+                  <p class="mt-1 text-cv-caption text-cv-text-2">{{ emptyHint }}</p>
+                  <UiButton
+                    v-if="hasActiveFilters"
+                    class="mt-3"
+                    variant="secondary"
+                    size="sm"
+                    @click="clearAllFilters"
+                  >
+                    清空筛选
+                  </UiButton>
+                  <UiButton v-else class="mt-3" variant="primary" size="sm" @click="navigateTo('tasks')">
+                    去任务
+                  </UiButton>
                 </td>
               </tr>
-            </template>
-            <tr v-if="!loading && objects.length === 0">
-              <td colspan="6" class="py-16 text-center">
-                <FileQuestion class="mx-auto mb-2 h-10 w-10 text-cv-text-3" />
-                <p class="text-cv-body font-medium text-cv-text">未找到符合条件的文件</p>
-                <p class="mt-1 text-cv-caption text-cv-text-2">可先到「任务」配置范围并立即运行</p>
-                <UiButton class="mt-3" variant="primary" size="sm" @click="navigateTo('tasks')">
-                  去任务
-                </UiButton>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
 
     <div class="flex items-center justify-between gap-3">
       <span v-if="error" class="text-cv-caption text-cv-danger">{{ error }}</span>
       <div v-else />
-      <div class="flex items-center gap-2">
+      <div class="flex shrink-0 flex-nowrap items-center gap-2">
+        <label class="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-cv-caption text-cv-text-2">
+          每页
+          <span class="w-20 shrink-0">
+            <UiSelect v-model="pageSizeKey" @change="onPageSizeChange">
+              <option v-for="n in pageSizeOptions" :key="n" :value="String(n)">{{ n }}</option>
+            </UiSelect>
+          </span>
+        </label>
         <UiButton size="sm" variant="secondary" :disabled="loading || page === 0" @click="changePage(-1)">
           上一页
         </UiButton>
-        <span class="text-cv-caption text-cv-text-2">第 {{ page + 1 }} 页</span>
+        <span class="whitespace-nowrap text-cv-caption text-cv-text-2">第 {{ page + 1 }} 页</span>
         <UiButton size="sm" variant="secondary" :disabled="loading || !hasNext" @click="changePage(1)">
           下一页
         </UiButton>
@@ -252,15 +272,20 @@
     </div>
 
     <SourceLabelPanel v-if="showSources" @close="showSources = false" @changed="onSourcesChanged" />
+    <LibraryDetailPanel
+      v-if="selectedItem"
+      :item="selectedItem"
+      @close="selectedItem = null"
+      @changed="onDetailChanged"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onActivated, onBeforeUnmount, watch, type Component } from "vue";
+import { ref, computed, onMounted, onActivated, onBeforeUnmount, watch, type Component } from "vue";
 import {
   Search,
   RefreshCw,
-  FolderOpen,
   FileQuestion,
   X,
   FileText,
@@ -270,56 +295,60 @@ import {
   Archive,
   Paperclip,
   Folder,
-  ExternalLink,
-  Download,
   Copy,
-  ChevronDown,
 } from "lucide-vue-next";
 import UiInput from "../components/ui/UiInput.vue";
 import UiSelect from "../components/ui/UiSelect.vue";
 import UiButton from "../components/ui/UiButton.vue";
 import SourceLabelPanel from "../components/SourceLabelPanel.vue";
+import LibraryDetailPanel from "../components/LibraryDetailPanel.vue";
 import {
   searchObjects,
-  listObjectSources,
-  revealFileInExplorer,
   openFileWithSystem,
   downloadObject,
+  downloadObjects,
+  releaseObjectCache,
+  deleteObjectLocalFiles,
   listSourceAccounts,
   getVaultStats,
 } from "../api/tauri";
 import { pushToast } from "../composables/useToast";
+import { confirmAction } from "../composables/useConfirm";
 import { navigateTo, libraryFocusQuery } from "../composables/useNav";
 import { formatDateTime } from "../utils/format";
 import type {
   FileObjectViewDto,
-  FileSourceDto,
   FileLocation,
   SourceAccountDto,
   VaultStatsDto,
+  BatchResultDto,
 } from "../types";
 
 const keyword = ref("");
 const selectedAccount = ref("");
+const selectedLocation = ref("");
+const selectedSort = ref("file_time_desc");
 const currentCategory = ref("all");
 const loading = ref(false);
 const objects = ref<FileObjectViewDto[]>([]);
 const accountList = ref<SourceAccountDto[]>([]);
 const stats = ref<VaultStatsDto | null>(null);
 const page = ref(0);
-const pageSize = 100;
-const hasNext = ref(false);
+const pageSizeOptions = [50, 100, 200, 500] as const;
+const pageSizeKey = ref("100");
+const pageSize = computed(() => Number(pageSizeKey.value) || 100);
+const total = ref(0);
+const hasNext = computed(() => (page.value + 1) * pageSize.value < total.value);
 const error = ref("");
 const showSources = ref(false);
-const expandedId = ref<string | null>(null);
-const expandedSources = ref<FileSourceDto[]>([]);
-const sourcesLoading = ref(false);
-const busyKey = ref("");
+const selectedItem = ref<FileObjectViewDto | null>(null);
+const selectedIds = ref(new Set<string>());
+const batchBusy = ref("");
 let requestId = 0;
 let debounceTimer: number | undefined;
 
 const categories = [
-  { id: "all", label: "全部" },
+  { id: "all", label: "全部类型" },
   { id: "doc", label: "文档" },
   { id: "image", label: "图片" },
   { id: "video", label: "视频" },
@@ -328,7 +357,82 @@ const categories = [
   { id: "other", label: "其他" },
 ];
 
-/** 按类别返回 lucide 图标组件。 */
+const hasActiveFilters = computed(() => {
+  return (
+    !!keyword.value.trim() ||
+    !!selectedAccount.value ||
+    !!selectedLocation.value ||
+    currentCategory.value !== "all"
+  );
+});
+
+const emptyTitle = computed(() =>
+  hasActiveFilters.value ? "未找到符合条件的文件" : "文件库暂无内容",
+);
+const emptyHint = computed(() =>
+  hasActiveFilters.value ? "可清空筛选后重试" : "可先到「任务」配置范围并立即运行",
+);
+
+const allPageSelected = computed(
+  () => objects.value.length > 0 && objects.value.every((o) => selectedIds.value.has(o.objectId)),
+);
+const somePageSelected = computed(() =>
+  objects.value.some((o) => selectedIds.value.has(o.objectId)),
+);
+
+const activeChips = computed(() => {
+  const chips: { key: string; label: string; clear: () => void }[] = [];
+  if (keyword.value.trim()) {
+    chips.push({
+      key: "kw",
+      label: `关键词: ${keyword.value.trim()}`,
+      clear: () => {
+        keyword.value = "";
+        fetchObjects();
+      },
+    });
+  }
+  if (currentCategory.value !== "all") {
+    const label =
+      categories.find((c) => c.id === currentCategory.value)?.label || currentCategory.value;
+    chips.push({
+      key: "cat",
+      label: `类型: ${label}`,
+      clear: () => {
+        currentCategory.value = "all";
+        onFilterChange();
+      },
+    });
+  }
+  if (selectedAccount.value) {
+    chips.push({
+      key: "acc",
+      label: "已选来源",
+      clear: () => {
+        selectedAccount.value = "";
+        onFilterChange();
+      },
+    });
+  }
+  if (selectedLocation.value) {
+    const map: Record<string, string> = {
+      local: "本地",
+      remote: "远程",
+      both: "本地+远程",
+      missing: "失效",
+    };
+    chips.push({
+      key: "loc",
+      label: `位置: ${map[selectedLocation.value] || selectedLocation.value}`,
+      clear: () => {
+        selectedLocation.value = "";
+        onFilterChange();
+      },
+    });
+  }
+  return chips;
+});
+
 function categoryIcon(category: string): Component {
   switch (category) {
     case "doc":
@@ -394,148 +498,197 @@ function locationTitle(loc: FileLocation): string {
 }
 
 function canDownload(item: FileObjectViewDto): boolean {
-  // 仅有远端时提供下载；本地可打开时不展示下载
   return item.location === "remote" || (item.location === "both" && !item.openPath);
 }
 
-/** 无名称时展示设备 ID 前缀，完整值放 title。 */
-function shortDeviceId(id: string): string {
-  if (!id) return "—";
-  return id.length > 12 ? `${id.slice(0, 8)}…` : id;
+function clearSelection() {
+  selectedIds.value = new Set();
 }
 
-/** 来源路径展示：区分无路径 / 本地可用 / 具体路径 */
-function pathLabel(src: FileSourceDto): string {
-  if (!src.hasLocalPath) return "本机无路径";
-  const path = (src.originalPath || "").trim();
-  return path || "本地可用";
+function toggleSelect(id: string) {
+  const next = new Set(selectedIds.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  selectedIds.value = next;
 }
 
-function pathTitle(src: FileSourceDto): string {
-  if (!src.hasLocalPath) return "";
-  return (src.originalPath || "").trim();
+function toggleSelectPage() {
+  const next = new Set(selectedIds.value);
+  if (allPageSelected.value) {
+    objects.value.forEach((o) => next.delete(o.objectId));
+  } else {
+    objects.value.forEach((o) => next.add(o.objectId));
+  }
+  selectedIds.value = next;
 }
 
-function deviceTitle(src: FileSourceDto): string {
-  if (src.isLocal) return `本机 · ${src.deviceId}`;
-  if (src.deviceName) return `${src.deviceName} · ${src.deviceId}`;
-  return src.deviceId;
+function openDetail(item: FileObjectViewDto) {
+  selectedItem.value = item;
 }
 
-/** 查询对象列表；reset 为 true 时回到第一页。 */
+function onDetailChanged() {
+  void fetchObjects(false);
+  void loadMeta();
+}
+
 async function fetchObjects(reset = true) {
   if (reset) page.value = 0;
   const currentRequest = ++requestId;
   loading.value = true;
   error.value = "";
+  clearSelection();
   try {
-    const list = await searchObjects({
+    const account = selectedAccount.value
+      ? {
+          sourceType: selectedAccount.value.split("\t")[0],
+          sourceAccountId: selectedAccount.value.split("\t")[1],
+        }
+      : {};
+    const result = await searchObjects({
       keyword: keyword.value.trim() || undefined,
       category: currentCategory.value !== "all" ? currentCategory.value : undefined,
-      ...(selectedAccount.value
-        ? {
-            sourceType: selectedAccount.value.split("\t")[0],
-            sourceAccountId: selectedAccount.value.split("\t")[1],
-          }
-        : {}),
-      limit: pageSize + 1,
-      offset: page.value * pageSize,
+      ...account,
+      location: (selectedLocation.value || undefined) as FileLocation | undefined,
+      sort: selectedSort.value,
+      limit: pageSize.value,
+      offset: page.value * pageSize.value,
     });
     if (currentRequest !== requestId) return;
-    hasNext.value = list.length > pageSize;
-    objects.value = list.slice(0, pageSize);
-    if (expandedId.value && !objects.value.some((o) => o.objectId === expandedId.value)) {
-      expandedId.value = null;
-      expandedSources.value = [];
+    objects.value = result.items;
+    total.value = result.total;
+    if (
+      selectedItem.value &&
+      !objects.value.some((o) => o.objectId === selectedItem.value?.objectId)
+    ) {
+      selectedItem.value = null;
     }
   } catch (err) {
     if (currentRequest === requestId) {
       pushToast({ tone: "danger", title: "查询失败", description: String(err) });
       objects.value = [];
-      hasNext.value = false;
+      total.value = 0;
     }
   } finally {
     if (currentRequest === requestId) loading.value = false;
   }
 }
 
-/** 搜索防抖。 */
 function onSearchInput() {
   if (debounceTimer) window.clearTimeout(debounceTimer);
   debounceTimer = window.setTimeout(() => fetchObjects(), 150);
 }
 
-/** 清空关键词并重新查询。 */
 function clearKeyword() {
   keyword.value = "";
   fetchObjects();
 }
 
-/** 切换分类筛选。 */
-function selectCategory(catId: string) {
-  currentCategory.value = catId;
+function onFilterChange() {
   fetchObjects();
 }
 
-/** 展开/收起来源明细。 */
-async function toggleExpand(item: FileObjectViewDto) {
-  if (expandedId.value === item.objectId) {
-    expandedId.value = null;
-    expandedSources.value = [];
-    return;
-  }
-  expandedId.value = item.objectId;
-  expandedSources.value = [];
-  sourcesLoading.value = true;
-  try {
-    expandedSources.value = await listObjectSources(item.objectId);
-  } catch (err) {
-    pushToast({ tone: "danger", title: "加载来源失败", description: String(err) });
-  } finally {
-    sourcesLoading.value = false;
-  }
+function onPageSizeChange() {
+  page.value = 0;
+  fetchObjects(false);
 }
 
-/** 打开本地文件。 */
+function clearAllFilters() {
+  keyword.value = "";
+  selectedAccount.value = "";
+  selectedLocation.value = "";
+  selectedSort.value = "file_time_desc";
+  currentCategory.value = "all";
+  fetchObjects();
+}
+
+function changePage(delta: number) {
+  page.value += delta;
+  fetchObjects(false);
+}
+
 async function handleOpen(item: FileObjectViewDto) {
   if (!item.openPath) return;
-  busyKey.value = item.objectId + ":open";
   try {
     await openFileWithSystem(item.openPath, item.extension);
   } catch (err) {
     pushToast({ tone: "danger", title: "无法打开文件", description: String(err) });
-  } finally {
-    busyKey.value = "";
   }
 }
 
-/** 在资源管理器中定位文件。 */
-async function revealFile(path: string) {
-  try {
-    await revealFileInExplorer(path);
-  } catch (err) {
-    pushToast({ tone: "danger", title: "无法定位文件", description: String(err) });
-  }
-}
-
-/** 从远端下载对象。 */
 async function handleDownload(item: FileObjectViewDto) {
-  busyKey.value = item.objectId + ":dl";
   try {
     const result = await downloadObject(item.objectId, item.originalName);
-    pushToast({
-      tone: "success",
-      title: "已下载",
-      description: result.savedPath,
-    });
+    pushToast({ tone: "success", title: "已下载", description: result.savedPath });
   } catch (err) {
     pushToast({ tone: "danger", title: "下载失败", description: String(err) });
-  } finally {
-    busyKey.value = "";
   }
 }
 
-/** 复制哈希到剪贴板。 */
+function reportBatch(title: string, result: BatchResultDto) {
+  const failed = result.items.filter((i) => i.status === "failed");
+  pushToast({
+    tone: result.failedCount === 0 ? "success" : result.okCount > 0 ? "warning" : "danger",
+    title,
+    description:
+      result.failedCount === 0
+        ? `成功 ${result.okCount} 个` +
+          (result.releasedBytes > 0 ? `，释放 ${result.releasedBytes} 字节` : "")
+        : `成功 ${result.okCount} 个，失败 ${result.failedCount} 个` +
+          (failed[0]?.error ? `：${failed[0].error}` : ""),
+  });
+}
+
+async function handleBatchDownload() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  batchBusy.value = "dl";
+  try {
+    const result = await downloadObjects(ids);
+    reportBatch("批量下载完成", result);
+  } catch (err) {
+    pushToast({ tone: "danger", title: "批量下载失败", description: String(err) });
+  } finally {
+    batchBusy.value = "";
+  }
+}
+
+async function handleBatchReleaseCache() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  batchBusy.value = "cache";
+  try {
+    const result = await releaseObjectCache(ids);
+    reportBatch("释放缓存完成", result);
+    void fetchObjects(false);
+  } catch (err) {
+    pushToast({ tone: "danger", title: "释放缓存失败", description: String(err) });
+  } finally {
+    batchBusy.value = "";
+  }
+}
+
+async function handleBatchDeleteLocal() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  const ok = await confirmAction({
+    title: "删除本机原文件",
+    description: `将删除已选 ${ids.length} 个文件的本机原文件与缓存副本。\n不会删除 WebDAV 归档内容。`,
+    confirmLabel: "删除",
+    danger: true,
+  });
+  if (!ok) return;
+  batchBusy.value = "local";
+  try {
+    const result = await deleteObjectLocalFiles(ids);
+    reportBatch("删除本机文件完成", result);
+    void fetchObjects(false);
+  } catch (err) {
+    pushToast({ tone: "danger", title: "删除失败", description: String(err) });
+  } finally {
+    batchBusy.value = "";
+  }
+}
+
 async function copyText(text: string) {
   try {
     await navigator.clipboard.writeText(text);
@@ -545,13 +698,6 @@ async function copyText(text: string) {
   }
 }
 
-/** 翻页。 */
-function changePage(delta: number) {
-  page.value += delta;
-  fetchObjects(false);
-}
-
-/** 刷新账号下拉与库摘要。 */
 async function loadMeta() {
   try {
     accountList.value = await listSourceAccounts();
@@ -565,7 +711,6 @@ async function loadMeta() {
   }
 }
 
-/** 来源标注保存后刷新筛选与列表。 */
 async function onSourcesChanged() {
   await loadMeta();
   await fetchObjects(false);
@@ -581,13 +726,11 @@ onMounted(() => {
   }
 });
 
-// keep-alive 切回时静默刷新，避免看到过期文件列表
 onActivated(() => {
   void fetchObjects(false);
   void loadMeta();
 });
 
-// 从任务历史跳转时按关键词检索
 watch(libraryFocusQuery, (q) => {
   if (!q) return;
   keyword.value = q;

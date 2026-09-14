@@ -60,11 +60,26 @@ impl WeChat4Parser {
         account: &WeChatAccount,
         since: Option<SystemTime>,
     ) -> Result<Vec<DiscoveredFile>> {
-        if !account.video_dir.exists() {
+        Self::parse_videos_folder_since(&account.video_dir, Some(&account.source_account_id), since)
+    }
+
+    /// 按视频目录路径增量发现 `.mp4` 本体（供编排层直接传入媒体根）
+    ///
+    /// 职责: 跳过非 mp4 与 0 字节；会话 ID 恒为 None
+    /// 输入:
+    ///   - `video_dir`: 视频根目录（如 `msg/video`）
+    ///   - `source_account_id`: 归属账号
+    ///   - `since`: 增量起点；月份目录 mtime 不晚于该时刻时跳过对应子树
+    pub fn parse_videos_folder_since<P: AsRef<Path>>(
+        video_dir: P,
+        source_account_id: Option<&str>,
+        since: Option<SystemTime>,
+    ) -> Result<Vec<DiscoveredFile>> {
+        let video_dir = video_dir.as_ref();
+        if !video_dir.exists() {
             tracing::info!(
-                "账号 {} 的视频目录尚未生成: {}",
-                account.source_account_id,
-                account.video_dir.display()
+                "视频目录尚未生成: {}",
+                video_dir.display()
             );
             return Ok(Vec::new());
         }
@@ -75,7 +90,7 @@ impl WeChat4Parser {
             min_size: 1,
         };
         let strategy = MtimeAtDepthStrategy::new(1);
-        let paths = scan_directory_with_strategy(&account.video_dir, &options, since, &strategy)?;
+        let paths = scan_directory_with_strategy(video_dir, &options, since, &strategy)?;
         let mut discovered = Vec::with_capacity(paths.len());
 
         for path in paths {
@@ -98,7 +113,7 @@ impl WeChat4Parser {
 
             discovered.push(DiscoveredFile {
                 source_type: WECHAT_WINDOWS_4_SOURCE_TYPE.to_string(),
-                source_account_id: Some(account.source_account_id.clone()),
+                source_account_id: source_account_id.map(|s| s.to_string()),
                 absolute_path: path.to_string_lossy().to_string(),
                 file_name,
                 file_size: metadata.len(),

@@ -4,7 +4,7 @@
 
 ## 项目概况
 
-ChatVault 是桌面端聊天附件归档与检索工具，当前优先支持 Windows 微信附件采集、本地检索、WebDAV 归档及多设备同步恢复。项目采用 Rust Cargo workspace 与 pnpm workspace；桌面端使用 Tauri 2、Vue 3、TypeScript 和 Vite，本地索引使用 SQLite，远端存储使用 WebDAV。
+ChatVault 是桌面端聊天附件归档与检索工具，当前优先支持 Windows 微信/企业微信附件采集、本地检索、WebDAV 归档及多设备同步恢复。项目采用 Rust Cargo workspace 与 pnpm workspace；桌面端使用 Tauri 2、Vue 3、TypeScript 和 Vite，本地索引使用 SQLite，远端存储使用 WebDAV。
 
 ## 项目结构
 
@@ -16,10 +16,12 @@ ChatVault 是桌面端聊天附件归档与检索工具，当前优先支持 Win
 | `crates/metadata/` | 文件哈希、元数据格式、校验与暂存。 |
 | `crates/scanner/` | 文件遍历、扫描与文件稳定性检测。 |
 | `crates/index/` | SQLite 数据结构、索引与查询、设置、任务及上传队列。 |
+| `crates/scan/` | 采集源扫描编排：按来源类型分发适配器、合并候选、入库与检查点；桌面与 CLI 共用。 |
 | `crates/webdav/` | WebDAV 客户端、能力检测、远端存储与发布校验。 |
 | `crates/sync/` | 归档、同步发布、远端变更应用与恢复；`tests/` 包含恢复测试。 |
 | `crates/cli/` | 命令行入口、参数解析与同步命令。 |
 | `adapters/wechat-windows/` | Windows 微信 4.x 来源适配：目录/账号探测、附件与视频媒体根解析。 |
+| `adapters/wxwork-windows/` | Windows 企业微信来源适配：WXWork 根/账号探测、Cache/File 与 Cache/Video 解析。 |
 | `adapters/generic-folder/` | 通用文件夹来源适配。 |
 | `docs/` | 产品与实施规划、架构与同步设计、开发构建与安装发布说明、功能规格。 |
 | `scripts/` | 构建等辅助脚本。 |

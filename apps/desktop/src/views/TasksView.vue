@@ -107,114 +107,102 @@
     </div>
 
     <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
-      <div class="min-h-0 overflow-y-auto">
-        <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+      <!-- 上区：采集范围 + 调度，按窗口比例约占 55%，两列等高、各自内部滚动 -->
+      <div
+        class="grid min-h-[16rem] grid-cols-1 gap-3 lg:grid-cols-2"
+        style="flex: 0 1 55%"
+      >
         <!-- 采集范围 -->
-        <UiCard title="采集范围" info="扫描会检查以下目录；微信账号勾选同时作用于立即运行与定时采集。">
-          <template #headerExtra>
-            <div class="flex flex-wrap justify-end gap-2">
-              <UiButton size="sm" variant="secondary" @click="pickAndAddWechat">
-                添加微信 4.x
-              </UiButton>
-              <UiButton size="sm" variant="secondary" @click="pickAndAddAttachment">
-                添加附件目录
-              </UiButton>
-              <UiButton size="sm" variant="ghost" :loading="detecting" @click="discoverAndAddWechat">
-                自动发现
-              </UiButton>
+        <UiCard
+          info="扫描会检查以下目录；账号勾选同时作用于立即运行与定时采集。新增来源类型在适配器注册表中扩展。"
+          body-class="overflow-hidden"
+        >
+          <template #header>
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div class="flex shrink-0 items-center gap-1.5">
+                <h3 class="text-cv-section text-cv-text">采集范围</h3>
+                <UiInfoTip
+                  text="扫描会检查以下目录；账号勾选同时作用于立即运行与定时采集。"
+                />
+              </div>
+              <div class="flex flex-wrap items-center justify-end gap-2">
+                <UiMenu>
+                  <template #trigger="{ toggle }">
+                    <UiButton size="sm" variant="secondary" @click="toggle">
+                      添加采集源
+                    </UiButton>
+                  </template>
+                  <template #default="{ close }">
+                    <button
+                      v-for="adapter in adapters"
+                      :key="adapter.id"
+                      type="button"
+                      class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-cv-body text-cv-text hover:bg-cv-surface-2"
+                      @click="pickAndAddSource(adapter.id); close()"
+                    >
+                      <span
+                        class="h-1.5 w-1.5 shrink-0 rounded-full"
+                        :class="adapter.badgeTone === 'accent' ? 'bg-cv-accent' : 'bg-cv-text-3'"
+                      />
+                      {{ adapter.label }}
+                    </button>
+                    <template v-if="discoverableAdapters.length">
+                      <div class="my-1 border-t border-cv-border" />
+                      <button
+                        v-for="adapter in discoverableAdapters"
+                        :key="`discover-${adapter.id}`"
+                        type="button"
+                        class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-cv-body text-cv-text-2 hover:bg-cv-surface-2 hover:text-cv-text"
+                        :disabled="detecting"
+                        @click="discoverAndAdd(adapter.id); close()"
+                      >
+                        <span class="text-cv-caption text-cv-text-3">发现</span>
+                        {{ adapter.label }}
+                      </button>
+                    </template>
+                  </template>
+                </UiMenu>
+              </div>
             </div>
           </template>
 
-          <div v-if="collectSources.length" class="space-y-2">
-            <div
+          <div v-if="collectSources.length" class="min-h-0 flex-1 space-y-2 overflow-y-auto">
+            <CollectSourceCard
               v-for="(source, index) in collectSources"
               :key="sourceKey(source)"
-              class="rounded-cv border border-cv-border"
-            >
-              <div class="flex items-start justify-between gap-3 px-3 py-2.5">
-                <div class="min-w-0 flex-1">
-                  <div class="flex flex-wrap items-center gap-1.5">
-                    <UiBadge :tone="source.sourceType === 'wechat-windows-4' ? 'accent' : 'neutral'">
-                      {{ sourceTypeLabel(source.sourceType) }}
-                    </UiBadge>
-                    <UiBadge :tone="sourceStatusTone(source.status)">
-                      {{ sourceStatusLabel(source.status) }}
-                    </UiBadge>
-                    <span
-                      v-if="source.sourceType === 'wechat-windows-4' && source.accounts.length"
-                      class="text-cv-caption text-cv-text-2"
-                    >
-                      账号 {{ selectedCountInSource(source) }}/{{ source.accounts.length }}
-                    </span>
-                  </div>
-                  <p class="mt-1 truncate font-mono text-cv-caption text-cv-text" :title="displayPath(source.path)">
-                    {{ displayPath(source.path) }}
-                  </p>
-                  <p v-if="sourceStatusDetail(source)" class="mt-0.5 text-cv-caption text-cv-text-3">
-                    {{ sourceStatusDetail(source) }}
-                  </p>
-                </div>
-                <div class="flex shrink-0 items-center gap-1">
-                  <UiButton
-                    size="sm"
-                    variant="ghost"
-                    :loading="source.inspecting"
-                    @click="source.status === 'missing' ? pickAndReplaceSource(index) : refreshSource(index)"
-                  >
-                    {{ source.status === "missing" ? "重新选择" : source.sourceType === "wechat-windows-4" ? "重新识别" : "重新检查" }}
-                  </UiButton>
-                  <UiButton size="sm" variant="ghost" @click="removeSource(index)">移除</UiButton>
-                </div>
-              </div>
-
-              <div
-                v-if="source.sourceType === 'wechat-windows-4'"
-                class="flex items-center gap-2 border-t border-cv-border px-3 py-2"
-              >
-                <label class="inline-flex cursor-pointer items-center gap-2 text-cv-caption text-cv-text-2">
-                  <input
-                    type="checkbox"
-                    class="h-4 w-4 accent-[var(--cv-accent)]"
-                    :checked="source.enableVideos !== false"
-                    @change="toggleSourceVideos(source)"
-                  />
-                  <span>识别视频</span>
-                </label>
-                <span class="text-cv-caption text-cv-text-3">扫描 msg/video 下的 .mp4</span>
-              </div>
-
-              <div
-                v-if="source.sourceType === 'wechat-windows-4' && source.accounts.length"
-                class="border-t border-cv-border px-3 py-2"
-              >
-                <div class="grid gap-1 sm:grid-cols-2">
-                  <label
-                    v-for="account in source.accounts"
-                    :key="accountKey(account)"
-                    class="flex cursor-pointer items-start gap-2 rounded-cv px-1.5 py-1 hover:bg-cv-surface-2"
-                  >
-                    <input
-                      type="checkbox"
-                      class="mt-0.5 accent-[var(--cv-accent)]"
-                      :checked="isAccountSelected(account)"
-                      @change="toggleAccount(account)"
-                    />
-                    <span class="min-w-0">
-                      <span class="block truncate font-mono text-cv-caption text-cv-text">
-                        {{ account.sourceAccountId }}
-                      </span>
-                      <span class="block text-cv-caption text-cv-text-3">
-                        附件 {{ account.filesCountEstimated }} · 视频 {{ account.videosCountEstimated ?? 0 }}
-                      </span>
-                    </span>
-                  </label>
-                </div>
-              </div>
-            </div>
+              :source="source"
+              :is-account-source="isAccountAdapter(source.sourceType)"
+              :show-videos="supportsVideos(source.sourceType)"
+              :video-hint="sourceVideoHint(source.sourceType)"
+              :status-detail="sourceStatusDetail(source)"
+              :refresh-label="
+                source.status === 'missing'
+                  ? '重新选择'
+                  : isAccountAdapter(source.sourceType)
+                    ? '重新识别'
+                    : '重新检查'
+              "
+              :source-badge-label="sourceBadgeLabel(source.sourceType)"
+              :source-badge-tone="sourceBadgeTone(source.sourceType)"
+              :source-status-label="sourceStatusLabel(source.status)"
+              :source-status-tone="sourceStatusTone(source.status)"
+              :selected-count="selectedCountInSource(source)"
+              :account-key="accountKey"
+              :is-account-selected="isAccountSelected"
+              @refresh="refreshSource(index)"
+              @replace="pickAndReplaceSource(index)"
+              @remove="removeSource(index)"
+              @toggle-videos="toggleSourceVideos(source)"
+              @toggle-account="toggleAccount"
+              @select-all="setSourceAccountsSelected(source, true)"
+              @select-none="setSourceAccountsSelected(source, false)"
+            />
           </div>
-          <div v-else class="py-3">
+          <div v-else class="flex min-h-0 flex-1 flex-col justify-center py-3">
             <p class="text-cv-caption text-cv-text-2">尚未添加采集源</p>
-            <p class="mt-1 text-cv-caption text-cv-text-3">从上方添加微信目录或附件目录后即可扫描。</p>
+            <p class="mt-1 text-cv-caption text-cv-text-3">
+              从上方「添加采集源」选择微信、企业微信或附件目录后即可扫描。
+            </p>
           </div>
         </UiCard>
 
@@ -222,6 +210,7 @@
         <UiCard
           title="调度与运行"
           info="定时与「立即运行」共用同一条流水线：扫描 → 上传 → 同步元数据。未配置 WebDAV 时只做本地扫描。"
+          body-class="overflow-y-auto"
         >
           <div class="space-y-0">
             <div class="flex items-center justify-between gap-3 py-2">
@@ -275,13 +264,12 @@
 
           </div>
         </UiCard>
-        </div>
       </div>
 
-      <!-- 运行历史 / 上传队列 -->
+      <!-- 下区：运行历史 / 上传队列，占剩余高度（约 45%），表格内部滚动 -->
       <UiCard
-        body-class="!p-0 flex min-h-0 flex-1 flex-col"
-        class="flex min-h-[11rem] flex-1 flex-col"
+        body-class="!p-0"
+        class="min-h-[10rem] flex-1"
       >
         <template #header>
           <div class="flex flex-wrap items-center justify-between gap-2">
@@ -403,15 +391,23 @@
             <template v-if="statusFilter === 'pending'"> · 仅显示待处理（待上传 / 失败 / 缺失 / 暂停）</template>
           </p>
           <div class="min-h-0 flex-1 overflow-auto rounded-cv border border-cv-border">
-            <table class="w-full text-left text-cv-caption">
+            <table class="w-full table-fixed text-left text-cv-caption">
+              <colgroup>
+                <col />
+                <col style="width: 12%" />
+                <col style="width: 12%" />
+                <col style="width: 12%" />
+                <col style="width: 12%" />
+                <col style="width: 12%" />
+              </colgroup>
               <thead class="sticky top-0 border-b border-cv-border bg-cv-surface-2 text-cv-text-2">
                 <tr>
                   <th class="px-2.5 py-2 font-medium">文件名</th>
-                  <th class="w-28 px-2.5 py-2 font-medium">状态</th>
-                  <th class="w-20 px-2.5 py-2 font-medium">大小</th>
-                  <th class="w-32 px-2.5 py-2 font-medium">更新时间</th>
-                  <th class="w-36 px-2.5 py-2 font-medium">说明</th>
-                  <th class="w-28 px-2.5 py-2 font-medium">操作</th>
+                  <th class="px-2.5 py-2 font-medium">状态</th>
+                  <th class="px-2.5 py-2 font-medium whitespace-nowrap">大小</th>
+                  <th class="px-2.5 py-2 font-medium whitespace-nowrap">更新时间</th>
+                  <th class="px-2.5 py-2 font-medium">说明</th>
+                  <th class="px-2.5 py-2 font-medium">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -420,18 +416,18 @@
                   :key="t.taskId"
                   class="border-b border-cv-border/60 last:border-0"
                 >
-                  <td class="max-w-[200px] truncate px-2.5 py-1.5 text-cv-text" :title="t.originalName">
+                  <td class="truncate px-2.5 py-1.5 text-cv-text" :title="t.originalName">
                     {{ t.originalName }}
                   </td>
                   <td class="px-2.5 py-1.5">
                     <UiBadge :tone="statusTone(t.status)">{{ statusLabel(t.status) }}</UiBadge>
                   </td>
-                  <td class="px-2.5 py-1.5 text-cv-text-2">{{ t.formattedSize }}</td>
-                  <td class="px-2.5 py-1.5 text-cv-text-3">
+                  <td class="px-2.5 py-1.5 whitespace-nowrap text-cv-text-2">{{ t.formattedSize }}</td>
+                  <td class="px-2.5 py-1.5 whitespace-nowrap text-cv-text-3">
                     {{ formatDateTime(t.updatedAt, { compact: true }) }}
                   </td>
                   <td
-                    class="max-w-[160px] truncate px-2.5 py-1.5 text-cv-text-3"
+                    class="truncate px-2.5 py-1.5 text-cv-text-3"
                     :title="queueNoteTitle(t)"
                   >
                     {{ queueNote(t) }}
@@ -599,6 +595,9 @@ import UiInput from "../components/ui/UiInput.vue";
 import UiSelect from "../components/ui/UiSelect.vue";
 import UiBadge from "../components/ui/UiBadge.vue";
 import UiSwitch from "../components/ui/UiSwitch.vue";
+import UiInfoTip from "../components/ui/UiInfoTip.vue";
+import UiMenu from "../components/ui/UiMenu.vue";
+import CollectSourceCard from "../components/CollectSourceCard.vue";
 import {
   getAppSettings,
   getCollectSelectedAccounts,
@@ -620,7 +619,7 @@ import { pushToast } from "../composables/useToast";
 import { confirmAction } from "../composables/useConfirm";
 import { navigateTo, goToLibraryWithQuery } from "../composables/useNav";
 import { usePipelineProgress } from "../composables/usePipelineProgress";
-import { formatDurationMs, formatDateTime, displayPath } from "../utils/format";
+import { formatDurationMs, formatDateTime } from "../utils/format";
 import type {
   PipelineResultDto,
   UploadTaskDto,
@@ -629,32 +628,37 @@ import type {
   TaskRunStageDto,
   WebdavConfigDto,
   ActiveRunDto,
-  WechatAccountDto,
 } from "../types";
 
 type StageId = "idle" | "scan" | "done" | "failed";
 type CollectSourceLike = ReturnType<typeof useCollectSources>["collectSources"]["value"][number];
 
 const {
+  adapters,
+  discoverableAdapters,
   allWechatAccounts,
   accountKey,
   canRun,
   collectSources,
   detecting,
-  discoverAndAddWechat,
+  discoverAndAdd,
+  isAccountAdapter,
   isAccountSelected,
   loadSources,
-  pickAndAddAttachment,
-  pickAndAddWechat,
+  pickAndAddSource,
   pickAndReplaceSource,
   refreshSource,
   removeSource,
   selectedAccounts,
+  setSourceAccountsSelected,
+  sourceBadgeLabel,
+  sourceBadgeTone,
   sourceKey,
   sourceStatusDetail,
   sourceStatusLabel,
   sourceStatusTone,
-  sourceTypeLabel,
+  sourceVideoHint,
+  supportsVideos,
   toggleAccount,
   toggleSourceVideos,
 } = useCollectSources();
@@ -840,7 +844,7 @@ function queueNoteTitle(t: UploadTaskDto) {
 
 function selectedCountInSource(source: CollectSourceLike) {
   if (!source.accounts.length) return 0;
-  return source.accounts.filter((account: WechatAccountDto) => isAccountSelected(account)).length;
+  return source.accounts.filter((account) => isAccountSelected(account)).length;
 }
 
 /** 隐藏 skipped 阶段，减少未配置 WebDAV / 取消时的噪音。 */
