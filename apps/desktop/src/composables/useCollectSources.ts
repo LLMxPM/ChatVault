@@ -17,6 +17,7 @@ import {
   isAccountAdapter,
 } from "../adapters/collectAdapters";
 import { pushToast } from "./useToast";
+import { markCollectSourcesConfigured } from "./useSetupStatus";
 import type {
   CollectSourceCacheDto,
   CollectSourceDto,
@@ -549,6 +550,7 @@ export function useCollectSources() {
   ) {
     try {
       await setCollectSources(sourcePayload(collectSources.value));
+      markCollectSourcesConfigured(collectSources.value.length > 0);
       return true;
     } catch (err) {
       collectSources.value = previousSources;

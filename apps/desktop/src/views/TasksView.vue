@@ -17,7 +17,7 @@
         <UiButton v-if="!webdavReady" size="sm" variant="ghost" @click="navigateTo('settings')">
           去设置连接
         </UiButton>
-        <UiButton size="sm" variant="ghost" :disabled="running" @click="doRestore">
+        <UiButton size="sm" variant="ghost" :disabled="running || !webdavReady" @click="doRestore">
           恢复索引
         </UiButton>
         <UiButton
@@ -109,7 +109,7 @@
     <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
       <!-- 上区：采集范围 + 调度，按窗口比例约占 55%，两列等高、各自内部滚动 -->
       <div
-        class="grid min-h-[16rem] grid-cols-1 gap-3 lg:grid-cols-2"
+        class="grid min-h-[16rem] grid-cols-1 gap-3 md:grid-cols-2"
         style="flex: 0 1 55%"
       >
         <!-- 采集范围 -->
@@ -618,6 +618,12 @@ import { useCollectSources } from "../composables/useCollectSources";
 import { pushToast } from "../composables/useToast";
 import { confirmAction } from "../composables/useConfirm";
 import { navigateTo, goToLibraryWithQuery } from "../composables/useNav";
+import {
+  isWebdavConfigured,
+  markCollectSourcesConfigured,
+  markWebdavConfigured,
+  webdavConnection,
+} from "../composables/useSetupStatus";
 import { usePipelineProgress } from "../composables/usePipelineProgress";
 import { formatDurationMs, formatDateTime } from "../utils/format";
 import type {
@@ -674,8 +680,14 @@ const activeRun = ref<ActiveRunDto | null>(null);
 const pipelineError = ref("");
 const pipelineResult = ref<PipelineResultDto | null>(null);
 const stage = ref<StageId>("idle");
-const webdavReady = ref(false);
-const webdavConfig = ref<WebdavConfigDto>({ url: "", username: "", password: "", vaultId: "chatvault-default" });
+// 与设置页共用配置状态，避免 keep-alive 下徽标过期
+const webdavReady = isWebdavConfigured;
+const webdavConfig = computed<WebdavConfigDto>(() => ({
+  url: webdavConnection.value.url,
+  username: webdavConnection.value.username,
+  password: "",
+  vaultId: webdavConnection.value.vaultId || "chatvault-default",
+}));
 
 const activeTab = ref<"history" | "queue">("history");
 
@@ -859,16 +871,21 @@ async function loadSettings() {
       getCollectSourceCache().catch(() => []),
       getCollectSelectedAccounts().catch(() => null),
     ]);
-    await loadSources(s.collectSources || [], cache || [], persistedSelections);
+    // 先同步连接状态，避免后续采集源加载失败导致一直显示未配置
+    const webdavOk = Boolean(s.webdavUrl && s.webdavUrl.trim());
+    markWebdavConfigured(webdavOk, {
+      url: s.webdavUrl || "",
+      username: s.webdavUsername || "",
+      vaultId: s.vaultId || "",
+    });
+    markCollectSourcesConfigured((s.collectSources?.length ?? 0) > 0);
     scheduleEnabled.value = s.scheduleEnabled;
     scanIntervalMinutes.value = s.scanIntervalMinutes;
-    webdavReady.value = Boolean(s.webdavUrl && s.webdavUrl.trim());
-    webdavConfig.value = {
-      url: s.webdavUrl,
-      username: s.webdavUsername,
-      password: "",
-      vaultId: s.vaultId,
-    };
+    try {
+      await loadSources(s.collectSources || [], cache || [], persistedSelections);
+    } catch (err) {
+      pushToast({ tone: "warning", title: "加载采集源失败", description: String(err) });
+    }
   } catch (err) {
     pushToast({ tone: "danger", title: "读取设置失败", description: String(err) });
   }
@@ -1207,9 +1224,10 @@ function stopPolling() {
   }
 }
 
-// keep-alive：切回任务页时恢复轮询并静默刷新
+// keep-alive：切回任务页时恢复轮询，并重读设置以免 WebDAV/采集源状态过期
 onActivated(() => {
   startPolling();
+  void loadSettings();
   void refreshTasks(true);
   void refreshHistory(true);
   void refreshActiveRun();

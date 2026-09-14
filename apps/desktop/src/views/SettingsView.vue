@@ -256,6 +256,7 @@ import {
 import { pushToast } from "../composables/useToast";
 import { confirmAction } from "../composables/useConfirm";
 import { useTheme, type ThemePreference } from "../composables/useTheme";
+import { markCollectSourcesConfigured, markWebdavConfigured } from "../composables/useSetupStatus";
 import type { AppSettingsDto, VaultStatsDto, WebdavCapabilityDto, WebdavConfigDto } from "../types";
 
 const VAULT_ID_PREFIX = "chatvault-";
@@ -492,6 +493,12 @@ async function save() {
       webdavPassword.value = "";
     }
     await reloadSettings();
+    markWebdavConfigured(Boolean(form.value.webdavUrl?.trim()), {
+      url: form.value.webdavUrl || "",
+      username: form.value.webdavUsername || "",
+      vaultId: form.value.vaultId || "",
+    });
+    markCollectSourcesConfigured((form.value.collectSources?.length ?? 0) > 0);
     pushToast({ tone: "success", title: "设置已保存" });
   } catch (err) {
     pushToast({ tone: "danger", title: "保存失败", description: String(err) });
@@ -503,6 +510,12 @@ async function save() {
 onMounted(async () => {
   try {
     await reloadSettings();
+    markWebdavConfigured(Boolean(form.value.webdavUrl?.trim()), {
+      url: form.value.webdavUrl || "",
+      username: form.value.webdavUsername || "",
+      vaultId: form.value.vaultId || "",
+    });
+    markCollectSourcesConfigured((form.value.collectSources?.length ?? 0) > 0);
   } catch (err) {
     pushToast({ tone: "danger", title: "读取设置失败", description: String(err) });
   }

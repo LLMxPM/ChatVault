@@ -1,6 +1,7 @@
 <!--
   ChatVault 桌面端根组件
   职责：自定义标题栏、三项主导航、主题初始化、全局 Toast/Confirm 与引擎就绪状态。
+  侧边栏在采集源/WebDAV 未配置时展示轻量提示，替代原先的首次引导。
 -->
 <template>
   <div class="flex h-screen w-screen flex-col overflow-hidden bg-cv-bg font-sans text-cv-text">
@@ -22,26 +23,28 @@
               @click="navigateTo(item.id)"
             >
               <component :is="item.icon" class="h-4 w-4 shrink-0" />
-              <span>{{ item.label }}</span>
+              <span class="min-w-0 flex-1 truncate text-left">{{ item.label }}</span>
+              <span
+                v-if="navHintCount(item.id)"
+                class="h-1.5 w-1.5 shrink-0 rounded-full bg-cv-warning"
+                aria-hidden="true"
+              />
             </button>
           </nav>
 
           <div
-            v-if="runtime.firstRun && !guideDismissed"
+            v-if="setupHints.length"
             class="mx-2 mt-1 space-y-1.5 rounded-cv-lg border border-cv-border bg-cv-surface-2 p-3"
           >
-            <p class="text-cv-caption font-medium text-cv-text">开始建立资料库</p>
-            <button class="block text-cv-caption text-cv-text-2 hover:text-cv-accent" @click="navigateTo('tasks')">
-              1. 配置采集范围并立即运行
-            </button>
-            <button class="block text-cv-caption text-cv-text-2 hover:text-cv-accent" @click="navigateTo('settings')">
-              2. 在设置中连接 WebDAV
-            </button>
-            <button class="block text-cv-caption text-cv-text-2 hover:text-cv-accent" @click="navigateTo('tasks')">
-              3. 启用定时流水线
-            </button>
-            <button class="text-cv-caption text-cv-text-3 hover:text-cv-text-2" @click="guideDismissed = true">
-              收起引导
+            <p class="text-cv-caption font-medium text-cv-text">待完成配置</p>
+            <button
+              v-for="hint in setupHints"
+              :key="hint.id"
+              class="flex w-full items-center gap-1.5 text-cv-caption text-cv-text-2 transition-colors hover:text-cv-accent"
+              @click="navigateTo(hint.tab)"
+            >
+              <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-cv-warning" aria-hidden="true" />
+              <span>{{ hint.label }}</span>
             </button>
           </div>
         </div>
@@ -74,19 +77,18 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref } from "vue";
+import { onMounted, onBeforeUnmount, watch } from "vue";
 import { FolderSearch, ListTodo, Settings } from "lucide-vue-next";
 import AppTitleBar from "./components/AppTitleBar.vue";
 import { loadRuntime, runtime } from "./api/runtime";
 import { initTheme, disposeTheme } from "./composables/useTheme";
 import { currentTab, navigateTo, type AppTab } from "./composables/useNav";
+import { refreshSetupStatus, setupHints } from "./composables/useSetupStatus";
 import LibraryView from "./views/LibraryView.vue";
 import TasksView from "./views/TasksView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import UiToast from "./components/ui/UiToast.vue";
 import UiConfirm from "./components/ui/UiConfirm.vue";
-
-const guideDismissed = ref(false);
 
 const navItems: { id: AppTab; label: string; icon: typeof FolderSearch }[] = [
   { id: "library", label: "文件库", icon: FolderSearch },
@@ -94,10 +96,20 @@ const navItems: { id: AppTab; label: string; icon: typeof FolderSearch }[] = [
   { id: "settings", label: "设置", icon: Settings },
 ];
 
+/** 导航项上的待配置角标数量。 */
+function navHintCount(tab: AppTab): number {
+  return setupHints.value.filter((hint) => hint.tab === tab).length;
+}
+
 onMounted(async () => {
   initTheme();
   await loadRuntime();
-  if (runtime.firstRun) navigateTo("tasks");
+  void refreshSetupStatus();
+});
+
+// 配置页保存后切回时同步侧边栏提示
+watch(currentTab, () => {
+  void refreshSetupStatus();
 });
 
 onBeforeUnmount(() => {
