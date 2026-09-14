@@ -221,6 +221,12 @@ pub enum JournalEventType {
     SourceAccountUpdated,
     /// 用户更新来源聊天名称或收藏状态
     SourceConversationUpdated,
+    /// 内容对象隐藏（软隐藏，可恢复）
+    ObjectHidden,
+    /// 内容对象恢复可见
+    ObjectRestored,
+    /// 内容对象彻底删除（须先隐藏；压过 hide/restore）
+    ObjectPurged,
 }
 
 /// 元数据日志事件

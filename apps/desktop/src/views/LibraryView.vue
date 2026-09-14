@@ -6,8 +6,24 @@
 <template>
   <div class="flex h-full flex-col gap-3 p-6">
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <div>
+      <div class="flex items-center gap-3">
         <h2 class="text-cv-page text-cv-text">文件库</h2>
+        <div class="flex shrink-0 items-center rounded-cv border border-cv-border bg-cv-surface p-0.5">
+          <button
+            class="rounded-cv px-2.5 py-1 text-cv-caption transition-colors"
+            :class="visibilityMode === 'normal' ? 'bg-cv-accent-soft text-cv-accent' : 'text-cv-text-2 hover:text-cv-text'"
+            @click="setVisibilityMode('normal')"
+          >
+            正常
+          </button>
+          <button
+            class="rounded-cv px-2.5 py-1 text-cv-caption transition-colors"
+            :class="visibilityMode === 'hidden' ? 'bg-cv-accent-soft text-cv-accent' : 'text-cv-text-2 hover:text-cv-text'"
+            @click="setVisibilityMode('hidden')"
+          >
+            隐藏
+          </button>
+        </div>
       </div>
       <div class="flex items-center gap-2 text-cv-caption text-cv-text-2">
         <template v-if="stats">
@@ -116,25 +132,46 @@
       class="flex flex-wrap items-center gap-2 rounded-cv border border-cv-accent/30 bg-cv-accent-soft/40 px-3 py-2"
     >
       <span class="text-cv-caption font-medium text-cv-accent">已选 {{ selectedIds.size }} 项</span>
-      <UiButton size="sm" variant="primary" :loading="batchBusy === 'dl'" @click="handleBatchDownload">
-        下载
-      </UiButton>
-      <UiButton
-        size="sm"
-        variant="secondary"
-        :loading="batchBusy === 'cache'"
-        @click="handleBatchReleaseCache"
-      >
-        释放缓存
-      </UiButton>
-      <UiButton
-        size="sm"
-        variant="danger"
-        :loading="batchBusy === 'local'"
-        @click="handleBatchDeleteLocal"
-      >
-        删除本机文件
-      </UiButton>
+      <template v-if="visibilityMode === 'normal'">
+        <UiButton size="sm" variant="primary" :loading="batchBusy === 'dl'" @click="handleBatchDownload">
+          下载
+        </UiButton>
+        <UiButton
+          size="sm"
+          variant="secondary"
+          :loading="batchBusy === 'cache'"
+          @click="handleBatchReleaseCache"
+        >
+          释放缓存
+        </UiButton>
+        <UiButton size="sm" variant="secondary" :loading="batchBusy === 'hide'" @click="handleBatchHide">
+          隐藏
+        </UiButton>
+        <UiButton
+          size="sm"
+          variant="danger"
+          :loading="batchBusy === 'local'"
+          @click="handleBatchDeleteLocal"
+        >
+          删除本机文件
+        </UiButton>
+      </template>
+      <template v-else>
+        <UiButton size="sm" variant="primary" :loading="batchBusy === 'dl'" @click="handleBatchDownload">
+          下载
+        </UiButton>
+        <UiButton
+          size="sm"
+          variant="secondary"
+          :loading="batchBusy === 'restore'"
+          @click="handleBatchRestore"
+        >
+          恢复
+        </UiButton>
+        <UiButton size="sm" variant="danger" :loading="batchBusy === 'purge'" @click="handleBatchPurge">
+          彻底删除
+        </UiButton>
+      </template>
       <button class="ml-auto text-cv-caption text-cv-text-2 hover:text-cv-text" @click="clearSelection">
         取消选择
       </button>
@@ -275,6 +312,7 @@
     <LibraryDetailPanel
       v-if="selectedItem"
       :item="selectedItem"
+      :hidden="visibilityMode === 'hidden'"
       @close="selectedItem = null"
       @changed="onDetailChanged"
     />
@@ -309,6 +347,9 @@ import {
   downloadObjects,
   releaseObjectCache,
   deleteObjectLocalFiles,
+  libraryHideObjects,
+  libraryRestoreObjects,
+  libraryPurgeObjects,
   listSourceAccounts,
   getVaultStats,
 } from "../api/tauri";
@@ -329,6 +370,8 @@ const selectedAccount = ref("");
 const selectedLocation = ref("");
 const selectedSort = ref("file_time_desc");
 const currentCategory = ref("all");
+/** 列表可见性视图：正常 / 隐藏 */
+const visibilityMode = ref<"normal" | "hidden">("normal");
 const loading = ref(false);
 const objects = ref<FileObjectViewDto[]>([]);
 const accountList = ref<SourceAccountDto[]>([]);
@@ -366,12 +409,18 @@ const hasActiveFilters = computed(() => {
   );
 });
 
-const emptyTitle = computed(() =>
-  hasActiveFilters.value ? "未找到符合条件的文件" : "文件库暂无内容",
-);
-const emptyHint = computed(() =>
-  hasActiveFilters.value ? "可清空筛选后重试" : "可先到「任务」配置范围并立即运行",
-);
+const emptyTitle = computed(() => {
+  if (visibilityMode.value === "hidden") {
+    return hasActiveFilters.value ? "未找到符合条件的隐藏文件" : "暂无隐藏文件";
+  }
+  return hasActiveFilters.value ? "未找到符合条件的文件" : "文件库暂无内容";
+});
+const emptyHint = computed(() => {
+  if (visibilityMode.value === "hidden") {
+    return hasActiveFilters.value ? "可清空筛选后重试" : "可在「正常」列表中隐藏文件";
+  }
+  return hasActiveFilters.value ? "可清空筛选后重试" : "可先到「任务」配置范围并立即运行";
+});
 
 const allPageSelected = computed(
   () => objects.value.length > 0 && objects.value.every((o) => selectedIds.value.has(o.objectId)),
@@ -549,6 +598,7 @@ async function fetchObjects(reset = true) {
       category: currentCategory.value !== "all" ? currentCategory.value : undefined,
       ...account,
       location: (selectedLocation.value || undefined) as FileLocation | undefined,
+      hidden: visibilityMode.value === "hidden",
       sort: selectedSort.value,
       limit: pageSize.value,
       offset: page.value * pageSize.value,
@@ -584,6 +634,13 @@ function clearKeyword() {
 }
 
 function onFilterChange() {
+  fetchObjects();
+}
+
+function setVisibilityMode(mode: "normal" | "hidden") {
+  if (visibilityMode.value === mode) return;
+  visibilityMode.value = mode;
+  selectedItem.value = null;
   fetchObjects();
 }
 
@@ -647,6 +704,68 @@ async function handleBatchDownload() {
     reportBatch("批量下载完成", result);
   } catch (err) {
     pushToast({ tone: "danger", title: "批量下载失败", description: String(err) });
+  } finally {
+    batchBusy.value = "";
+  }
+}
+
+async function handleBatchHide() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  const ok = await confirmAction({
+    title: "隐藏所选文件",
+    description: `将隐藏已选 ${ids.length} 个文件。\n默认列表不再显示，可在「隐藏」视图恢复。\n不会中断备份，也不会删除本机原文件。`,
+    confirmLabel: "隐藏",
+  });
+  if (!ok) return;
+  batchBusy.value = "hide";
+  try {
+    const result = await libraryHideObjects(ids);
+    reportBatch("隐藏完成", result);
+    await fetchObjects(false);
+  } catch (err) {
+    pushToast({ tone: "danger", title: "隐藏失败", description: String(err) });
+  } finally {
+    batchBusy.value = "";
+  }
+}
+
+async function handleBatchRestore() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  batchBusy.value = "restore";
+  try {
+    const result = await libraryRestoreObjects(ids);
+    reportBatch("恢复完成", result);
+    await fetchObjects(false);
+  } catch (err) {
+    pushToast({ tone: "danger", title: "恢复失败", description: String(err) });
+  } finally {
+    batchBusy.value = "";
+  }
+}
+
+async function handleBatchPurge() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  const ok = await confirmAction({
+    title: "彻底删除所选文件",
+    description:
+      `将彻底删除已选 ${ids.length} 个已隐藏文件。\n` +
+      "会删除本机库记录，并尝试删除网盘归档内容。\n" +
+      "不会删除微信/电脑上的原文件；源文件仍在时下次扫描可能重新入库。\n" +
+      "此操作不可恢复。",
+    confirmLabel: "彻底删除",
+  });
+  if (!ok) return;
+  batchBusy.value = "purge";
+  try {
+    const result = await libraryPurgeObjects(ids);
+    reportBatch("彻底删除完成", result);
+    await fetchObjects(false);
+    await loadMeta();
+  } catch (err) {
+    pushToast({ tone: "danger", title: "彻底删除失败", description: String(err) });
   } finally {
     batchBusy.value = "";
   }

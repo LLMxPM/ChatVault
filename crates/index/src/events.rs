@@ -147,14 +147,30 @@ impl Database {
         )
         .map_err(|e| ChatVaultError::Database(e.to_string()))?;
 
-        // FTS
+        // 新来源覆盖历史 purge 标记：允许同内容在彻底删除后重新入库。
         tx.execute(
-            "INSERT INTO file_search_fts (record_id, original_name)
-             SELECT ?1, ?2 WHERE NOT EXISTS(SELECT 1 FROM file_search_fts WHERE record_id=?1)
-             AND NOT EXISTS(SELECT 1 FROM record_tombstones WHERE record_id=?1)",
-            params![record_id, original_name],
+            "DELETE FROM object_purges WHERE object_id = ?1",
+            params![object_id],
         )
         .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+
+        // FTS（已 tombstone 或对象隐藏时不进索引）
+        let object_hidden: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM object_hidden WHERE object_id = ?1)",
+                params![object_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        if !object_hidden {
+            tx.execute(
+                "INSERT INTO file_search_fts (record_id, original_name)
+                 SELECT ?1, ?2 WHERE NOT EXISTS(SELECT 1 FROM file_search_fts WHERE record_id=?1)
+                 AND NOT EXISTS(SELECT 1 FROM record_tombstones WHERE record_id=?1)",
+                params![record_id, original_name],
+            )
+            .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        }
 
         tx.commit()
             .map_err(|e| ChatVaultError::Database(e.to_string()))?;

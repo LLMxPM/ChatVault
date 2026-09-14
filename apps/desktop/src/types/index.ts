@@ -95,7 +95,7 @@ export interface ObjectSearchPageDto {
 export interface BatchItemResultDto {
   objectId: string;
   originalName: string;
-  status: "ok" | "failed";
+  status: "ok" | "failed" | "partial";
   savedPath?: string | null;
   releasedBytes?: number | null;
   error?: string | null;
@@ -150,6 +150,8 @@ export interface SearchQueryDto {
   endTime?: string;
   timeField?: "file_time" | "discovered_at";
   location?: FileLocation | "";
+  /** 仅返回已隐藏对象；默认 false */
+  hidden?: boolean;
   extensions?: string[];
   sort?: string;
   limit?: number;

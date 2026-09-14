@@ -393,10 +393,10 @@ mod tests {
             source(WECHAT_WINDOWS_4_SOURCE_TYPE, &attachments,)
         ])
         .is_err());
-        assert!(validate_collect_sources(vec![
-            source(WXWORK_WINDOWS_SOURCE_TYPE, &attachments)
-        ])
-        .is_err());
+        assert!(
+            validate_collect_sources(vec![source(WXWORK_WINDOWS_SOURCE_TYPE, &attachments)])
+                .is_err()
+        );
         assert!(validate_collect_sources(vec![
             source(GENERIC_FOLDER_SOURCE_TYPE, &attachments),
             source(GENERIC_FOLDER_SOURCE_TYPE, &nested),

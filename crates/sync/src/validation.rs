@@ -47,6 +47,15 @@ pub fn validate_event(ev: &JournalEvent) -> Result<()> {
         JournalEventType::SourceConversationUpdated => {
             validate_mapping_payload(&ev.payload, true)?;
         }
+        JournalEventType::ObjectHidden
+        | JournalEventType::ObjectRestored
+        | JournalEventType::ObjectPurged => {
+            let object_id = require_string(&ev.payload, "object_id")?;
+            let hash = object_id
+                .strip_prefix("blake3:")
+                .ok_or_else(|| ChatVaultError::Internal("object_id 必须为 blake3: 前缀".into()))?;
+            validate_hash(hash)?;
+        }
     }
     Ok(())
 }

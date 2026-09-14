@@ -158,9 +158,22 @@
         <UiButton size="sm" variant="secondary" :loading="busy === 'cache'" @click="onReleaseCache">
           释放缓存
         </UiButton>
-        <UiButton size="sm" variant="danger" :loading="busy === 'local'" @click="onDeleteLocal">
-          删除本机文件
-        </UiButton>
+        <template v-if="!hidden">
+          <UiButton size="sm" variant="secondary" :loading="busy === 'hide'" @click="onHide">
+            隐藏
+          </UiButton>
+          <UiButton size="sm" variant="danger" :loading="busy === 'local'" @click="onDeleteLocal">
+            删除本机文件
+          </UiButton>
+        </template>
+        <template v-else>
+          <UiButton size="sm" variant="secondary" :loading="busy === 'restore'" @click="onRestore">
+            恢复
+          </UiButton>
+          <UiButton size="sm" variant="danger" :loading="busy === 'purge'" @click="onPurge">
+            彻底删除
+          </UiButton>
+        </template>
       </footer>
     </div>
   </div>
@@ -187,6 +200,9 @@ import {
   downloadObject,
   releaseObjectCache,
   deleteObjectLocalFiles,
+  libraryHideObjects,
+  libraryRestoreObjects,
+  libraryPurgeObjects,
   revealFileInExplorer,
 } from "../api/tauri";
 import { pushToast } from "../composables/useToast";
@@ -194,7 +210,7 @@ import { confirmAction } from "../composables/useConfirm";
 import { formatDateTime } from "../utils/format";
 import type { FileObjectViewDto, FileSourceDto, FileLocation } from "../types";
 
-const props = defineProps<{ item: FileObjectViewDto }>();
+const props = defineProps<{ item: FileObjectViewDto; hidden?: boolean }>();
 const emit = defineEmits<{
   close: [];
   changed: [];
@@ -330,6 +346,91 @@ async function onReleaseCache() {
     }
   } catch (err) {
     pushToast({ tone: "danger", title: "释放失败", description: String(err) });
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function onHide() {
+  const ok = await confirmAction({
+    title: "隐藏文件",
+    description: `将隐藏「${props.item.originalName}」。\n默认列表不再显示，可在「隐藏」视图恢复。\n不会中断备份，也不会删除本机原文件。`,
+    confirmLabel: "隐藏",
+  });
+  if (!ok) return;
+  busy.value = "hide";
+  try {
+    const result = await libraryHideObjects([props.item.objectId]);
+    if (result.okCount > 0) {
+      pushToast({ tone: "success", title: "已隐藏" });
+      emit("changed");
+    } else {
+      pushToast({
+        tone: "danger",
+        title: "隐藏失败",
+        description: result.items[0]?.error || "未知错误",
+      });
+    }
+  } catch (err) {
+    pushToast({ tone: "danger", title: "隐藏失败", description: String(err) });
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function onRestore() {
+  busy.value = "restore";
+  try {
+    const result = await libraryRestoreObjects([props.item.objectId]);
+    if (result.okCount > 0) {
+      pushToast({ tone: "success", title: "已恢复可见" });
+      emit("changed");
+    } else {
+      pushToast({
+        tone: "danger",
+        title: "恢复失败",
+        description: result.items[0]?.error || "未知错误",
+      });
+    }
+  } catch (err) {
+    pushToast({ tone: "danger", title: "恢复失败", description: String(err) });
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function onPurge() {
+  const ok = await confirmAction({
+    title: "彻底删除",
+    description:
+      `将彻底删除「${props.item.originalName}」。\n` +
+      "会删除本机库记录，并尝试删除网盘归档内容。\n" +
+      "不会删除微信/电脑上的原文件；源文件仍在时下次扫描可能重新入库。\n" +
+      "此操作不可恢复。",
+    confirmLabel: "彻底删除",
+    danger: true,
+  });
+  if (!ok) return;
+  busy.value = "purge";
+  try {
+    const result = await libraryPurgeObjects([props.item.objectId]);
+    const item = result.items[0];
+    if (result.okCount > 0 || item?.status === "partial") {
+      pushToast({
+        tone: item?.error ? "warning" : "success",
+        title: "已彻底删除",
+        description: item?.error ?? undefined,
+      });
+      emit("changed");
+    } else {
+      pushToast({
+        tone: "danger",
+        title: "彻底删除失败",
+        description: item?.error || "未知错误",
+      });
+    }
+  } catch (err) {
+    pushToast({ tone: "danger", title: "彻底删除失败", description: String(err) });
   } finally {
     busy.value = "";
   }

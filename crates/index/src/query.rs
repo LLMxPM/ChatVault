@@ -118,6 +118,8 @@ pub struct SearchFilter {
     pub time_field: TimeField,
     /// 位置过滤：local / remote / both / missing
     pub location: Option<String>,
+    /// 仅返回已隐藏对象；默认 false（正常列表排除隐藏）
+    pub hidden_only: bool,
     /// 排序
     pub sort: ObjectSort,
     /// 返回的最大记录数
@@ -248,7 +250,16 @@ impl<'a> SearchService<'a> {
 
         let mut conditions: Vec<String> = vec![
             "NOT EXISTS(SELECT 1 FROM record_tombstones d WHERE d.record_id=r.record_id)".into(),
+            "NOT EXISTS(SELECT 1 FROM object_purges p WHERE p.object_id=r.object_id)".into(),
         ];
+        if filter.hidden_only {
+            conditions
+                .push("EXISTS(SELECT 1 FROM object_hidden h WHERE h.object_id=r.object_id)".into());
+        } else {
+            conditions.push(
+                "NOT EXISTS(SELECT 1 FROM object_hidden h WHERE h.object_id=r.object_id)".into(),
+            );
+        }
         let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
         // 1. 关键词查询处理
@@ -860,8 +871,17 @@ fn path_exists(path: Option<&str>) -> bool {
 fn build_record_conditions(
     filter: &SearchFilter,
 ) -> Result<(String, Vec<Box<dyn rusqlite::ToSql>>)> {
-    let mut conditions: Vec<String> =
-        vec!["NOT EXISTS(SELECT 1 FROM record_tombstones d WHERE d.record_id=r.record_id)".into()];
+    let mut conditions: Vec<String> = vec![
+        "NOT EXISTS(SELECT 1 FROM record_tombstones d WHERE d.record_id=r.record_id)".into(),
+        "NOT EXISTS(SELECT 1 FROM object_purges p WHERE p.object_id=r.object_id)".into(),
+    ];
+    if filter.hidden_only {
+        conditions
+            .push("EXISTS(SELECT 1 FROM object_hidden h WHERE h.object_id=r.object_id)".into());
+    } else {
+        conditions
+            .push("NOT EXISTS(SELECT 1 FROM object_hidden h WHERE h.object_id=r.object_id)".into());
+    }
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
     if let Some(kw) = &filter.keyword {

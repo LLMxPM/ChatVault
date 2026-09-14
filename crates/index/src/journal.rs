@@ -295,6 +295,9 @@ fn event_type_str(t: chatvault_core::models::JournalEventType) -> &'static str {
         chatvault_core::models::JournalEventType::SourceConversationUpdated => {
             "source_conversation_updated"
         }
+        chatvault_core::models::JournalEventType::ObjectHidden => "object_hidden",
+        chatvault_core::models::JournalEventType::ObjectRestored => "object_restored",
+        chatvault_core::models::JournalEventType::ObjectPurged => "object_purged",
     }
 }
 
@@ -311,6 +314,9 @@ fn row_to_journal_event(
         "source_conversation_updated" => {
             chatvault_core::models::JournalEventType::SourceConversationUpdated
         }
+        "object_hidden" => chatvault_core::models::JournalEventType::ObjectHidden,
+        "object_restored" => chatvault_core::models::JournalEventType::ObjectRestored,
+        "object_purged" => chatvault_core::models::JournalEventType::ObjectPurged,
         _ => {
             return Err(rusqlite::Error::FromSqlConversionFailure(
                 6,

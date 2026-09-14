@@ -28,6 +28,7 @@ mod task_runs;
 mod task_status;
 mod tasks;
 pub mod upload_queue;
+mod visibility;
 
 pub use identity::VaultResetReport;
 pub use scan_state::{
@@ -39,3 +40,4 @@ pub use task_runs::{
     TaskRunStageRow,
 };
 pub use upload_queue::PendingUpload;
+pub use visibility::PurgeOutcome;

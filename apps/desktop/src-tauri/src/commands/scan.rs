@@ -2,15 +2,11 @@
 // 委托 chatvault-scan 共享编排；本层只做 DTO 映射与 Tauri 命令签名。
 use super::*;
 use chatvault_core::models::CollectSource;
-use chatvault_scan::{
-    scan_collect_sources, AccountTarget, ScanEvent, ScanRequest, ScanReport,
-};
+use chatvault_scan::{scan_collect_sources, AccountTarget, ScanEvent, ScanReport, ScanRequest};
 use chrono::Utc;
 
 /// 将共享账号信息转为前端契约。
-fn to_account_dtos(
-    infos: Vec<chatvault_scan::SourceAccountInfo>,
-) -> Vec<WechatAccountDto> {
+fn to_account_dtos(infos: Vec<chatvault_scan::SourceAccountInfo>) -> Vec<WechatAccountDto> {
     infos
         .into_iter()
         .map(|info| WechatAccountDto {

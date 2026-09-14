@@ -157,6 +157,25 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             event_id TEXT NOT NULL
         );
 
+        -- 对象级隐藏：有行 = 已隐藏；无行且无 purge = 正常可见
+        -- 不设外键：隐藏事件可能先于 FileRecordAdded 到达
+        CREATE TABLE IF NOT EXISTS object_hidden (
+            object_id TEXT PRIMARY KEY,
+            hidden_at TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            logical_clock INTEGER NOT NULL,
+            device_id TEXT NOT NULL
+        );
+
+        -- 对象彻底删除标记；purge 后同内容可经新 record 再次入库
+        CREATE TABLE IF NOT EXISTS object_purges (
+            object_id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL,
+            logical_clock INTEGER NOT NULL,
+            device_id TEXT NOT NULL,
+            purged_at TEXT NOT NULL
+        );
+
         -- 12. 远端已知设备注册表
         CREATE TABLE IF NOT EXISTS known_devices (
             device_id TEXT PRIMARY KEY,

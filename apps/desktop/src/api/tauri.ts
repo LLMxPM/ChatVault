@@ -149,6 +149,21 @@ export async function deleteObjectLocalFiles(objectIds: string[]): Promise<Batch
   return await invoke<BatchResultDto>("delete_object_local_files", { objectIds });
 }
 
+/** 批量隐藏内容对象（可恢复，不中断备份）。 */
+export async function libraryHideObjects(objectIds: string[]): Promise<BatchResultDto> {
+  return await invoke<BatchResultDto>("library_hide_objects", { objectIds });
+}
+
+/** 批量恢复已隐藏对象。 */
+export async function libraryRestoreObjects(objectIds: string[]): Promise<BatchResultDto> {
+  return await invoke<BatchResultDto>("library_restore_objects", { objectIds });
+}
+
+/** 批量彻底删除已隐藏对象，并尝试删除远端归档。 */
+export async function libraryPurgeObjects(objectIds: string[]): Promise<BatchResultDto> {
+  return await invoke<BatchResultDto>("library_purge_objects", { objectIds });
+}
+
 /** 立即回收受控缓存；forceAll 时忽略保留天数与容量。 */
 export async function reclaimCacheNow(forceAll = false): Promise<number> {
   return await invoke<number>("reclaim_cache_now", { forceAll });

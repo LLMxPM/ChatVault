@@ -68,6 +68,9 @@ pub struct SearchQueryDto {
     pub time_field: Option<String>,
     /// local | remote | both | missing
     pub location: Option<String>,
+    /// 仅返回已隐藏对象；默认 false
+    #[serde(default)]
+    pub hidden: bool,
     pub extensions: Option<Vec<String>>,
     pub sort: Option<String>,
     pub limit: Option<usize>,

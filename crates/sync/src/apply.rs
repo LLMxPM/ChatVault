@@ -237,6 +237,9 @@ pub fn apply_event(db: &mut Database, ev: &JournalEvent) -> Result<bool> {
             JournalEventType::SourceConversationUpdated => {
                 db.apply_source_conversation_updated_event(ev)?
             }
+            JournalEventType::ObjectHidden => db.apply_object_hidden_event(ev)?,
+            JournalEventType::ObjectRestored => db.apply_object_restored_event(ev)?,
+            JournalEventType::ObjectPurged => db.apply_object_purged_event(ev)?,
         }
         db.mark_event_applied(&ev.event_id)?;
         Ok(true)

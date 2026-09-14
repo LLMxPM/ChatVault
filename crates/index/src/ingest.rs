@@ -226,12 +226,27 @@ impl Database {
         )
         .map_err(|e| ChatVaultError::Database(e.to_string()))?;
 
-        // 3.4 插入 FTS5 全文索引
+        // 3.4 插入 FTS5 全文索引（隐藏对象不进 FTS，默认检索不可见）
+        // 新来源覆盖历史 purge 标记：允许同内容在彻底删除后重新入库。
         tx.execute(
-            "INSERT INTO file_search_fts (record_id, original_name) VALUES (?1, ?2)",
-            params![record_id, file.file_name],
+            "DELETE FROM object_purges WHERE object_id = ?1",
+            params![object_id],
         )
         .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        let object_hidden: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM object_hidden WHERE object_id = ?1)",
+                params![object_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        if !object_hidden {
+            tx.execute(
+                "INSERT INTO file_search_fts (record_id, original_name) VALUES (?1, ?2)",
+                params![record_id, file.file_name],
+            )
+            .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        }
 
         // 3.5 创建待上传任务
         let task_id = Uuid::new_v4().to_string();

@@ -148,6 +148,7 @@ fn build_search_filter(query: &SearchQueryDto) -> SearchFilter {
             .and_then(|v| parse_query_time(v, true)),
         time_field: TimeField::parse(query.time_field.as_deref()),
         location: query.location.clone(),
+        hidden_only: query.hidden,
         extensions: query.extensions.clone().unwrap_or_default(),
         sort: ObjectSort::parse(query.sort.as_deref()),
         limit: query.limit.unwrap_or(300),
@@ -886,6 +887,204 @@ pub async fn delete_object_local_files(
         ok_count,
         failed_count,
         released_bytes,
+        items,
+    })
+}
+
+/// 批量隐藏内容对象（软隐藏，可恢复；不中断备份）
+#[tauri::command]
+pub async fn library_hide_objects(
+    object_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> std::result::Result<BatchResultDto, String> {
+    let mut db = state.get_db().map_err(|e| e.to_string())?;
+    let device_id = state.device_id().map_err(|e| e.to_string())?;
+    batch_visibility_op(
+        &mut db,
+        &device_id,
+        &object_ids,
+        |db, device_id, object_id| db.hide_object(device_id, object_id).map(|_| None),
+    )
+}
+
+/// 批量恢复已隐藏对象
+#[tauri::command]
+pub async fn library_restore_objects(
+    object_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> std::result::Result<BatchResultDto, String> {
+    let mut db = state.get_db().map_err(|e| e.to_string())?;
+    let device_id = state.device_id().map_err(|e| e.to_string())?;
+    batch_visibility_op(
+        &mut db,
+        &device_id,
+        &object_ids,
+        |db, device_id, object_id| db.restore_object(device_id, object_id).map(|_| None),
+    )
+}
+
+/// 批量彻底删除已隐藏对象；成功后尝试删除 WebDAV 远端内容
+#[tauri::command]
+pub async fn library_purge_objects(
+    object_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> std::result::Result<BatchResultDto, String> {
+    let mut db = state.get_db().map_err(|e| e.to_string())?;
+    let device_id = state.device_id().map_err(|e| e.to_string())?;
+    let vault_id = state.vault_id().map_err(|e| e.to_string())?;
+    let webdav_url = db
+        .get_setting(setting_keys::WEBDAV_URL)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let webdav_username = db
+        .get_setting(setting_keys::WEBDAV_USERNAME)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let password = if webdav_url.trim().is_empty() {
+        None
+    } else {
+        resolve_webdav_password(&webdav_url, &webdav_username, None)
+    };
+    let client = if webdav_url.trim().is_empty() || password.is_none() {
+        None
+    } else {
+        Some(
+            WebDavClient::new(WebDavConfig {
+                base_url: webdav_url,
+                username: Some(webdav_username),
+                password,
+            })
+            .map_err(|e| e.to_string())?,
+        )
+    };
+
+    let mut items = Vec::with_capacity(object_ids.len());
+    let mut ok_count = 0usize;
+    let mut failed_count = 0usize;
+    for object_id in &object_ids {
+        let original_name = load_representative_name(&db, object_id);
+        match db.purge_object(&device_id, object_id) {
+            Ok(outcome) => {
+                let mut remote_error: Option<String> = None;
+                if let Some(client) = client.as_ref() {
+                    let remote_path = get_object_path(&vault_id, &outcome.hash);
+                    if let Err(e) = client.delete_resource(&remote_path).await {
+                        remote_error = Some(format!("索引已删除，远端清理失败: {e}"));
+                    }
+                }
+                if let Some(err) = remote_error {
+                    failed_count += 1;
+                    items.push(BatchItemResultDto {
+                        object_id: object_id.clone(),
+                        original_name,
+                        status: "partial".into(),
+                        saved_path: None,
+                        released_bytes: Some(outcome.size),
+                        error: Some(err),
+                    });
+                } else {
+                    ok_count += 1;
+                    items.push(BatchItemResultDto {
+                        object_id: object_id.clone(),
+                        original_name,
+                        status: "ok".into(),
+                        saved_path: None,
+                        released_bytes: Some(outcome.size),
+                        error: if client.is_none() {
+                            Some("未绑定 WebDAV，仅删除本机库记录".into())
+                        } else {
+                            None
+                        },
+                    });
+                }
+            }
+            Err(e) => {
+                failed_count += 1;
+                items.push(BatchItemResultDto {
+                    object_id: object_id.clone(),
+                    original_name,
+                    status: "failed".into(),
+                    saved_path: None,
+                    released_bytes: None,
+                    error: Some(e.to_string()),
+                });
+            }
+        }
+    }
+    Ok(BatchResultDto {
+        total: object_ids.len(),
+        ok_count,
+        failed_count,
+        released_bytes: 0,
+        items,
+    })
+}
+
+/// 读取对象代表文件名（用于批量结果展示）
+fn load_representative_name(db: &chatvault_index::Database, object_id: &str) -> String {
+    db.connection()
+        .query_row(
+            r#"
+            SELECT COALESCE(
+                (SELECT r.original_name FROM file_records r
+                 WHERE r.object_id = ?1
+                   AND NOT EXISTS(SELECT 1 FROM record_tombstones d WHERE d.record_id = r.record_id)
+                 ORDER BY r.file_time DESC LIMIT 1),
+                ''
+            )
+            "#,
+            [object_id],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap_or_default()
+}
+
+/// 统一批量可见性操作：逐对象执行并汇总结果。
+fn batch_visibility_op(
+    db: &mut chatvault_index::Database,
+    device_id: &str,
+    object_ids: &[String],
+    mut op: impl FnMut(
+        &mut chatvault_index::Database,
+        &str,
+        &str,
+    ) -> std::result::Result<Option<u64>, chatvault_core::error::ChatVaultError>,
+) -> std::result::Result<BatchResultDto, String> {
+    let mut items = Vec::with_capacity(object_ids.len());
+    let mut ok_count = 0usize;
+    let mut failed_count = 0usize;
+    for object_id in object_ids {
+        let original_name = load_representative_name(db, object_id);
+        match op(db, device_id, object_id) {
+            Ok(bytes) => {
+                ok_count += 1;
+                items.push(BatchItemResultDto {
+                    object_id: object_id.clone(),
+                    original_name,
+                    status: "ok".into(),
+                    saved_path: None,
+                    released_bytes: bytes,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                failed_count += 1;
+                items.push(BatchItemResultDto {
+                    object_id: object_id.clone(),
+                    original_name,
+                    status: "failed".into(),
+                    saved_path: None,
+                    released_bytes: None,
+                    error: Some(e.to_string()),
+                });
+            }
+        }
+    }
+    Ok(BatchResultDto {
+        total: object_ids.len(),
+        ok_count,
+        failed_count,
+        released_bytes: 0,
         items,
     })
 }
