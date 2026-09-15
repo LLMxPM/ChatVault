@@ -148,7 +148,8 @@ fn is_allowed_release_download(url: &str) -> bool {
     url.starts_with(RELEASE_DOWNLOAD_PREFIX)
         && url
             .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || "/.?&=%-_+~".contains(ch))
+            // 必须包含 `:`，否则 https:// 前缀会把全部合法下载地址拒掉
+            .all(|ch| ch.is_ascii_alphanumeric() || "/.?&=%-_+~:".contains(ch))
 }
 
 fn parse_sha256_asset(content: &str, expected_name: &str) -> Result<String, String> {
@@ -277,7 +278,9 @@ pub fn open_release_page() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_newer_version, parse_semver, pick_installer, GithubAsset};
+    use super::{
+        is_allowed_release_download, is_newer_version, parse_semver, pick_installer, GithubAsset,
+    };
 
     #[test]
     fn test_parse_semver_with_prefix_and_pre() {
@@ -313,5 +316,31 @@ mod tests {
         ];
         let picked = pick_installer(&assets).expect("should pick installer");
         assert_eq!(picked.name, "ChatVault_0.1.0_x64-setup.exe");
+    }
+
+    #[test]
+    fn test_is_allowed_release_download_accepts_github_asset_url() {
+        assert!(is_allowed_release_download(
+            "https://github.com/LLMxPM/ChatVault/releases/download/v0.1.1/ChatVault_0.1.1_x64-setup.exe"
+        ));
+        assert!(is_allowed_release_download(
+            "https://github.com/LLMxPM/ChatVault/releases/download/v0.1.1/ChatVault_0.1.1_x64-setup.exe.sha256"
+        ));
+    }
+
+    #[test]
+    fn test_is_allowed_release_download_rejects_foreign_or_malicious_url() {
+        assert!(!is_allowed_release_download(
+            "https://evil.example/ChatVault/setup.exe"
+        ));
+        assert!(!is_allowed_release_download(
+            "https://github.com/other/repo/releases/download/v0.1.1/a.exe"
+        ));
+        assert!(!is_allowed_release_download(
+            "http://github.com/LLMxPM/ChatVault/releases/download/v0.1.1/a.exe"
+        ));
+        assert!(!is_allowed_release_download(
+            "https://github.com/LLMxPM/ChatVault/releases/download/v0.1.1/a.exe?x=1#frag"
+        ));
     }
 }

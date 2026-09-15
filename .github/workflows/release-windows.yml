@@ -72,11 +72,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = '${{ github.ref_name }}'
+          $version = $tag.TrimStart('v')
           $metadata = cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw '读取 Cargo 输出目录失败' }
           $installerDirectory = Join-Path $metadata.target_directory 'release/bundle/nsis'
-          $installers = @(Get-ChildItem -LiteralPath $installerDirectory -Filter '*-setup.exe' -File)
-          if ($installers.Count -eq 0) { throw '未找到 NSIS 安装包' }
+          # 只上传与本次 tag 版本一致的安装包，避免缓存目录中的旧产物混入 Release。
+          $installers = @(Get-ChildItem -LiteralPath $installerDirectory -Filter "*$version*-setup.exe" -File)
+          if ($installers.Count -eq 0) { throw "未找到 NSIS 安装包：*$version*-setup.exe" }
           $files = @()
           foreach ($installer in $installers) {
               $checksum = "$($installer.FullName).sha256"
