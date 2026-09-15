@@ -45,9 +45,13 @@ function Write-Sha256File {
 Push-Location $repoRoot
 try {
     $versionScript = Join-Path $repoRoot 'scripts/validate_versions.ps1'
-    $versionArguments = @()
-    if ($Tag) { $versionArguments = @('-Tag', $Tag) }
-    & $versionScript @versionArguments
+    # 数组 splat 会按位置传参，必须用命名参数调用，否则 -Tag 会被当成脚本入参字符串。
+    if ($Tag) {
+        & $versionScript -Tag $Tag
+    }
+    else {
+        & $versionScript
+    }
     if ($LASTEXITCODE -ne 0) {
         throw '版本校验失败'
     }
