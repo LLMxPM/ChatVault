@@ -2,7 +2,7 @@
   "name": "chatvault-monorepo",
   "version": "0.1.0",
   "private": true,
-  "license": "AGPL-3.0-only",
+  "license": "AGPL-3.0-or-later",
   "packageManager": "pnpm@10.30.3",
   "engines": {
     "node": ">=22 <23"

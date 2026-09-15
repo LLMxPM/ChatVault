@@ -67,7 +67,7 @@
         </UiButton>
       </div>
       <p>
-        开源许可：<span class="text-cv-accent">AGPL-3.0-only</span>
+        开源许可：<span class="text-cv-accent">AGPL-3.0-or-later</span>
         · 完整条款见仓库 LICENSE 文件
       </p>
       <p v-if="error" class="text-cv-danger">{{ error }}</p>

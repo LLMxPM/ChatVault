@@ -6,7 +6,7 @@
 
 ChatVault 是桌面端聊天附件归档与检索工具，当前优先支持 Windows 微信/企业微信附件采集、本地检索、WebDAV 归档及多设备同步恢复。项目采用 Rust Cargo workspace 与 pnpm workspace；桌面端使用 Tauri 2、Vue 3、TypeScript 和 Vite，本地索引使用 SQLite，远端存储使用 WebDAV。
 
-开源许可：AGPL-3.0-only（见根目录 `LICENSE`）。Cargo workspace、npm 包与 README 中的许可声明须保持一致。
+开源许可：AGPL-3.0-or-later（见根目录 `LICENSE`）。Cargo workspace、npm 包与 README 中的许可声明须保持一致。
 
 当前阶段：Windows 桌面端功能开发阶段性结束，进入发布准备（安装包、验收与文档核对）。macOS 适配、标签/收藏/会话别名等仍属后续阶段，不在本次发布范围。
 

@@ -84,7 +84,7 @@ pnpm release:windows
 
 - 支持正式 tag（`vX.Y.Z`）与预发布 tag（`vX.Y.Z-alpha` / `-alpha.1` / `-rc.1` 等）；预发布在 GitHub 上标记为 Pre-release。
 - 预发布发版前需将 `package.json`、桌面包与 Cargo workspace 版本改为与 tag 一致的预发布号。
-- 发行源码与安装包遵循 AGPL-3.0-only；GitHub Release 应随源码 tag 发布，便于用户获取对应版本源码。
+- 发行源码与安装包遵循 AGPL-3.0-or-later；GitHub Release 应随源码 tag 发布，便于用户获取对应版本源码。
 - 当前安装包为本地测试发行产物；尚未配置代码签名证书、公开下载渠道或自动更新。
 - 尚待真实环境验收：干净系统首次安装、WebView2 缺失、普通用户权限、实际安装/卸载、覆盖安装、不同启动入口、高 DPI 缩放。
 - MSI、ARM64、完全离线安装器和 macOS 分发不在当前范围。
