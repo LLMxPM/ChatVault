@@ -40,3 +40,11 @@ ChatVault 是桌面端聊天附件归档与检索工具。在授权目录内发�
 | [Windows 安装与发布](docs/Windows安装与发布.md) | 打包、数据位置、卸载与发布边界 |
 
 功能规格见 `docs/compose/spec/`。仓库结构、协作与验证约束见 [AGENTS.md](AGENTS.md)。
+
+## 开源许可
+
+本项目以 [GNU Affero General Public License v3.0 only](LICENSE)（AGPL-3.0-only）发布。
+
+你可以自由使用、修改和分发本软件；若通过网络向用户提供本软件或基于本软件的服务，须向用户提供对应源代码。完整条款见仓库根目录 [LICENSE](LICENSE) 文件。
+
+Copyright (C) 2026 ChatVault Team / LLMxPM

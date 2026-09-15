@@ -1,4 +1,4 @@
-<!-- 拾文应用信息：版本、升级检测、数据位置、数据目录与开源仓库入口。 -->
+<!-- 拾文应用信息：版本、升级检测、数据位置、数据目录、开源许可与仓库入口。 -->
 <template>
   <UiCard
     title="关于拾文 ChatVault"
@@ -66,6 +66,10 @@
           打开仓库 Star
         </UiButton>
       </div>
+      <p>
+        开源许可：<span class="text-cv-accent">AGPL-3.0-only</span>
+        · 完整条款见仓库 LICENSE 文件
+      </p>
       <p v-if="error" class="text-cv-danger">{{ error }}</p>
     </div>
   </UiCard>
