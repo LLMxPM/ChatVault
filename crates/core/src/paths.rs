@@ -33,6 +33,17 @@ pub fn normalize_root_path(path: &str) -> String {
     normalize_scan_key(path)
 }
 
+/// 去掉 Windows 扩展路径前缀（`\\?\` / `\\?\UNC\`），返回可与入库路径比对的形式
+pub fn strip_extended_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        path.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,5 +64,18 @@ mod tests {
         assert!(is_under_root(r"C:\a\b", r"C:\a\b"));
         assert!(!is_under_root(r"C:\a\bc.txt", r"C:\a\b"));
         assert!(!is_under_root(r"D:\a\b\c.txt", r"C:\a\b"));
+    }
+
+    #[test]
+    fn test_strip_extended_prefix() {
+        assert_eq!(
+            strip_extended_prefix(r"\\?\C:\Foo\Bar.txt"),
+            r"C:\Foo\Bar.txt"
+        );
+        assert_eq!(
+            strip_extended_prefix(r"\\?\UNC\server\share\a"),
+            r"\\server\share\a"
+        );
+        assert_eq!(strip_extended_prefix(r"C:\Foo\Bar"), r"C:\Foo\Bar");
     }
 }

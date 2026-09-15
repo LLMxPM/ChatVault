@@ -2,7 +2,9 @@
 use crate::db::*;
 use chatvault_core::error::{ChatVaultError, Result};
 use chatvault_core::models::DiscoveredFile;
-use chatvault_core::paths::{is_under_root, normalize_root_path, normalize_scan_key};
+use chatvault_core::paths::{
+    is_under_root, normalize_root_path, normalize_scan_key, strip_extended_prefix,
+};
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::params;
 use std::collections::HashMap;
@@ -99,7 +101,11 @@ impl Database {
         &self,
         root_path: &str,
     ) -> Result<HashMap<String, KnownLocalFile>> {
-        let root_key = normalize_root_path(root_path);
+        // 与入库路径对齐：先 canonicalize，避免 Windows 短路径（如 RUNNER~1）漏匹配
+        let root_key = match std::fs::canonicalize(root_path) {
+            Ok(p) => normalize_root_path(&strip_extended_prefix(&p.to_string_lossy())),
+            Err(_) => normalize_root_path(root_path),
+        };
         let mut stmt = self
             .conn
             .prepare(
@@ -141,16 +147,7 @@ impl Database {
             Ok(p) => p,
             Err(_) => return Ok(false),
         };
-        let stored = {
-            let s = canonical.to_string_lossy();
-            if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-                format!(r"\\{rest}")
-            } else if let Some(rest) = s.strip_prefix(r"\\?\") {
-                rest.to_string()
-            } else {
-                s.to_string()
-            }
-        };
+        let stored = strip_extended_prefix(&canonical.to_string_lossy());
         let key = normalize_scan_key(&stored);
         let known = {
             let mut stmt = self
