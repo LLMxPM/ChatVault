@@ -1,4 +1,4 @@
-# 初始化并校验 ChatVault 的标准 Windows x64 MSVC 构建环境。
+﻿# 初始化并校验 ChatVault 的标准 Windows x64 MSVC 构建环境。
 [CmdletBinding()]
 param()
 

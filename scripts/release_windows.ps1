@@ -1,4 +1,4 @@
-# 构建拾文 Windows x64 安装包：校验版本、编译同版本 CLI、打包 NSIS 并生成 SHA256。
+﻿# 构建拾文 Windows x64 安装包：校验版本、编译同版本 CLI、打包 NSIS 并生成 SHA256。
 [CmdletBinding()]
 param(
     [string]$Tag

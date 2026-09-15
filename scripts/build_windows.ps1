@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 ChatVault Windows x64 Rust 与桌面端开发、构建入口。
 

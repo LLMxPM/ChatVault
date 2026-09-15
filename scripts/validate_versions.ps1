@@ -1,4 +1,4 @@
-# 校验根 package.json、桌面包和 Cargo workspace 的版本，并可选校验 Git tag。
+﻿# 校验根 package.json、桌面包和 Cargo workspace 的版本，并可选校验 Git tag。
 # 支持正式版 vX.Y.Z 与预发布 vX.Y.Z-<pre>（如 v0.1.0-alpha.1）。
 [CmdletBinding()]
 param(
