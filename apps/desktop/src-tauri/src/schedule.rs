@@ -11,6 +11,17 @@ pub const TASK_NAME: &str = "ChatVaultScheduledScan";
 /// 计划任务允许的最大执行间隔：7 天。
 pub const MAX_INTERVAL_MINUTES: u32 = 7 * 24 * 60;
 
+/// GUI 子系统下拉起 schtasks 等控制台程序时禁止新建控制台窗口。
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// 构建不弹控制台窗口的 schtasks 命令。
+fn schtasks_command() -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = Command::new("schtasks");
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
 /// 定位 chatvault-cli 可执行文件
 ///
 /// 只使用同版本安装包或构建目录中的 CLI，避免调用 PATH 中的其他程序。
@@ -52,7 +63,7 @@ pub fn register_scheduled_task(
         "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"& '{cli}' scheduled-run --db '{db}'\""
     );
 
-    let output = Command::new("schtasks")
+    let output = schtasks_command()
         .args([
             "/Create",
             "/TN",
@@ -81,7 +92,7 @@ pub fn register_scheduled_task(
 
 /// 删除 Windows 计划任务（任务不存在时视为成功）
 pub fn unregister_scheduled_task() -> Result<(), String> {
-    let output = Command::new("schtasks")
+    let output = schtasks_command()
         .args(["/Delete", "/TN", TASK_NAME, "/F"])
         .output()
         .map_err(|e| format!("调用 schtasks 失败: {}", e))?;
@@ -104,7 +115,7 @@ pub fn unregister_scheduled_task() -> Result<(), String> {
 
 /// 查询计划任务是否存在
 pub fn scheduled_task_exists() -> bool {
-    Command::new("schtasks")
+    schtasks_command()
         .args(["/Query", "/TN", TASK_NAME])
         .output()
         .map(|o| o.status.success())
