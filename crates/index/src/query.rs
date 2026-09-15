@@ -888,7 +888,8 @@ fn build_record_conditions(
         let trimmed = kw.trim();
         if !trimmed.is_empty() {
             let char_count = trimmed.chars().count();
-            if char_count >= 3 {
+            // 隐藏对象按设计不进入 FTS，因此隐藏视图必须使用文件名回退匹配。
+            if char_count >= 3 && !filter.hidden_only {
                 conditions.push(
                     "r.record_id IN (SELECT record_id FROM file_search_fts WHERE file_search_fts MATCH ?)"
                         .to_string(),

@@ -54,6 +54,8 @@
           class="pl-9"
           placeholder="搜索文件名、关键词…"
           @input="onSearchInput"
+          @compositionstart="onCompositionStart"
+          @compositionend="onCompositionEnd"
         />
         <button
           v-if="keyword"
@@ -402,6 +404,9 @@ const batchBusy = ref("");
 const pendingRemotePurges = ref(0);
 let requestId = 0;
 let debounceTimer: number | undefined;
+/** 中文输入法组合态：组合文字尚未提交时不触发搜索。 */
+let isComposing = false;
+const SEARCH_DEBOUNCE_MS = 350;
 
 const categories = [
   { id: "all", label: "全部类型" },
@@ -637,8 +642,21 @@ async function fetchObjects(reset = true) {
 }
 
 function onSearchInput() {
+  if (isComposing) return;
   if (debounceTimer) window.clearTimeout(debounceTimer);
-  debounceTimer = window.setTimeout(() => fetchObjects(), 150);
+  debounceTimer = window.setTimeout(() => fetchObjects(), SEARCH_DEBOUNCE_MS);
+}
+
+/** 标记输入法进入组合输入，避免半成品关键词触发请求。 */
+function onCompositionStart() {
+  isComposing = true;
+  if (debounceTimer) window.clearTimeout(debounceTimer);
+}
+
+/** 输入法提交关键词后立即执行一次搜索。 */
+function onCompositionEnd() {
+  isComposing = false;
+  onSearchInput();
 }
 
 function clearKeyword() {

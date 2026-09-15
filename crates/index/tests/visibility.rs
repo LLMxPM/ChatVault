@@ -57,6 +57,18 @@ fn hide_restore_updates_default_and_hidden_lists() {
     db.hide_object("dev-a", &object_id).unwrap();
     assert_eq!(search_default(&db), 0);
     assert_eq!(search_hidden(&db), 1);
+    // 隐藏对象不在 FTS 中，长关键词仍应能在隐藏视图按文件名检索。
+    let hidden_page = SearchService::new(&db)
+        .search_objects(
+            &SearchFilter {
+                hidden_only: true,
+                keyword: Some("a.txt".into()),
+                ..Default::default()
+            },
+            "dev-a",
+        )
+        .unwrap();
+    assert_eq!(hidden_page.total, 1);
     // 幂等
     db.hide_object("dev-a", &object_id).unwrap();
 
