@@ -1,7 +1,7 @@
 // ChatVault 缓存回收：保护未完成归档的引用，仅删除受控目录内的内容对象。
 use crate::{cache_policy::MIB, Database};
 use chatvault_core::error::{ChatVaultError, Result};
-use chatvault_core::is_under_root;
+use chatvault_core::is_under_root_canonical;
 use chatvault_core::models::CollectSource;
 use std::{fs, path::Path, time::SystemTime};
 
@@ -290,7 +290,7 @@ impl Database {
         for (_, original_path, cache_path) in &rows {
             let original = original_path.trim();
             if !original.is_empty() {
-                if is_under_root(original, &staging_str) {
+                if is_under_root_canonical(original, &staging_str) {
                     return Err(ChatVaultError::Internal(
                         "原文件路径落在受控缓存目录内，拒绝删除".into(),
                     ));
@@ -298,7 +298,7 @@ impl Database {
                 if !allowed_roots.is_empty()
                     && !allowed_roots
                         .iter()
-                        .any(|root| is_under_root(original, root))
+                        .any(|root| is_under_root_canonical(original, root))
                 {
                     return Err(ChatVaultError::Internal(format!(
                         "原文件路径不在已配置采集目录内，拒绝删除: {original}"
@@ -423,8 +423,8 @@ impl Database {
 
     /// 判断路径是否为受控 staging 目录内的直接子文件（不进入 open/ 等子目录）。
     fn is_under_staging(path: &str, staging_dir: &Path) -> bool {
-        let path_key = chatvault_core::normalize_scan_key(path);
-        let root_key = chatvault_core::normalize_scan_key(&staging_dir.to_string_lossy());
+        let path_key = chatvault_core::canonical_path_key(path);
+        let root_key = chatvault_core::canonical_path_key(&staging_dir.to_string_lossy());
         if root_key.is_empty() {
             return false;
         }

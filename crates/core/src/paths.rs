@@ -44,6 +44,31 @@ pub fn strip_extended_prefix(path: &str) -> String {
     }
 }
 
+/// 将路径规范为可比对键：尽量 canonicalize 后去掉扩展前缀
+///
+/// 路径不存在时退回「父目录 canonicalize + 文件名拼接」，仍失败则原样返回，
+/// 以兼容 Windows 短路径（如 `RUNNER~1`）与长路径混用的场景。
+pub fn canonical_path_key(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    if let Ok(canonical) = std::fs::canonicalize(p) {
+        return strip_extended_prefix(&canonical.to_string_lossy());
+    }
+    if let (Some(parent), Some(name)) = (p.parent(), p.file_name()) {
+        if !parent.as_os_str().is_empty() {
+            if let Ok(parent_canonical) = std::fs::canonicalize(parent) {
+                let joined = parent_canonical.join(name);
+                return strip_extended_prefix(&joined.to_string_lossy());
+            }
+        }
+    }
+    path.to_string()
+}
+
+/// 判断 path 是否位于 root 之下；两侧均先 canonicalize，兼容短路径
+pub fn is_under_root_canonical(path: &str, root: &str) -> bool {
+    is_under_root(&canonical_path_key(path), &canonical_path_key(root))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +102,22 @@ mod tests {
             r"\\server\share\a"
         );
         assert_eq!(strip_extended_prefix(r"C:\Foo\Bar"), r"C:\Foo\Bar");
+    }
+
+    #[test]
+    fn test_canonical_path_key_matches_short_and_long() {
+        let dir = std::env::temp_dir().join(format!("cv_path_key_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let raw = dir.to_string_lossy().to_string();
+        let canonical = std::fs::canonicalize(&dir).unwrap();
+        let long = strip_extended_prefix(&canonical.to_string_lossy());
+        assert!(is_under_root_canonical(&file.to_string_lossy(), &raw));
+        assert!(is_under_root_canonical(
+            &file.join("..").join("a.txt").to_string_lossy(),
+            &long
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -8,4 +8,7 @@ pub mod paths;
 
 pub use error::{ChatVaultError, Result};
 pub use models::*;
-pub use paths::{is_under_root, normalize_root_path, normalize_scan_key};
+pub use paths::{
+    canonical_path_key, is_under_root, is_under_root_canonical, normalize_root_path,
+    normalize_scan_key, strip_extended_prefix,
+};
