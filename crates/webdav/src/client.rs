@@ -10,6 +10,13 @@ use std::path::Path;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 
+/// HEAD 探测结果：区分缺失与存在（存在时 Content-Length 可能缺失）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadProbe {
+    NotFound,
+    Exists { content_length: Option<u64> },
+}
+
 /// WebDAV 服务器认证配置
 #[derive(Debug, Clone)]
 pub struct WebDavConfig {
@@ -176,6 +183,34 @@ impl WebDavClient {
                 status
             )))
         }
+    }
+
+    /// HEAD 探测对象存在性与声明长度
+    ///
+    /// 职责: 不下载正文，确认远端对象是否存在，并读取 Content-Length（部分服务可能不返回）。
+    /// 输入: `relative_path`: 远端相对路径
+    /// 输出: 不存在返回 `NotFound`；存在返回 `Exists { content_length }`
+    pub async fn head_object(&self, relative_path: &str) -> Result<HeadProbe> {
+        let url = self.get_full_url(relative_path)?;
+        let resp = self.send_read(Method::HEAD, &url).await?;
+        let status = resp.status();
+        if status == StatusCode::NOT_FOUND {
+            return Ok(HeadProbe::NotFound);
+        }
+        if !status.is_success() {
+            return Err(ChatVaultError::WebDav(format!(
+                "HEAD 响应异常状态码: {}",
+                status
+            )));
+        }
+        // reqwest::Response::content_length() 对 HEAD 返回的是空 body 长度，
+        // 必须直接读 Content-Length 头才能得到资源声明大小。
+        let content_length = resp
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok());
+        Ok(HeadProbe::Exists { content_length })
     }
 
     /// MKCOL 创建单个集合目录

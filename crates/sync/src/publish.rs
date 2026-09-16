@@ -95,6 +95,7 @@ impl<'a> JournalPublisher<'a> {
             db.reclaim_cache()?;
             return Ok(last_pushed);
         }
+        // 归档已完整回读并标记 backed_up；发布前只确认对象仍在且大小一致。
         crate::validation::verify_references(self.client, &self.vault_id, &events).await?;
         let first_seq = events.first().unwrap().seq;
         let last_seq = events.last().unwrap().seq;

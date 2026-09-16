@@ -11,7 +11,7 @@ pub mod vault;
 pub mod verify;
 
 pub use capability::{CapabilityDetector, CapabilityReport};
-pub use client::{WebDavClient, WebDavConfig};
+pub use client::{HeadProbe, WebDavClient, WebDavConfig};
 pub use publisher::{ObjectPublisher, PublishResult};
 pub use vault::{ensure_vault_config, load_vault_config};
 pub use verify::RemoteVerifier;

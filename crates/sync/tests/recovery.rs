@@ -73,6 +73,113 @@ async fn unready_or_missing_objects_cannot_publish() {
     assert_eq!(source.cursor_seq("a", 1).unwrap(), 0);
 }
 
+/// 发布阶段对已 backed_up 对象只做 HEAD 轻量门禁，不再整份 GET 回读。
+#[tokio::test]
+async fn publish_preflight_uses_head_not_object_get() {
+    let server = Server::new("P").await;
+    server.seed_object();
+    let mut source = Database::open_in_memory().unwrap();
+    add_source(&mut source, &event(1), true);
+    publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
+        .await
+        .unwrap();
+    let object_path = format!(
+        "/{}",
+        chatvault_metadata::get_object_path("chatvault-v", &hash())
+    );
+    let state = server.state.lock().unwrap();
+    let gets = state
+        .calls
+        .get(&format!("GET {object_path}"))
+        .copied()
+        .unwrap_or(0);
+    let heads = state
+        .calls
+        .get(&format!("HEAD {object_path}"))
+        .copied()
+        .unwrap_or(0);
+    assert!(heads >= 1, "发布应至少 HEAD 一次对象路径");
+    assert_eq!(gets, 0, "发布不应整份 GET 回读对象");
+}
+
+/// 发布时远端对象大小与事件声明不一致会失败且不推进游标。
+#[tokio::test]
+async fn publish_preflight_rejects_size_mismatch() {
+    let server = Server::new("P2").await;
+    server.seed_object();
+    let path = format!(
+        "/{}",
+        chatvault_metadata::get_object_path("chatvault-v", &hash())
+    );
+    // 同路径塞入错误长度内容，模拟远端被改写
+    server
+        .state
+        .lock()
+        .unwrap()
+        .files
+        .insert(path, b"nope".to_vec());
+    let mut source = Database::open_in_memory().unwrap();
+    add_source(&mut source, &event(1), true);
+    assert!(
+        publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
+            .await
+            .is_err()
+    );
+    assert_eq!(source.cursor_seq("a", 1).unwrap(), 0);
+}
+
+/// HEAD 不带 Content-Length 时降级完整回读；内容正确则发布成功并确实 GET 了对象。
+#[tokio::test]
+async fn publish_falls_back_to_get_when_head_omits_content_length() {
+    let server = Server::new("P3").await;
+    server.omit_head_content_length();
+    server.seed_object();
+    let mut source = Database::open_in_memory().unwrap();
+    add_source(&mut source, &event(1), true);
+    publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
+        .await
+        .unwrap();
+    assert_eq!(source.cursor_seq("a", 1).unwrap(), 1);
+    let object_path = format!(
+        "/{}",
+        chatvault_metadata::get_object_path("chatvault-v", &hash())
+    );
+    let state = server.state.lock().unwrap();
+    let gets = state
+        .calls
+        .get(&format!("GET {object_path}"))
+        .copied()
+        .unwrap_or(0);
+    assert!(gets >= 1, "无 Content-Length 时应降级 GET 回读对象");
+}
+
+/// HEAD 不带 Content-Length 且等长内容被篡改时，降级回读应因哈希不匹配失败。
+#[tokio::test]
+async fn publish_fallback_rejects_hash_mismatch_without_content_length() {
+    let server = Server::new("P4").await;
+    server.omit_head_content_length();
+    server.seed_object();
+    let path = format!(
+        "/{}",
+        chatvault_metadata::get_object_path("chatvault-v", &hash())
+    );
+    // 与 b"content" 等长，仅内容错误：长度门禁挡不住，必须靠降级 BLAKE3
+    server
+        .state
+        .lock()
+        .unwrap()
+        .files
+        .insert(path, b"XXXXXXX".to_vec());
+    let mut source = Database::open_in_memory().unwrap();
+    add_source(&mut source, &event(1), true);
+    assert!(
+        publish_pending_events(&server.client, &mut source, "chatvault-v", "a")
+            .await
+            .is_err()
+    );
+    assert_eq!(source.cursor_seq("a", 1).unwrap(), 0);
+}
+
 /// 远端对象被损坏后恢复失败且不推进游标；修复对象后能继续。
 #[tokio::test]
 async fn pull_requires_readable_objects() {

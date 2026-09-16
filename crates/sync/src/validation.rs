@@ -4,7 +4,7 @@ use chatvault_core::{
     models::{JournalEvent, JournalEventType},
 };
 use chatvault_metadata::{get_object_path, validate_hash};
-use chatvault_webdav::{RemoteVerifier, WebDavClient};
+use chatvault_webdav::{HeadProbe, RemoteVerifier, WebDavClient};
 
 /// 校验单事件格式；允许未定义字段，但拒绝未知版本和不完整对象身份。
 pub fn validate_event(ev: &JournalEvent) -> Result<()> {
@@ -115,7 +115,10 @@ fn validate_source_key(value: &str, field: &str) -> Result<()> {
     Ok(())
 }
 
-/// 确认每个新增来源引用的远端内容已完整可读；缺失和损坏均阻止游标推进。
+/// 确认每个新增来源引用的远端对象仍在且大小一致；缺失/截断阻止游标推进。
+///
+/// 信任模型：归档阶段已完整回读并校验 BLAKE3，WebDAV 是用户自有归档存储；
+/// 同步只做存在/大小门禁，内容哈希在真正下载使用时再校验。无 Content-Length 时降级完整回读。
 pub async fn verify_references(
     client: &WebDavClient,
     vault: &str,
@@ -126,16 +129,17 @@ pub async fn verify_references(
         validate_event(event)?;
         if event.event_type == JournalEventType::FileRecordAdded {
             let hash = event.payload["hash"].as_str().unwrap();
+            let expected_size = event.payload["size"]
+                .as_u64()
+                .ok_or_else(|| ChatVaultError::Internal("事件缺少有效对象大小".into()))?;
             let actual_size = if let Some(size) = verified.get(hash) {
                 *size
             } else {
-                let size = RemoteVerifier::new(client)
-                    .verify_remote_size(&get_object_path(vault, hash), hash)
-                    .await?;
+                let size = verify_one_reference(client, vault, hash, expected_size).await?;
                 verified.insert(hash, size);
                 size
             };
-            if event.payload["size"].as_u64() != Some(actual_size) {
+            if actual_size != expected_size {
                 return Err(ChatVaultError::Internal(
                     "事件声明的对象大小与远端内容不一致".into(),
                 ));
@@ -143,4 +147,33 @@ pub async fn verify_references(
         }
     }
     Ok(())
+}
+
+/// 轻量校验单个被引用对象；返回远端确认的字节大小。
+async fn verify_one_reference(
+    client: &WebDavClient,
+    vault: &str,
+    hash: &str,
+    expected_size: u64,
+) -> Result<u64> {
+    let path = get_object_path(vault, hash);
+    match client.head_object(&path).await? {
+        HeadProbe::NotFound => Err(ChatVaultError::WebDav(format!("远端对象缺失: {path}"))),
+        HeadProbe::Exists {
+            content_length: Some(len),
+        } if len == expected_size => Ok(len),
+        HeadProbe::Exists {
+            content_length: Some(len),
+        } => Err(ChatVaultError::Internal(format!(
+            "远端对象大小 {len} 与事件声明 {expected_size} 不一致: {path}"
+        ))),
+        // 部分服务 HEAD 不带 Content-Length：降级完整回读，保证协议仍成立。
+        HeadProbe::Exists {
+            content_length: None,
+        } => {
+            RemoteVerifier::new(client)
+                .verify_remote_size(&path, hash)
+                .await
+        }
+    }
 }

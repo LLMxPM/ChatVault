@@ -14,6 +14,8 @@ pub struct Storage {
     pub calls: HashMap<String, usize>,
     pub fail_on: HashMap<String, usize>,
     pub fail_after_put: bool,
+    /// 模拟部分 WebDAV：HEAD 不返回 Content-Length，触发客户端降级完整回读。
+    pub head_omit_content_length: bool,
 }
 
 pub struct Server {
@@ -70,7 +72,7 @@ impl Server {
                     assert!(n > 0);
                     bytes.extend_from_slice(&buf[..n]);
                 }
-                let (status, body) = {
+                let (status, body, head_content_length) = {
                     let mut store = shared.lock().unwrap();
                     let key = format!("{method} {path}");
                     let count = store.calls.entry(key.clone()).or_default();
@@ -78,7 +80,7 @@ impl Server {
                     let count = *count;
                     let fail = store.fail_on.get(&key) == Some(&count);
                     if fail && !(method == "PUT" && store.fail_after_put) {
-                        (503, Vec::new())
+                        (503, Vec::new(), None)
                     } else {
                         let mut result = respond(
                             &mut store,
@@ -91,11 +93,31 @@ impl Server {
                         if fail {
                             result = (503, Vec::new());
                         }
-                        result
+                        // HEAD 无正文；默认带真实 Content-Length，可配置省略。
+                        let cl = if method == "HEAD" && !store.head_omit_content_length {
+                            store.files.get(path).map(|b| b.len())
+                        } else {
+                            None
+                        };
+                        (result.0, result.1, cl)
                     }
                 };
-                socket.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).as_bytes()).await.unwrap();
-                socket.write_all(&body).await.unwrap();
+                let omit_cl = method == "HEAD" && shared.lock().unwrap().head_omit_content_length;
+                if omit_cl {
+                    socket
+                        .write_all(
+                            format!("HTTP/1.1 {status} Test\r\nConnection: close\r\n\r\n")
+                                .as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                } else {
+                    let content_length = head_content_length.unwrap_or(body.len());
+                    socket.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",content_length).as_bytes()).await.unwrap();
+                }
+                if method != "HEAD" {
+                    socket.write_all(&body).await.unwrap();
+                }
             }
         });
         Self {
@@ -125,6 +147,11 @@ impl Server {
         let mut s = self.state.lock().unwrap();
         s.fail_on.insert(format!("{method} /{path}"), n);
         s.fail_after_put = after_put;
+    }
+
+    /// HEAD 响应不带 Content-Length，验证客户端降级完整回读。
+    pub fn omit_head_content_length(&self) {
+        self.state.lock().unwrap().head_omit_content_length = true;
     }
 }
 

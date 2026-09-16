@@ -194,6 +194,7 @@ async fn pull_epoch_events(
                 ));
             }
         }
+        // 与发布同门禁：确认对象仍在且大小一致；内容哈希在下载使用时校验。
         crate::validation::verify_references(client, vault_id, &events).await?;
         let new_count = db.atomic(|db| {
             let mut count = 0;
