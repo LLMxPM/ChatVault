@@ -112,7 +112,13 @@ export function useCollectSources() {
   }
 
   function normalizePath(path: string) {
-    return path.replace(/\//g, "\\").replace(/[/\\]+$/, "").toLowerCase();
+    let p = path.replace(/\//g, "\\");
+    if (p.startsWith("\\\\?\\UNC\\")) {
+      p = `\\${p.slice("\\\\?\\UNC\\".length)}`;
+    } else if (p.startsWith("\\\\?\\")) {
+      p = p.slice("\\\\?\\".length);
+    }
+    return p.replace(/[/\\]+$/, "").toLowerCase();
   }
 
   function isUnderRoot(path: string, root: string) {
@@ -146,8 +152,13 @@ export function useCollectSources() {
     };
   }
 
+  /** 采集源回滚快照：深拷贝账号列表，重置临时 UI 标志，避免失败恢复后卡在 loading。 */
   function cloneSources(sources: CollectSourceItem[]) {
-    return sources.map((source) => ({ ...source, accounts: [...source.accounts] }));
+    return sources.map((source) => ({
+      ...source,
+      accounts: [...source.accounts],
+      inspecting: false,
+    }));
   }
 
   function sourcePayload(sources: CollectSourceItem[]): CollectSourceDto[] {
@@ -241,15 +252,21 @@ export function useCollectSources() {
     }
   }
 
-  /** 根据当前已识别账号清理失效的勾选项。 */
-  function syncSelectedAccounts() {
-    if (!selectionsInitialized) return;
+  /** 仅在内存中过滤失效勾选项；返回是否发生变更。保存链路调用它，待落库成功后再写库。 */
+  function filterSelectedAccounts(): boolean {
+    if (!selectionsInitialized) return false;
     const available = new Set(allWechatAccounts.value.map(accountKey));
     const next = selectedAccounts.value.filter((target) => available.has(targetKey(target)));
     if (next.length !== selectedAccounts.value.length) {
       selectedAccounts.value = next;
-      void persistSelectedAccounts();
+      return true;
     }
+    return false;
+  }
+
+  /** 根据当前已识别账号清理失效的勾选项并落库（探测完成等独立场景）。 */
+  function syncSelectedAccounts() {
+    if (filterSelectedAccounts()) void persistSelectedAccounts();
   }
 
   /** 选择并添加指定适配器的根目录。 */
@@ -348,11 +365,13 @@ export function useCollectSources() {
     collectSources.value = [...collectSources.value, source];
     if (!(await persistSources(previousSources, previousSelections))) return;
 
-    if (source.accounts.length) {
+    // persistSources 已把 path/sourceRoot 规范化，从更新后的列表取账号再勾选。
+    const saved = collectSources.value[collectSources.value.length - 1];
+    if (saved?.accounts.length) {
       const selected = new Set(selectedAccounts.value.map(targetKey));
       selectedAccounts.value = [
         ...selectedAccounts.value,
-        ...source.accounts
+        ...saved.accounts
           .filter((account) => !selected.has(accountKey(account)))
           .map(toAccountTarget),
       ];
@@ -470,6 +489,9 @@ export function useCollectSources() {
     } catch (err) {
       pushToast({ tone: "danger", title: "重新选择目录失败", description: String(err) });
     } finally {
+      // 失败回滚可能把克隆对象放回列表，按当前下标清标志，避免按钮卡在 loading。
+      const current = collectSources.value[index];
+      if (current) current.inspecting = false;
       source.inspecting = false;
     }
   }
@@ -481,16 +503,20 @@ export function useCollectSources() {
     collectSources.value = collectSources.value.map((source, sourceIndex) =>
       sourceIndex === index ? replacement : source,
     );
-    syncSelectedAccounts();
+    // 先只过滤内存勾选，避免 set_collect_sources 失败时库内已是截断列表。
+    filterSelectedAccounts();
     if (!(await persistSources(previousSources, previousSelections))) return;
 
-    const selected = new Set(selectedAccounts.value.map(targetKey));
-    selectedAccounts.value = [
-      ...selectedAccounts.value,
-      ...replacement.accounts
-        .filter((account) => !selected.has(accountKey(account)))
-        .map(toAccountTarget),
-    ];
+    const saved = collectSources.value[index];
+    if (saved?.accounts.length) {
+      const selected = new Set(selectedAccounts.value.map(targetKey));
+      selectedAccounts.value = [
+        ...selectedAccounts.value,
+        ...saved.accounts
+          .filter((account) => !selected.has(accountKey(account)))
+          .map(toAccountTarget),
+      ];
+    }
     void persistSelectedAccounts();
     await persistSourceCache();
   }
@@ -537,11 +563,39 @@ export function useCollectSources() {
     const previousSources = cloneSources(collectSources.value);
     const previousSelections = selectedAccounts.value.map((target) => ({ ...target }));
     collectSources.value = collectSources.value.filter((_, sourceIndex) => sourceIndex !== index);
-    syncSelectedAccounts();
+    // 先只过滤内存勾选，保存成功后再落库，保证失败时库内仍为 previousSelections。
+    filterSelectedAccounts();
     if (await persistSources(previousSources, previousSelections)) {
       void persistSelectedAccounts();
       await persistSourceCache();
     }
+  }
+
+  /** 用后端返回的规范化路径回写内存，保证快照/勾选/卡片与库内一致。 */
+  function applyNormalizedSources(normalized: CollectSourceDto[]) {
+    // 后端按入参顺序返回规范化列表，按序号对齐可覆盖路径本体被改写的情况。
+    const rootByOldKey = new Map<string, string>();
+    collectSources.value = collectSources.value.map((source, index) => {
+      const next = normalized[index];
+      if (!next) return source;
+      rootByOldKey.set(normalizePath(source.path), next.path);
+      return {
+        ...source,
+        path: next.path,
+        sourceType: next.sourceType,
+        enableVideos: supportsVideos(next.sourceType) ? next.enableVideos !== false : true,
+        accounts: source.accounts.map((account) => ({
+          ...account,
+          sourceRoot: next.path,
+        })),
+      };
+    });
+    // 勾选键仍是 (sourceRoot, accountId)；仅替换路径形态，不按裸 accountId 合并。
+    selectedAccounts.value = selectedAccounts.value.map((target) => {
+      const nextRoot = rootByOldKey.get(normalizePath(target.sourceRoot));
+      if (!nextRoot) return target;
+      return { ...target, sourceRoot: nextRoot };
+    });
   }
 
   async function persistSources(
@@ -549,7 +603,8 @@ export function useCollectSources() {
     previousSelections: WechatAccountTargetDto[],
   ) {
     try {
-      await setCollectSources(sourcePayload(collectSources.value));
+      const normalized = await setCollectSources(sourcePayload(collectSources.value));
+      applyNormalizedSources(normalized);
       markCollectSourcesConfigured(collectSources.value.length > 0);
       return true;
     } catch (err) {

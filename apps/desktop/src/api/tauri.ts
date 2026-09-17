@@ -69,9 +69,9 @@ export async function runPipeline(request: PipelineRequestDto): Promise<Pipeline
   return await invoke<PipelineResultDto>("run_pipeline", { request });
 }
 
-/** 保存带适配器类型的持久采集源。 */
-export async function setCollectSources(sources: CollectSourceDto[]): Promise<void> {
-  return await invoke<void>("set_collect_sources", { sources });
+/** 保存带适配器类型的持久采集源；返回规范化后的完整列表。 */
+export async function setCollectSources(sources: CollectSourceDto[]): Promise<CollectSourceDto[]> {
+  return await invoke<CollectSourceDto[]>("set_collect_sources", { sources });
 }
 
 /** 读取采集源探测快照（首屏秒开）。 */

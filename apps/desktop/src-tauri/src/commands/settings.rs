@@ -153,12 +153,14 @@ pub async fn reset_vault_binding(
 }
 
 /// 规范化采集源路径；存在的目录使用系统解析后的绝对路径，失效目录保留原路径。
+///
+/// Windows `canonicalize` 会返回 `\\?\` 扩展前缀，这里统一剥掉，
+/// 使落库 path 与前端探测快照、账号 sourceRoot 同一形态。
 fn normalize_collect_source_path(path: &str) -> String {
     let trimmed = path.trim();
     std::fs::canonicalize(trimmed)
-        .unwrap_or_else(|_| PathBuf::from(trimmed))
-        .to_string_lossy()
-        .into_owned()
+        .map(|p| chatvault_core::strip_extended_prefix(&p.to_string_lossy()))
+        .unwrap_or_else(|_| trimmed.to_string())
 }
 
 /// 校验并规范化采集源列表。
@@ -225,16 +227,19 @@ fn validate_collect_sources(
 }
 
 /// 持久化带适配器类型的采集源列表（任务页维护）。
+///
+/// 返回规范化后的完整列表，前端用返回值同步内存 path，避免与库内形态分叉。
 #[tauri::command]
 pub async fn set_collect_sources(
     sources: Vec<CollectSource>,
     state: State<'_, AppState>,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<Vec<CollectSource>, String> {
     let sources = validate_collect_sources(sources)?;
     let mut db = state.get_db().map_err(|e| e.to_string())?;
     let sources_json = serde_json::to_string(&sources).map_err(|e| e.to_string())?;
     db.set_setting(setting_keys::COLLECT_SOURCES, &sources_json)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(sources)
 }
 
 /// 采集源上次探测快照：供任务页首屏直接渲染，避免每次进页全量重扫。
@@ -413,6 +418,30 @@ mod tests {
             source(GENERIC_FOLDER_SOURCE_TYPE, &attachments),
         ])
         .is_ok());
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn normalize_collect_source_path_strips_extended_prefix() {
+        let base = std::env::temp_dir().join(format!(
+            "chatvault-collect-path-normalize-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let attachments = base.join("attachments");
+        std::fs::create_dir_all(&attachments).unwrap();
+
+        let normalized = normalize_collect_source_path(&attachments.to_string_lossy());
+        assert!(
+            !normalized.starts_with(r"\\?\"),
+            "canonicalize 结果不应带扩展前缀: {normalized}"
+        );
+        assert!(Path::new(&normalized).is_dir());
+
+        let missing = base.join("missing-folder");
+        let kept = normalize_collect_source_path(&missing.to_string_lossy());
+        assert_eq!(kept, missing.to_string_lossy());
 
         std::fs::remove_dir_all(base).unwrap();
     }
