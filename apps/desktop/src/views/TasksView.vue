@@ -942,7 +942,9 @@ function itemStatusTone(s: string): "neutral" | "accent" | "success" | "warning"
 /** 列表行摘要：只保留用户可理解的计数。 */
 function runSummaryText(run: TaskRunDto) {
   if (run.errorMessage) return run.errorMessage;
-  if (!run.summaryJson) return "—";
+  if (run.status === "running") return run.cancelRequested ? "正在取消…" : "执行中…";
+  const emptySummary = `${runStatusLabel(run.status)}，暂无统计摘要`;
+  if (!run.summaryJson) return emptySummary;
   try {
     const s = JSON.parse(run.summaryJson) as Record<string, unknown>;
     const scan = s.scan as { newObjects?: number } | null;
@@ -956,9 +958,9 @@ function runSummaryText(run: TaskRunDto) {
       if (failed > 0) parts.push(`上传失败 ${failed}`);
     }
     if (typeof s.failedItems === "number" && s.failedItems > 0) parts.push(`异常 ${s.failedItems}`);
-    return parts.join(" · ") || "—";
+    return parts.join(" · ") || emptySummary;
   } catch {
-    return "—";
+    return `${runStatusLabel(run.status)}，统计摘要无法解析`;
   }
 }
 

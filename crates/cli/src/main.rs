@@ -8,22 +8,27 @@ use chatvault_index::{Database, SearchFilter, SearchService};
 use chatvault_webdav::{CapabilityDetector, WebDavClient, WebDavConfig};
 use clap::Parser;
 mod args;
+mod logging;
+mod scheduled;
 mod sync_commands;
 use args::{Cli, Commands};
 use std::path::PathBuf;
 use sync_commands::*;
 
+/// 初始化按命令选择的日志，并确保定时运行的顶层错误也能回看。
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     let cli = Cli::parse();
+    logging::init(&cli.command)?;
+    let result = dispatch(cli).await;
+    if let Err(error) = &result {
+        tracing::error!(error = %format!("{error:#}"), "CLI 执行失败");
+    }
+    result
+}
 
+/// 分发已解析的命令；业务错误由主入口统一记录并返回非零退出码。
+async fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Detect => handle_detect()?,
         Commands::Scan {
@@ -48,7 +53,7 @@ async fn main() -> Result<()> {
             db,
             limit,
         } => handle_archive(&url, user, pass, &vault_id, &db, limit).await?,
-        Commands::ScheduledRun { db } => handle_scheduled_run(&db).await?,
+        Commands::ScheduledRun { db } => scheduled::run(&db).await?,
         Commands::SyncPublish {
             url,
             user,
