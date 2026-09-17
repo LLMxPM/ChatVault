@@ -1,4 +1,4 @@
-// ChatVault 索引子模块：封装持久化操作与事务边界。
+// ChatVault 上传队列：查询、重新入队、暂停与缺失任务删除。
 use crate::db::*;
 use chatvault_core::error::{ChatVaultError, Result};
 use chrono::Utc;
@@ -55,12 +55,17 @@ impl Database {
     /// 将任务重新入队（从 failed/missing/paused 回到 queued）
     pub fn requeue_task(&mut self, task_id: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        self.conn
+        let changed = self.conn
             .execute(
                 "UPDATE upload_tasks SET status = 'queued', error_message = NULL, updated_at = ?1 WHERE task_id = ?2",
                 params![now, task_id],
             )
             .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+        if changed == 0 {
+            return Err(ChatVaultError::Internal(
+                "上传任务已不存在，请刷新后重试".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -74,5 +79,29 @@ impl Database {
             )
             .map_err(|e| ChatVaultError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// 仅删除当前仍为 missing 的队列项；保留文件索引与历史明细，清除历史的重试关联。
+    /// 返回是否实际删除；状态已变化或任务不存在时返回 false。
+    pub fn delete_missing_upload_task(&mut self, task_id: &str) -> Result<bool> {
+        self.atomic(|db| {
+            let changed = db
+                .conn
+                .execute(
+                    "DELETE FROM upload_tasks WHERE task_id = ?1 AND status = 'missing'",
+                    [task_id],
+                )
+                .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+            if changed == 0 {
+                return Ok(false);
+            }
+            db.conn
+                .execute(
+                    "UPDATE task_run_items SET task_id = NULL WHERE task_id = ?1",
+                    [task_id],
+                )
+                .map_err(|e| ChatVaultError::Database(e.to_string()))?;
+            Ok(true)
+        })
     }
 }

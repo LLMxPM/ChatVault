@@ -384,74 +384,16 @@
           </div>
         </div>
 
-        <!-- 上传队列 -->
-        <div v-else class="flex min-h-0 flex-1 flex-col p-4 pt-2">
-          <p class="mb-2 shrink-0 text-cv-caption text-cv-text-3">
-            共 {{ tasks.length }} 条
-            <template v-if="statusFilter === 'pending'"> · 仅显示待处理（待上传 / 失败 / 缺失 / 暂停）</template>
-          </p>
-          <div class="min-h-0 flex-1 overflow-auto rounded-cv border border-cv-border">
-            <table class="w-full table-fixed text-left text-cv-caption">
-              <colgroup>
-                <col />
-                <col style="width: 12%" />
-                <col style="width: 12%" />
-                <col style="width: 12%" />
-                <col style="width: 12%" />
-                <col style="width: 12%" />
-              </colgroup>
-              <thead class="sticky top-0 border-b border-cv-border bg-cv-surface-2 text-cv-text-2">
-                <tr>
-                  <th class="px-2.5 py-2 font-medium">文件名</th>
-                  <th class="px-2.5 py-2 font-medium">状态</th>
-                  <th class="px-2.5 py-2 font-medium whitespace-nowrap">大小</th>
-                  <th class="px-2.5 py-2 font-medium whitespace-nowrap">更新时间</th>
-                  <th class="px-2.5 py-2 font-medium">说明</th>
-                  <th class="px-2.5 py-2 font-medium">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="t in tasks"
-                  :key="t.taskId"
-                  class="border-b border-cv-border/60 last:border-0"
-                >
-                  <td class="truncate px-2.5 py-1.5 text-cv-text" :title="t.originalName">
-                    {{ t.originalName }}
-                  </td>
-                  <td class="px-2.5 py-1.5">
-                    <UiBadge :tone="statusTone(t.status)">{{ statusLabel(t.status) }}</UiBadge>
-                  </td>
-                  <td class="px-2.5 py-1.5 whitespace-nowrap text-cv-text-2">{{ t.formattedSize }}</td>
-                  <td class="px-2.5 py-1.5 whitespace-nowrap text-cv-text-3">
-                    {{ formatDateTime(t.updatedAt, { compact: true }) }}
-                  </td>
-                  <td
-                    class="truncate px-2.5 py-1.5 text-cv-text-3"
-                    :title="queueNoteTitle(t)"
-                  >
-                    {{ queueNote(t) }}
-                  </td>
-                  <td class="px-2.5 py-1.5">
-                    <div class="flex gap-1">
-                      <UiButton v-if="canRequeue(t.status)" size="sm" variant="secondary" @click="requeue(t.taskId)">
-                        重新入队
-                      </UiButton>
-                      <UiButton v-if="canPause(t.status)" size="sm" variant="ghost" @click="pause(t.taskId)">
-                        暂停
-                      </UiButton>
-                    </div>
-                  </td>
-                </tr>
-                <tr v-if="!tasksLoading && tasks.length === 0">
-                  <td colspan="6" class="py-8 text-center text-cv-text-3">
-                    {{ statusFilter === "pending" ? "没有待处理的上传项" : "暂无上传项" }}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <UploadQueueTable
+          v-else
+          :tasks="tasks"
+          :status-filter="statusFilter"
+          :tasks-loading="tasksLoading"
+          :busy-task-ids="busyTaskIds"
+          @requeue="requeue"
+          @pause="pause"
+          @delete="deleteMissingTask"
+        />
       </UiCard>
     </div>
 
@@ -598,16 +540,15 @@ import UiSwitch from "../components/ui/UiSwitch.vue";
 import UiInfoTip from "../components/ui/UiInfoTip.vue";
 import UiMenu from "../components/ui/UiMenu.vue";
 import CollectSourceCard from "../components/CollectSourceCard.vue";
+import UploadQueueTable from "../components/UploadQueueTable.vue";
+import { useUploadQueue } from "../composables/useUploadQueue";
 import {
   getAppSettings,
   getCollectSelectedAccounts,
   getCollectSourceCache,
   getScheduleStatus,
-  listUploadTasks,
   listTaskRuns,
   getTaskRunDetail,
-  requeueUploadTask,
-  pauseUploadTask,
   runPipeline,
   setScheduleConfig,
   syncRestore,
@@ -628,7 +569,6 @@ import { usePipelineProgress } from "../composables/usePipelineProgress";
 import { formatDurationMs, formatDateTime } from "../utils/format";
 import type {
   PipelineResultDto,
-  UploadTaskDto,
   TaskRunDto,
   TaskRunDetailDto,
   TaskRunStageDto,
@@ -691,10 +631,10 @@ const webdavConfig = computed<WebdavConfigDto>(() => ({
 
 const activeTab = ref<"history" | "queue">("history");
 
-const tasks = ref<UploadTaskDto[]>([]);
-const statusFilter = ref("pending");
-const pendingCount = ref(0);
-const tasksLoading = ref(false);
+const {
+  tasks, statusFilter, pendingQueueCount, tasksLoading, busyTaskIds,
+  refreshTasks, requeue, pause, deleteMissingTask,
+} = useUploadQueue();
 let pollTimer: number | undefined;
 let scheduleSaveTimer: number | undefined;
 
@@ -726,8 +666,6 @@ const scanIntervalHours = computed(() => {
   const hours = scanIntervalMinutes.value / 60;
   return Number.isFinite(hours) ? String(Number(hours.toFixed(2))) : "0.5";
 });
-
-const pendingQueueCount = computed(() => pendingCount.value);
 
 const statusHeadline = computed(() => {
   if (running.value) {
@@ -803,55 +741,6 @@ const statusDotClass = computed(() => {
 async function onScheduleToggle(next: boolean) {
   scheduleEnabled.value = next;
   await saveSchedule();
-}
-
-const statusMap: Record<string, string> = {
-  queued: "待上传",
-  retryable_failed: "可重试失败",
-  missing: "本地缺失",
-  paused: "已暂停",
-  backed_up: "已校验",
-};
-
-const toneMap: Record<string, "neutral" | "accent" | "success" | "warning" | "danger"> = {
-  queued: "neutral",
-  retryable_failed: "danger",
-  missing: "warning",
-  paused: "warning",
-  backed_up: "success",
-};
-
-function statusLabel(s: string) {
-  return statusMap[s] || s;
-}
-
-function statusTone(s: string) {
-  return toneMap[s] || "neutral";
-}
-
-function canRequeue(s: string) {
-  return ["retryable_failed", "missing", "paused"].includes(s);
-}
-
-function canPause(s: string) {
-  return s === "queued";
-}
-
-/** 队列行说明：失败原因、重试次数或占位。 */
-function queueNote(t: UploadTaskDto) {
-  if (t.status === "retryable_failed" || t.status === "missing") {
-    if (t.retryCount > 0) return `已试 ${t.retryCount} 次`;
-    return t.errorMessage ? "见详情" : "—";
-  }
-  if (t.status === "paused" && t.retryCount > 0) return `已试 ${t.retryCount} 次`;
-  return "—";
-}
-
-function queueNoteTitle(t: UploadTaskDto) {
-  const parts: string[] = [];
-  if (t.errorMessage) parts.push(t.errorMessage);
-  if (t.retryCount > 0) parts.push(`重试 ${t.retryCount} 次`);
-  return parts.join(" · ") || t.originalPath || "";
 }
 
 function selectedCountInSource(source: CollectSourceLike) {
@@ -983,56 +872,6 @@ async function doRestore() {
     pushToast({ tone: "danger", title: "恢复失败", description: String(err) });
   } finally {
     running.value = false;
-  }
-}
-
-let inflight = false;
-let lastErrorToastAt = 0;
-
-async function refreshTasks(silent = false) {
-  if (inflight) return;
-  inflight = true;
-  if (!silent) tasksLoading.value = true;
-  try {
-    const list = await listUploadTasks(statusFilter.value || undefined, 300);
-    tasks.value = list;
-    // 待处理/全部筛选时刷新角标；其他筛选保留上次待处理数
-    if (statusFilter.value === "pending" || statusFilter.value === "") {
-      pendingCount.value = list.filter((t) => t.status !== "backed_up").length;
-    }
-  } catch (err) {
-    if (!silent) {
-      pushToast({ tone: "danger", title: "加载上传队列失败", description: String(err) });
-    } else {
-      const now = Date.now();
-      if (now - lastErrorToastAt > 60000) {
-        lastErrorToastAt = now;
-        pushToast({ tone: "warning", title: "上传队列刷新失败", description: String(err) });
-      }
-    }
-  } finally {
-    inflight = false;
-    if (!silent) tasksLoading.value = false;
-  }
-}
-
-async function requeue(taskId: string) {
-  try {
-    await requeueUploadTask(taskId);
-    pushToast({ tone: "success", title: "已重新入队，下次运行时上传" });
-    await refreshTasks();
-  } catch (err) {
-    pushToast({ tone: "danger", title: "重试失败", description: String(err) });
-  }
-}
-
-async function pause(taskId: string) {
-  try {
-    await pauseUploadTask(taskId);
-    pushToast({ tone: "success", title: "已暂停" });
-    await refreshTasks();
-  } catch (err) {
-    pushToast({ tone: "danger", title: "暂停失败", description: String(err) });
   }
 }
 

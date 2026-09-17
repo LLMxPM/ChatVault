@@ -70,3 +70,20 @@ pub async fn pause_upload_task(
     let mut db = state.get_db().map_err(|e| e.to_string())?;
     db.pause_task(&task_id).map_err(|e| e.to_string())
 }
+
+/// 删除本地缺失的上传队列项；拒绝已删除或状态已变化的任务。
+#[tauri::command]
+pub async fn delete_missing_upload_task(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    let mut db = state.get_db().map_err(|e| e.to_string())?;
+    if db
+        .delete_missing_upload_task(&task_id)
+        .map_err(|e| e.to_string())?
+    {
+        Ok(())
+    } else {
+        Err("任务已不存在或不再是本地缺失状态，请刷新队列后重试".into())
+    }
+}

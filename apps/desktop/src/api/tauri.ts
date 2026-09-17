@@ -282,6 +282,11 @@ export async function pauseUploadTask(taskId: string): Promise<void> {
   return await invoke<void>("pause_upload_task", { taskId });
 }
 
+/** 删除仍为本地缺失状态的上传队列项，保留文件库和运行历史。 */
+export async function deleteMissingUploadTask(taskId: string): Promise<void> {
+  return await invoke<void>("delete_missing_upload_task", { taskId });
+}
+
 /**
  * 从远端恢复索引
  */

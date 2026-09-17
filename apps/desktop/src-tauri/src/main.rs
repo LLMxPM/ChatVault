@@ -84,6 +84,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::tasks::list_upload_tasks,
             commands::tasks::requeue_upload_task,
             commands::tasks::pause_upload_task,
+            commands::tasks::delete_missing_upload_task,
             connection::save_webdav_config,
             runtime::get_runtime_info,
             runtime::open_data_directory,
