@@ -338,7 +338,7 @@
             <table class="w-full table-fixed text-left text-cv-caption">
               <thead class="sticky top-0 border-b border-cv-border bg-cv-surface-2 text-cv-text-2">
                 <tr>
-                  <th class="w-24 px-2.5 py-2 font-medium whitespace-nowrap">时间</th>
+                  <th class="w-32 px-2.5 py-2 font-medium whitespace-nowrap">时间</th>
                   <th class="w-24 px-2.5 py-2 font-medium whitespace-nowrap">状态</th>
                   <th class="w-16 px-2.5 py-2 font-medium whitespace-nowrap">触发</th>
                   <th class="px-2.5 py-2 font-medium">结果</th>

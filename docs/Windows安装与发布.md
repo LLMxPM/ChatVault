@@ -28,7 +28,7 @@ pnpm release:windows
 - 安装格式：Windows x64 NSIS `.exe`，简体中文，当前用户安装。
 - 安装器负责创建开始菜单入口，完成页可选择桌面快捷方式与立即启动。
 - WebView2 缺失时联网下载引导程序；当前安装包不承诺缺少 WebView2 的完全离线安装。
-- 桌面程序和 `chatvault-cli.exe` 位于同一安装目录，计划任务仅调用该目录内的 CLI。
+- 桌面程序和 `chatvault-cli.exe` 位于同一安装目录；计划任务经同目录 `chatvault-scheduled-run.vbs`（`wscript //B`）调用该 CLI，避免控制台黑框闪烁。
 - 安装和卸载前检查归档进程；本安装目录仍有归档运行时阻止操作，不强行结束归档。
 - 生命周期脚本只清理操作路径指向本安装目录的 `ChatVaultScheduledScan` 任务。查询或删除失败会终止安装步骤；删除失败时尝试恢复原任务启用状态。
 
