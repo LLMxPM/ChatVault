@@ -75,13 +75,8 @@ fn write_launcher_vbs(vbs_path: &Path, content: &str) -> Result<(), String> {
     for unit in content.encode_utf16() {
         bytes.extend_from_slice(&unit.to_le_bytes());
     }
-    std::fs::write(vbs_path, bytes).map_err(|e| {
-        format!(
-            "写入定时启动脚本失败（{}）: {}",
-            vbs_path.display(),
-            e
-        )
-    })
+    std::fs::write(vbs_path, bytes)
+        .map_err(|e| format!("写入定时启动脚本失败（{}）: {}", vbs_path.display(), e))
 }
 
 /// 注册 Windows 计划任务
