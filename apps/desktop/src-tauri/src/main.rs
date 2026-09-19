@@ -49,6 +49,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::library::open_file_with_system,
             commands::library::download_object,
             commands::library::download_objects,
+            commands::library::open_download_dir,
             commands::library::release_object_cache,
             commands::library::delete_object_local_files,
             commands::library::library_hide_objects,

@@ -21,16 +21,19 @@
           <X class="h-3.5 w-3.5" />
         </button>
       </div>
-      <button
-        v-if="item.action"
-        class="mt-2 text-cv-caption font-medium text-cv-accent hover:underline"
-        @click="
-          item.action.onClick();
-          dismissToast(item.id);
-        "
-      >
-        {{ item.action.label }}
-      </button>
+      <div v-if="item.actions && item.actions.length > 0" class="mt-2 flex flex-wrap items-center gap-3">
+        <button
+          v-for="(action, index) in item.actions"
+          :key="index"
+          class="text-cv-caption font-medium text-cv-accent hover:underline"
+          @click="
+            action.onClick();
+            dismissToast(item.id);
+          "
+        >
+          {{ action.label }}
+        </button>
+      </div>
     </div>
   </div>
 </template>

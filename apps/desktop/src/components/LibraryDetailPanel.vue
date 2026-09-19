@@ -1,6 +1,7 @@
 <!--
   ChatVault 文件库详情抽屉
   职责：以右侧抽屉展示对象摘要、时间、来源与操作（打开/定位/下载/复制/释放/删原文件）。
+  下载成功后 toast 提供打开/定位/下载目录动作。
   样式与 SourceLabelPanel 对齐：全屏遮罩 + 右侧滑出。
 -->
 <template>
@@ -198,6 +199,7 @@ import {
   listObjectSources,
   openFileWithSystem,
   downloadObject,
+  openDownloadDir,
   releaseObjectCache,
   deleteObjectLocalFiles,
   libraryHideObjects,
@@ -317,7 +319,37 @@ async function onDownload() {
   busy.value = "dl";
   try {
     const result = await downloadObject(props.item.objectId, props.item.originalName);
-    pushToast({ tone: "success", title: "已下载", description: result.savedPath });
+    pushToast({
+      tone: result.skipped ? "info" : "success",
+      title: result.skipped ? "已存在，跳过重复下载" : "已下载",
+      description: result.savedPath,
+      actions: [
+        {
+          label: "打开",
+          onClick: () => {
+            void openFileWithSystem(result.savedPath).catch((err) => {
+              pushToast({ tone: "danger", title: "无法打开文件", description: String(err) });
+            });
+          },
+        },
+        {
+          label: "定位",
+          onClick: () => {
+            void revealFileInExplorer(result.savedPath).catch((err) => {
+              pushToast({ tone: "danger", title: "无法定位文件", description: String(err) });
+            });
+          },
+        },
+        {
+          label: "下载目录",
+          onClick: () => {
+            void openDownloadDir().catch((err) => {
+              pushToast({ tone: "danger", title: "无法打开下载目录", description: String(err) });
+            });
+          },
+        },
+      ],
+    });
   } catch (err) {
     pushToast({ tone: "danger", title: "下载失败", description: String(err) });
   } finally {

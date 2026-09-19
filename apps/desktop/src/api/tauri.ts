@@ -139,6 +139,11 @@ export async function downloadObjects(objectIds: string[]): Promise<BatchResultD
   return await invoke<BatchResultDto>("download_objects", { objectIds });
 }
 
+/** 打开用户下载目录（空配置则默认 Downloads/ChatVault）。 */
+export async function openDownloadDir(): Promise<string> {
+  return await invoke<string>("open_download_dir");
+}
+
 /** 批量释放对象受控缓存。 */
 export async function releaseObjectCache(objectIds: string[]): Promise<BatchResultDto> {
   return await invoke<BatchResultDto>("release_object_cache", { objectIds });

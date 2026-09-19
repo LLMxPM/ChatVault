@@ -95,7 +95,7 @@ export interface ObjectSearchPageDto {
 export interface BatchItemResultDto {
   objectId: string;
   originalName: string;
-  status: "ok" | "failed" | "partial";
+  status: "ok" | "failed" | "partial" | "skipped";
   savedPath?: string | null;
   releasedBytes?: number | null;
   error?: string | null;
@@ -135,6 +135,8 @@ export interface DownloadResultDto {
   savedPath: string;
   fileName: string;
   size: number;
+  /** 下载目录已存在同内容副本时为 true，未发生新的网络下载/复制 */
+  skipped: boolean;
 }
 
 /**

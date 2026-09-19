@@ -1,7 +1,7 @@
 <!--
   ChatVault 文件库与全文检索视图
-  职责：中文即输即搜、多维筛选、按内容折叠分页、位置状态、打开/定位/下载、详情侧栏、
-  多选批量导出/释放缓存/删除本机文件与来源标注入口。
+  职责：中文即输即搜、多维筛选、按内容折叠分页、位置状态、打开/定位/下载、下载目录入口、
+  详情侧栏、多选批量导出/释放缓存/删除本机文件与来源标注入口。
 -->
 <template>
   <div class="flex h-full flex-col gap-3 p-6">
@@ -34,6 +34,15 @@
           <span>去重节省 {{ stats.formattedSavedBytes }}</span>
         </template>
         <UiButton size="sm" variant="secondary" @click="showSources = true">来源标注</UiButton>
+        <UiButton
+          size="sm"
+          variant="secondary"
+          title="打开下载目录"
+          aria-label="打开下载目录"
+          @click="handleOpenDownloadDir"
+        >
+          下载目录
+        </UiButton>
         <UiButton
           v-if="pendingRemotePurges > 0"
           size="sm"
@@ -354,8 +363,10 @@ import LibraryDetailPanel from "../components/LibraryDetailPanel.vue";
 import {
   searchObjects,
   openFileWithSystem,
+  revealFileInExplorer,
   downloadObject,
   downloadObjects,
+  openDownloadDir,
   releaseObjectCache,
   deleteObjectLocalFiles,
   libraryHideObjects,
@@ -706,23 +717,83 @@ async function handleOpen(item: FileObjectViewDto) {
 async function handleDownload(item: FileObjectViewDto) {
   try {
     const result = await downloadObject(item.objectId, item.originalName);
-    pushToast({ tone: "success", title: "已下载", description: result.savedPath });
+    pushToast({
+      tone: result.skipped ? "info" : "success",
+      title: result.skipped ? "已存在，跳过重复下载" : "已下载",
+      description: result.savedPath,
+      actions: [
+        {
+          label: "打开",
+          onClick: () => {
+            void openFileWithSystem(result.savedPath).catch((err) => {
+              pushToast({ tone: "danger", title: "无法打开文件", description: String(err) });
+            });
+          },
+        },
+        {
+          label: "定位",
+          onClick: () => {
+            void revealFileInExplorer(result.savedPath).catch((err) => {
+              pushToast({ tone: "danger", title: "无法定位文件", description: String(err) });
+            });
+          },
+        },
+        {
+          label: "下载目录",
+          onClick: () => {
+            void openDownloadDir().catch((err) => {
+              pushToast({ tone: "danger", title: "无法打开下载目录", description: String(err) });
+            });
+          },
+        },
+      ],
+    });
   } catch (err) {
     pushToast({ tone: "danger", title: "下载失败", description: String(err) });
   }
 }
 
-function reportBatch(title: string, result: BatchResultDto) {
+/** 打开配置的用户下载目录。 */
+async function handleOpenDownloadDir() {
+  try {
+    await openDownloadDir();
+  } catch (err) {
+    pushToast({ tone: "danger", title: "无法打开下载目录", description: String(err) });
+  }
+}
+
+function reportBatch(
+  title: string,
+  result: BatchResultDto,
+  options?: {
+    actions?: { label: string; onClick: () => void }[];
+    /** 下载类批量：区分新下载/跳过 */
+    downloadStyle?: boolean;
+  },
+) {
   const failed = result.items.filter((i) => i.status === "failed");
-  pushToast({
-    tone: result.failedCount === 0 ? "success" : result.okCount > 0 ? "warning" : "danger",
-    title,
-    description:
+  let description: string;
+  if (options?.downloadStyle) {
+    const skipped = result.items.filter((i) => i.status === "skipped").length;
+    const downloaded = result.items.filter((i) => i.status === "ok").length;
+    const parts: string[] = [`新下载 ${downloaded} 个`];
+    if (skipped > 0) parts.push(`跳过 ${skipped} 个`);
+    if (result.failedCount > 0) parts.push(`失败 ${result.failedCount} 个`);
+    if (failed[0]?.error) parts.push(failed[0].error);
+    description = parts.join("，");
+  } else {
+    description =
       result.failedCount === 0
         ? `成功 ${result.okCount} 个` +
           (result.releasedBytes > 0 ? `，释放 ${result.releasedBytes} 字节` : "")
         : `成功 ${result.okCount} 个，失败 ${result.failedCount} 个` +
-          (failed[0]?.error ? `：${failed[0].error}` : ""),
+          (failed[0]?.error ? `：${failed[0].error}` : "");
+  }
+  pushToast({
+    tone: result.failedCount === 0 ? "success" : result.okCount > 0 ? "warning" : "danger",
+    title,
+    description,
+    actions: options?.actions,
   });
 }
 
@@ -732,7 +803,27 @@ async function handleBatchDownload() {
   batchBusy.value = "dl";
   try {
     const result = await downloadObjects(ids);
-    reportBatch("批量下载完成", result);
+    const hasOk = result.items.some((i) => i.status === "ok" || i.status === "skipped");
+    const downloadDirActions = hasOk
+      ? [
+          {
+            label: "打开下载目录",
+            onClick: () => {
+              void openDownloadDir().catch((err) => {
+                pushToast({
+                  tone: "danger",
+                  title: "无法打开下载目录",
+                  description: String(err),
+                });
+              });
+            },
+          },
+        ]
+      : undefined;
+    reportBatch("批量下载完成", result, {
+      actions: downloadDirActions,
+      downloadStyle: true,
+    });
   } catch (err) {
     pushToast({ tone: "danger", title: "批量下载失败", description: String(err) });
   } finally {

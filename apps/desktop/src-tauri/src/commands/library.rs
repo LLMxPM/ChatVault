@@ -84,6 +84,8 @@ pub struct DownloadResultDto {
     pub saved_path: String,
     pub file_name: String,
     pub size: u64,
+    /// 下载目录已存在同内容副本时为 true，未发生新的网络下载/复制
+    pub skipped: bool,
 }
 
 fn map_object_item(item: ObjectSearchItem) -> FileObjectViewDto {
@@ -377,6 +379,29 @@ fn prepare_extension_open_path(path: &Path, extension: &str) -> std::io::Result<
     }
 }
 
+/// 打开用户下载目录（空配置则默认 Downloads/ChatVault），不存在时先创建
+#[tauri::command]
+pub async fn open_download_dir(state: State<'_, AppState>) -> std::result::Result<String, String> {
+    let dir = {
+        let db = state.get_db().map_err(|e| e.to_string())?;
+        let configured = db
+            .get_setting(setting_keys::DOWNLOAD_DIR)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        resolve_download_dir(&configured)
+    };
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("无法创建下载目录 {}: {e}", dir.display()))?;
+    if !dir.is_dir() {
+        return Err(format!("下载目录不可用: {}", dir.display()));
+    }
+    Command::new("explorer")
+        .arg(&dir)
+        .spawn()
+        .map_err(|e| format!("打开下载目录失败: {e}"))?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
 /// 解析下载目录：空则使用用户 Downloads/ChatVault
 pub(crate) fn resolve_download_dir(configured: &str) -> PathBuf {
     let trimmed = configured.trim();
@@ -450,12 +475,12 @@ pub async fn download_object(
         return Err("尚未配置 WebDAV，请先在设置中完成连接配置".into());
     }
 
-    let hash: String = {
+    let (hash, object_size): (String, u64) = {
         let conn = db.connection();
         conn.query_row(
-            "SELECT hash FROM file_objects WHERE object_id = ?1",
+            "SELECT hash, size FROM file_objects WHERE object_id = ?1",
             [&object_id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .map_err(|e| format!("未找到内容对象: {e}"))?
     };
@@ -484,29 +509,119 @@ pub async fn download_object(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| original_name.clone())
     };
-    let dest = unique_dest_path(&dir, &safe_name);
 
+    // 下载目录已有同名+同大小且哈希一致的副本时跳过，避免重复下载
+    if let Some(existing) = find_existing_export_copy(&dir, &safe_name, object_size, &hash) {
+        return Ok(download_result_from_path(&existing, object_size, true));
+    }
+
+    let dest = unique_dest_path(&dir, &safe_name);
     let size = client
         .download_to_path(&remote_path, &dest, &hash)
         .await
         .map_err(|e| e.to_string())?;
-
-    let saved_name = dest
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| safe_name.clone());
-
-    Ok(DownloadResultDto {
-        saved_path: dest.to_string_lossy().into_owned(),
-        file_name: saved_name,
-        size,
-    })
+    Ok(download_result_from_path(&dest, size, false))
 }
 
-/// 查询对象代表信息：名称、哈希、本机可读路径
+/// 是否为普通文件（非目录/符号链接）
+fn is_regular_export_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_file() && !m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// 判断文件名是否为 safe_name 的导出去重变体：`stem (N).ext` 或无扩展名时 `stem (N)`
+fn matches_export_name_variant(file_name: &str, stem: &str, ext: &str) -> bool {
+    let Some(rest) = file_name.strip_prefix(stem) else {
+        return false;
+    };
+    let Some(after) = rest.strip_prefix(" (") else {
+        return false;
+    };
+    let Some(close) = after.find(')') else {
+        return false;
+    };
+    let num = &after[..close];
+    if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let suffix = &after[close + 1..];
+    if suffix.is_empty() {
+        return ext.is_empty();
+    }
+    !ext.is_empty() && suffix == format!(".{ext}")
+}
+
+/// 在下载目录查找同名（含 `name (N).ext`）且大小一致、哈希匹配的既有导出副本
+///
+/// 输入: dir 下载目录；safe_name 目标安全文件名；expected_size 对象字节数；expected_hash 预期 BLAKE3
+/// 输出: 命中返回绝对路径；无候选或校验不过返回 None（调用方可继续导出）
+fn find_existing_export_copy(
+    dir: &Path,
+    safe_name: &str,
+    expected_size: u64,
+    expected_hash: &str,
+) -> Option<PathBuf> {
+    let path = Path::new(safe_name);
+    let stem = path.file_stem()?.to_str()?;
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let exact = dir.join(safe_name);
+    if is_regular_export_file(&exact) {
+        candidates.push(exact);
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let file_path = entry.path();
+            if !is_regular_export_file(&file_path) {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.as_ref() == safe_name {
+                continue;
+            }
+            if matches_export_name_variant(&name, stem, ext) {
+                candidates.push(file_path);
+            }
+        }
+    }
+
+    for candidate in candidates {
+        let Ok(meta) = std::fs::metadata(&candidate) else {
+            continue;
+        };
+        // 先比文件名对应副本的大小，再计算哈希，避免无谓读盘
+        if meta.len() != expected_size {
+            continue;
+        }
+        if chatvault_metadata::verify_file_hash(&candidate, expected_hash).is_ok() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// 由下载结果构造 DTO（skipped 标记是否复用既有副本）
+fn download_result_from_path(dest: &Path, size: u64, skipped: bool) -> DownloadResultDto {
+    let file_name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dest.to_string_lossy().into_owned());
+    DownloadResultDto {
+        saved_path: dest.to_string_lossy().into_owned(),
+        file_name,
+        size,
+        skipped,
+    }
+}
+
+/// 查询对象代表信息：名称、哈希、大小、本机可读路径
 struct ObjectExportInfo {
     original_name: String,
     hash: String,
+    size: u64,
     open_path: Option<String>,
 }
 
@@ -516,7 +631,7 @@ fn load_object_export_info(
     object_id: &str,
 ) -> std::result::Result<ObjectExportInfo, String> {
     let conn = db.connection();
-    let (original_name, hash): (String, String) = conn
+    let (original_name, hash, size): (String, String, u64) = conn
         .query_row(
             r#"
             SELECT
@@ -527,12 +642,13 @@ fn load_object_export_info(
                      ORDER BY r.file_time DESC, r.record_id LIMIT 1),
                     o.extension
                 ),
-                o.hash
+                o.hash,
+                o.size
             FROM file_objects o
             WHERE o.object_id = ?1
             "#,
             [object_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|e| format!("未找到内容对象: {e}"))?;
 
@@ -579,6 +695,7 @@ fn load_object_export_info(
     Ok(ObjectExportInfo {
         original_name,
         hash,
+        size,
         open_path,
     })
 }
@@ -636,20 +753,25 @@ async fn export_object_with_context(
     std::fs::create_dir_all(&ctx.download_dir)
         .map_err(|e| format!("无法创建下载目录 {}: {e}", ctx.download_dir.display()))?;
     let safe_name = safe_export_name(&info.original_name, &info.hash);
+
+    // 同名+同大小且哈希一致时跳过，避免重复导出
+    if let Some(existing) =
+        find_existing_export_copy(&ctx.download_dir, &safe_name, info.size, &info.hash)
+    {
+        return Ok(download_result_from_path(&existing, info.size, true));
+    }
+
     let dest = unique_dest_path(&ctx.download_dir, &safe_name);
 
     if let Some(src) = info.open_path.as_ref() {
         std::fs::copy(src, &dest).map_err(|e| format!("复制本地文件失败: {e}"))?;
+        // 本地复制同样做内容校验，失败删除副本，避免脏文件进入下载目录
+        if let Err(err) = chatvault_metadata::verify_file_hash(&dest, &info.hash) {
+            let _ = std::fs::remove_file(&dest);
+            return Err(format!("本地副本内容校验失败: {err}"));
+        }
         let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-        let saved_name = dest
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| safe_name.clone());
-        return Ok(DownloadResultDto {
-            saved_path: dest.to_string_lossy().into_owned(),
-            file_name: saved_name,
-            size,
-        });
+        return Ok(download_result_from_path(&dest, size, false));
     }
 
     if ctx.webdav_url.trim().is_empty() {
@@ -669,15 +791,7 @@ async fn export_object_with_context(
         .download_to_path(&remote_path, &dest, &info.hash)
         .await
         .map_err(|e| e.to_string())?;
-    let saved_name = dest
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| safe_name.clone());
-    Ok(DownloadResultDto {
-        saved_path: dest.to_string_lossy().into_owned(),
-        file_name: saved_name,
-        size,
-    })
+    Ok(download_result_from_path(&dest, size, false))
 }
 
 /// 批量导出内容对象到下载目录（含本地已可打开对象）
@@ -724,7 +838,7 @@ pub async fn download_objects(
                 items.push(BatchItemResultDto {
                     object_id,
                     original_name: result.file_name.clone(),
-                    status: "ok".into(),
+                    status: if result.skipped { "skipped" } else { "ok" }.into(),
                     saved_path: Some(result.saved_path),
                     released_bytes: None,
                     error: None,
@@ -1239,6 +1353,52 @@ mod tests {
         assert_eq!(opened.extension().and_then(|v| v.to_str()), Some("png"));
         assert_eq!(std::fs::read(opened).unwrap(), bytes);
         assert_eq!(std::fs::read(&source).unwrap(), bytes);
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn matches_export_name_variant_handles_numbered_suffix() {
+        assert!(matches_export_name_variant("a (1).txt", "a", "txt"));
+        assert!(matches_export_name_variant("a (12).txt", "a", "txt"));
+        assert!(matches_export_name_variant("report (3)", "report", ""));
+        assert!(!matches_export_name_variant("a.txt", "a", "txt"));
+        assert!(!matches_export_name_variant("ab (1).txt", "a", "txt"));
+        assert!(!matches_export_name_variant("a (x).txt", "a", "txt"));
+        assert!(!matches_export_name_variant("a (1).png", "a", "txt"));
+    }
+
+    #[test]
+    fn find_existing_export_copy_hits_same_name_size_hash() {
+        let tmp = std::env::temp_dir().join(format!(
+            "chatvault-export-skip-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let bytes = b"export skip payload";
+        let hash = chatvault_metadata::compute_blake3_bytes(bytes).hex_hash;
+        let size = bytes.len() as u64;
+        std::fs::write(tmp.join("doc.txt"), bytes).unwrap();
+        std::fs::write(tmp.join("doc (1).txt"), b"other").unwrap();
+
+        let hit = find_existing_export_copy(&tmp, "doc.txt", size, &hash).unwrap();
+        assert_eq!(hit.file_name().unwrap(), "doc.txt");
+
+        // 仅有编号变体且内容一致时也能命中
+        std::fs::remove_file(tmp.join("doc.txt")).unwrap();
+        std::fs::write(tmp.join("doc (2).txt"), bytes).unwrap();
+        let hit2 = find_existing_export_copy(&tmp, "doc.txt", size, &hash).unwrap();
+        assert_eq!(hit2.file_name().unwrap(), "doc (2).txt");
+
+        // 同名文件大小不符时不命中哈希；其他变体仍在时可命中变体
+        std::fs::write(tmp.join("doc.txt"), b"short").unwrap();
+        let hit_variant = find_existing_export_copy(&tmp, "doc.txt", size, &hash).unwrap();
+        assert_eq!(hit_variant.file_name().unwrap(), "doc (2).txt");
+
+        // 移除全部同内容候选后不再命中
+        std::fs::remove_file(tmp.join("doc (2).txt")).unwrap();
+        let miss = find_existing_export_copy(&tmp, "doc.txt", size, &hash);
+        assert!(miss.is_none());
+
         let _ = std::fs::remove_dir_all(tmp);
     }
 }

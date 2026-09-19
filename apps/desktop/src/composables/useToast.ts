@@ -13,33 +13,34 @@ export interface ToastItem {
   tone: ToastTone;
   title: string;
   description?: string;
-  action?: ToastAction;
+  actions?: ToastAction[];
 }
 
 const toasts = ref<ToastItem[]>([]);
 let nextId = 1;
 const DEFAULT_MS = 3200;
 
-/** 追加一条 toast；带 action 时延长展示时间。 */
+/** 追加一条 toast；带 actions 时延长展示时间。 */
 export function pushToast(
   input: {
     tone?: ToastTone;
     title: string;
     description?: string;
-    action?: ToastAction;
+    actions?: ToastAction[];
     durationMs?: number;
   },
 ): void {
+  const actions = input.actions?.length ? input.actions : undefined;
   const item: ToastItem = {
     id: nextId++,
     tone: input.tone ?? "info",
     title: input.title,
     description: input.description,
-    action: input.action,
+    actions,
   };
   const next = [...toasts.value, item];
   toasts.value = next.length > 5 ? next.slice(next.length - 5) : next;
-  const ms = input.durationMs ?? (input.action ? 6000 : DEFAULT_MS);
+  const ms = input.durationMs ?? (actions ? 6000 : DEFAULT_MS);
   window.setTimeout(() => dismissToast(item.id), ms);
 }
 

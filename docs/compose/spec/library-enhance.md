@@ -138,11 +138,12 @@ interface ObjectSearchPageDto {
 
 | 本机状态 | 行为 |
 | --- | --- |
-| 存在 `open_path`（original 优先，其次 cache） | 复制到目标文件名；失败记 failed |
-| 无本地路径且远端可下载 | 现有 WebDAV GET + BLAKE3 校验 |
+| 下载目录已有同名+同大小+同哈希副本 | **跳过**复制/下载，返回既有路径（`skipped`） |
+| 存在 `open_path`（original 优先，其次 cache） | 复制到目标文件名；复制后 BLAKE3 校验，失败删副本并记 failed |
+| 无本地路径且远端可下载 | 现有 WebDAV GET + BLAKE3 校验（下载前同样做同名+大小+哈希跳过判断） |
 | 两者皆不可 | failed，原因「无本地文件且未远端归档」或 WebDAV 配置错误 |
 
-目标文件名：对象代表 `original_name`；重名走 `unique_dest_path`。
+目标文件名：对象代表 `original_name`；重名走 `unique_dest_path`（跳过时不生成新名）。
 
 ### 4.3 执行
 
@@ -157,7 +158,7 @@ download_objects(object_ids: string[]) -> BatchDownloadResultDto
 interface BatchDownloadItemResultDto {
   objectId: string;
   originalName: string;
-  status: "ok" | "failed";
+  status: "ok" | "failed" | "skipped";
   savedPath?: string;
   error?: string;
 }
@@ -169,7 +170,9 @@ interface BatchDownloadResultDto {
 }
 ```
 
-- 成功 toast：`已导出 N 个，失败 M 个`；失败时可展开看原因（或后续详情）。
+- 成功 toast：`批量下载完成` + `新下载 N · 跳过 M · 失败 K`；有成功/跳过项时动作「打开下载目录」（`open_download_dir`）。
+- 单对象下载/跳过 toast：「打开」「定位」「下载目录」。
+- 文件库工具栏固定提供「下载目录」入口，便于事后找回导出副本。
 - 不做进度条、取消、并发下载（V1）。
 - 单对象 `download_object` 保留，供详情使用；批量内部可复用同一 Rust 辅助函数。
 

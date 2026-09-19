@@ -835,7 +835,7 @@ async function startPipeline() {
       tone: result.archive && result.archive.failedCount > 0 ? "warning" : "success",
       title: "运行完成",
       description: result.message,
-      action: { label: "去检索", onClick: () => navigateTo("library") },
+      actions: [{ label: "去检索", onClick: () => navigateTo("library") }],
     });
     await refreshTasks();
     await refreshHistory();

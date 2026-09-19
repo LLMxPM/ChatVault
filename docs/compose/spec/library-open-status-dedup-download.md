@@ -45,12 +45,16 @@ updated: 2026-10-11
 - 设置项 `download_dir`（`app_settings`），空则默认 `%USERPROFILE%\Downloads\ChatVault`。
 - 设置页提供目录选择（`pick_directory` 带标题参数）。
 - 命令 `download_object(object_id, original_name)`：
-  1. 读取 WebDAV 配置与凭据（无 URL/密码则明确报错）；
-  2. `GET chatvault-xxxx/objects/blake3/xx/yy/<hash>`；
-  3. 流式写入下载目录 `.part` 临时文件并计算 BLAKE3，与 object hash 校验；
-  4. 原子 rename 为安全文件名（重名则 `name (1).ext`）；
-  5. 返回最终绝对路径；失败删除临时文件。
+  1. 读取对象 hash/size 与 WebDAV 配置（无 URL/密码则明确报错）；
+  2. **重复校验**：在下载目录查找同安全文件名（含 `name (N).ext`）且大小一致的候选，再对候选复算 BLAKE3；命中则跳过下载，返回既有路径与 `skipped: true`；
+  3. 未命中时 `GET chatvault-xxxx/objects/blake3/xx/yy/<hash>`；
+  4. 流式写入下载目录 `.part` 临时文件并计算 BLAKE3，与 object hash 校验；
+  5. 原子 rename 为安全文件名（重名则 `name (1).ext`）；
+  6. 返回最终绝对路径与 `skipped: false`；失败删除临时文件。
 - 下载是用户目录导出副本，**不**改写 `local_files`，不改变资料库位置状态。
+- **不建导出索引**：校验仅基于磁盘上的同名+大小+哈希探测；内容不一致或文件已删时允许再次下载（重复副本可接受）。
+- 下载成功/跳过 toast 提供动作：「打开」「定位」（针对 `savedPath`）、「下载目录」。
+- 文件库工具栏提供「下载目录」入口；命令 `open_download_dir` 解析配置或默认路径，创建后用资源管理器打开，返回目录绝对路径。
 
 ## 5. 接口契约
 
@@ -62,6 +66,7 @@ Tauri 命令：
 | `list_object_sources` | objectId | FileSourceDto[] |
 | `open_file_with_system` | path | void |
 | `download_object` | objectId, originalName | DownloadResultDto |
+| `open_download_dir` | — | 下载目录绝对路径 |
 
 `get_app_settings` / `set_app_settings` 增加 `downloadDir: string`。`pick_directory` 增加可选 `title`。
 
